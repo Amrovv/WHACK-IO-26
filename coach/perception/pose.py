@@ -114,14 +114,28 @@ class MediapipeDetector:
         self._landmarker.close()
 
 
-def largest_pose(poses: list[Landmarks]) -> Landmarks | None:
-    """Keep the pose whose landmark bounding box is biggest (the climber, not a bystander)."""
+def visible_body_score(pose: Landmarks) -> float:
+    """How much of a body is really in view: the visibility of the landmarks that are inside the
+    frame, averaged over all of them (so landmarks outside the frame count as zero)."""
+    inside = sum(q[2] for q in pose if 0.0 <= q[0] <= 1.0 and 0.0 <= q[1] <= 1.0)
+    return inside / len(pose)
 
-    def area(p: Landmarks) -> float:
-        xs, ys = [q[0] for q in p], [q[1] for q in p]
-        return (max(xs) - min(xs)) * (max(ys) - min(ys))
 
-    return max(poses, key=area) if poses else None
+def _box_area(pose: Landmarks) -> float:
+    xs, ys = [q[0] for q in pose], [q[1] for q in pose]
+    return (max(xs) - min(xs)) * (max(ys) - min(ys))
+
+
+def pick_climber(poses: list[Landmarks]) -> Landmarks | None:
+    """Choose the climber among the detected people: the one most fully in view.
+
+    The biggest box is NOT enough: a bystander close to the camera and cropped by the frame edge
+    has a bigger box than the climber on the wall, but only part of them is in view and the
+    detector is unsure about it (low visibility). Measured on two clips (one with such a
+    bystander), the visible-in-frame score alone separated the climber from everyone else; the
+    box area is only a tie-break (two equally visible people: the bigger one).
+    """
+    return max(poses, key=lambda p: (visible_body_score(p), _box_area(p))) if poses else None
 
 
 class LeftRightStabilizer:
@@ -210,7 +224,7 @@ class PoseTracker:
         return self._last_ts
 
     def process(self, t: float, frame_idx: int, frame_bgr: np.ndarray) -> ClimberState:
-        pose = largest_pose(self._detector(frame_bgr, self._timestamp_ms(t)))
+        pose = pick_climber(self._detector(frame_bgr, self._timestamp_ms(t)))
         if pose is None:
             self._stabilizer.reset()
             self._lost_frames += 1

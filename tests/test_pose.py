@@ -10,8 +10,8 @@ from coach.perception.pose import (
     SWAP_GROUPS,
     LeftRightStabilizer,
     PoseTracker,
-    largest_pose,
     load_perception_config,
+    pick_climber,
 )
 from coach.perception.serialize import state_from_line, state_to_line
 
@@ -121,10 +121,35 @@ def test_stabilizer_reset_reinitialises():
     assert out["left_wrist"][0] > out["right_wrist"][0]  # back to raw until 5 frames
 
 
-def test_largest_pose_picks_biggest_body():
+def test_pick_climber_prefers_the_bigger_of_two_fully_visible_people():
     small, big = make_pose(scale=0.3), make_pose(scale=1.0)
-    assert largest_pose([small, big]) is big
-    assert largest_pose([]) is None
+    assert pick_climber([small, big]) is big
+    assert pick_climber([]) is None
+
+
+def cropped_bystander():
+    """A big person at the frame edge: a bigger box than the climber, but half of them is outside
+    the frame and the detector is unsure about the rest (the bystander in Climb 2)."""
+    lms = make_pose(scale=2.0)
+    return [(0.9 + 0.5 * (x - 0.5), 0.9 + 0.8 * (y - 0.5), 0.45) for x, y, _ in lms]
+
+
+def test_pick_climber_ignores_a_larger_but_cropped_low_visibility_bystander():
+    climber = make_pose(scale=0.4)  # smaller box, fully in view, confident
+    bystander = cropped_bystander()
+    xs, ys = [q[0] for q in bystander], [q[1] for q in bystander]
+    cx = [q[0] for q in climber]
+    cy = [q[1] for q in climber]
+    assert (max(xs) - min(xs)) * (max(ys) - min(ys)) > (max(cx) - min(cx)) * (max(cy) - min(cy))
+    assert any(not 0 <= x <= 1 or not 0 <= y <= 1 for x, y, _ in bystander)  # really cropped
+    assert pick_climber([bystander, climber]) is climber
+    assert pick_climber([climber, bystander]) is climber  # order does not matter
+
+
+def test_pick_climber_keeps_a_single_cropped_person():
+    # If the climber is the only person detected (even partly cropped at the top), use them.
+    only = cropped_bystander()
+    assert pick_climber([only]) is only
 
 
 def test_tracker_builds_state_with_limb_points():
