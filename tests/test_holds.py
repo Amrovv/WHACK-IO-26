@@ -1,0 +1,181 @@
+import cv2
+import numpy as np
+import pytest
+
+from coach.perception import holds
+from coach.perception.holds import (
+    build_holdmap,
+    circular_median_hue,
+    colour_name,
+    colour_only_holds,
+    detect_holds,
+    filter_by_colour,
+    hue_distance,
+    load_holdmap,
+    load_holds_config,
+    sample_colour,
+    save_holdmap,
+)
+
+CFG = {
+    "detector_model": "fake/1",
+    "api_url": "https://example.invalid",
+    "hue_tolerance": 12,
+    "min_saturation": 60,
+    "patch_radius_px": 4,
+    "morph_kernel_px": 5,
+    "min_area": 0.0003,
+    "max_area": 0.02,
+    "split_peak_ratio": 0.75,
+    "start_count": 2,
+}
+W, H = 300, 200
+GREY = (120, 120, 120)
+
+
+def bgr(hue, sat=200, val=220):
+    return tuple(
+        int(v) for v in cv2.cvtColor(np.uint8([[[hue, sat, val]]]), cv2.COLOR_HSV2BGR)[0, 0]
+    )
+
+
+def blob_image(blobs):
+    """Grey wall with filled circles: blobs = [(cx, cy, radius, hue), ...]."""
+    img = np.full((H, W, 3), GREY, np.uint8)
+    for cx, cy, r, hue in blobs:
+        cv2.circle(img, (cx, cy), r, bgr(hue), -1)
+    return img
+
+
+def test_config_has_hold_keys():
+    cfg = load_holds_config()
+    for key in ("patch_radius_px", "morph_kernel_px", "min_area", "max_area", "start_count"):
+        assert key in cfg
+
+
+def test_hue_distance_wraps_around():
+    assert hue_distance(2, 177) == 5
+    assert hue_distance(0, 179) == 1
+    assert hue_distance(10, 10) == 0
+    assert hue_distance(0, 90) == 90
+
+
+def test_circular_median_of_reds_on_both_sides_of_zero():
+    m = circular_median_hue(np.array([2, 177, 178, 1, 179]))
+    assert hue_distance(m, 0) <= 2  # near 0/179, not the naive median 2 or the mean ~107
+
+
+def test_colour_name():
+    assert colour_name(2) == "red" and colour_name(178) == "red"
+    assert colour_name(25) == "yellow" and colour_name(160) == "pink"
+
+
+def test_sample_colour_ignores_grey_pixels_near_the_edge():
+    img = blob_image([(100, 100, 12, 30)])
+    # click right on the blob edge so the patch includes plenty of grey wall
+    hue, sat = sample_colour(img, (111, 100), CFG)
+    assert hue == pytest.approx(30, abs=1) and sat > 150
+
+
+def test_sample_colour_on_grey_raises():
+    with pytest.raises(ValueError):
+        sample_colour(blob_image([]), (50, 50), CFG)
+
+
+def test_colour_only_finds_red_blobs_across_the_hue_wrap_and_ignores_others():
+    img = blob_image(
+        [
+            (40, 40, 10, 2),  # red just above 0
+            (120, 90, 10, 177),  # red just below 180
+            (200, 150, 10, 179),
+            (250, 50, 10, 110),  # blue: must be ignored
+        ]
+    )
+    boxes = colour_only_holds(img, ref_hue=0, cfg=CFG)
+    assert len(boxes) == 3
+    centres = sorted(((x0 + x1) // 2, (y0 + y1) // 2) for x0, y0, x1, y1 in boxes)
+    assert centres == [(40, 40), (120, 90), (200, 150)]
+
+
+def test_colour_only_applies_area_limits():
+    img = blob_image([(40, 40, 1, 30), (120, 90, 10, 30), (230, 100, 60, 30)])
+    boxes = colour_only_holds(img, ref_hue=30, cfg=CFG)  # speck too small, giant too big
+    assert len(boxes) == 1
+    assert (boxes[0][0] + boxes[0][2]) // 2 == 120
+
+
+def test_filter_by_colour_keeps_matching_hues_including_wrap():
+    img = blob_image([(40, 40, 10, 2), (120, 90, 10, 177), (200, 150, 10, 110), (250, 50, 10, 60)])
+    boxes = [
+        (c[0] - 10, c[1] - 10, c[0] + 10, c[1] + 10)
+        for c in ((40, 40), (120, 90), (200, 150), (250, 50))
+    ]
+    kept = filter_by_colour(img, boxes, ref_hue=179, cfg=CFG)
+    assert kept == boxes[:2]
+
+
+def test_filter_by_colour_drops_boxes_with_no_saturated_pixels():
+    img = blob_image([])
+    assert filter_by_colour(img, [(10, 10, 50, 50)], ref_hue=30, cfg=CFG) == []
+
+
+def test_build_holdmap_numbers_bottom_to_top_and_marks_roles():
+    # y grows downward: the box with the largest y is lowest on the wall and must be hold 1
+    boxes = [(50, 20, 70, 40), (50, 150, 70, 170), (100, 90, 120, 110), (100, 120, 120, 140)]
+    hm = build_holdmap("demo", "yellow", boxes, (W, H), "colour", CFG)
+    assert [h.id for h in hm.holds] == [1, 2, 3, 4]
+    assert [h.center[1] for h in hm.holds] == sorted((h.center[1] for h in hm.holds), reverse=True)
+    assert [h.role for h in hm.holds] == ["start", "start", "mid", "top"]
+    assert hm.holds[0].center == pytest.approx((60 / W, 160 / H))
+    assert hm.holds[0].bbox == pytest.approx((50 / W, 150 / H, 70 / W, 170 / H))
+    assert hm.image_size == (W, H) and hm.mode == "colour" and hm.colour == "yellow"
+
+
+def test_build_holdmap_single_hold_is_start_not_top():
+    hm = build_holdmap("demo", "red", [(10, 10, 20, 20)], (W, H), "manual", CFG)
+    assert [h.role for h in hm.holds] == ["start"]
+
+
+def test_holdmap_save_load_roundtrip(tmp_path):
+    boxes = [(50, 20, 70, 40), (50, 150, 70, 170), (100, 90, 120, 110)]
+    hm = build_holdmap("pink-v3", "pink", boxes, (W, H), "detector", CFG)
+    path = save_holdmap(hm, tmp_path)
+    assert path.name == "pink-v3.json"
+    assert load_holdmap("pink-v3", tmp_path) == hm
+
+
+def test_detect_holds_needs_api_key(monkeypatch):
+    monkeypatch.delenv("ROBOFLOW_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="ROBOFLOW_API_KEY"):
+        detect_holds(blob_image([(10, 10, 3, 30)]), CFG)
+
+
+def test_detect_holds_converts_boxes_and_caches(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def __init__(self, api_url, api_key):
+            assert api_key == "k"
+
+        def infer(self, image, model_id):
+            calls.append(model_id)
+            return {"predictions": [{"x": 100, "y": 80, "width": 20, "height": 10}]}
+
+    import inference_sdk
+
+    monkeypatch.setenv("ROBOFLOW_API_KEY", "k")
+    monkeypatch.setattr(inference_sdk, "InferenceHTTPClient", FakeClient)
+    holds._detect_cache.clear()
+    img = blob_image([(100, 80, 5, 30)])
+    assert detect_holds(img, CFG) == [(90, 75, 110, 85)]
+    assert detect_holds(img, CFG) == [(90, 75, 110, 85)]
+    assert calls == ["fake/1"]  # second call served from the cache
+
+
+def test_colour_only_splits_touching_holds_that_merge_into_one_big_blob():
+    # Two same-colour holds overlapping: merged area exceeds max_area, but each alone is fine.
+    img = blob_image([(100, 100, 18, 30), (130, 100, 18, 30), (230, 150, 18, 30)])
+    boxes = colour_only_holds(img, ref_hue=30, cfg=CFG)
+    centres = sorted(((x0 + x1) // 2, (y0 + y1) // 2) for x0, y0, x1, y1 in boxes)
+    assert len(boxes) == 3
+    assert centres[0][0] == pytest.approx(100, abs=6) and centres[1][0] == pytest.approx(130, abs=6)
