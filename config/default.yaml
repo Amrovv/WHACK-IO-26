@@ -27,12 +27,16 @@ perception:
     d_cutoff: 1.0
 
 holds:
-  detector_model: detect-climbing-hold/1  # Roboflow model id; pick the best in experiment 2
+  detector_model: hold-detector-rnvkl/1  # Roboflow model id (Climb AI hold detector; picked in experiment 2)
   hue_tolerance: 12         # OpenCV hue units, 0-179
   min_saturation: 60
+  white_min_value: 210       # white holds must be bright enough to separate from the beige/grey wall
+  white_max_saturation: 55   # and nearly neutral; excludes red/teal holds
+  white_min_fraction: 0.15   # share of a detection's pixels that must be white (real white holds 0.18-0.66, others <= 0.10)
   # Added by A for the hold map (B owns this structure: confirm in PR).
   api_url: https://serverless.roboflow.com
-  patch_radius_px: 4        # half-size of the patch sampled around the clicked hold
+  polygon_epsilon: 0.02     # detector outlines are simplified to this fraction of their perimeter (fewer, editable corners)
+  patch_radius_px: 12       # half-size; wider patch avoids a hand/shadow dominating a hold click
   morph_kernel_px: 5        # open/close kernel for colour-only mode
   min_area: 0.0003          # colour-only blob area limits, fraction of the image area
   max_area: 0.02

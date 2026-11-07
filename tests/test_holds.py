@@ -8,6 +8,7 @@ from coach.perception.holds import (
     circular_median_hue,
     colour_name,
     colour_only_holds,
+    detect_hold_polygons,
     detect_holds,
     filter_by_colour,
     hue_distance,
@@ -20,9 +21,13 @@ from coach.perception.holds import (
 CFG = {
     "detector_model": "fake/1",
     "api_url": "https://example.invalid",
+    "polygon_epsilon": 0.02,
     "hue_tolerance": 12,
     "min_saturation": 60,
-    "patch_radius_px": 4,
+    "white_min_value": 210,
+    "white_max_saturation": 55,
+    "white_min_fraction": 0.15,
+    "patch_radius_px": 12,
     "morph_kernel_px": 5,
     "min_area": 0.0003,
     "max_area": 0.02,
@@ -80,6 +85,26 @@ def test_sample_colour_ignores_grey_pixels_near_the_edge():
 def test_sample_colour_on_grey_raises():
     with pytest.raises(ValueError):
         sample_colour(blob_image([]), (50, 50), CFG)
+
+
+def test_sample_white_and_filter_white_holds_only():
+    img = np.full((H, W, 3), (180, 190, 200), np.uint8)  # beige/grey wall, V=200
+    cv2.rectangle(img, (30, 30), (70, 60), (245, 245, 245), -1)
+    cv2.rectangle(img, (100, 30), (140, 60), bgr(2), -1)
+    cv2.rectangle(img, (170, 30), (210, 60), (10, 10, 10), -1)
+    boxes = [(30, 30, 71, 61), (100, 30, 141, 61), (170, 30, 211, 61), (220, 30, 260, 61)]
+    ref, _ = sample_colour(img, (50, 45), CFG)
+    assert ref < 0 and colour_name(ref) == "white"
+    assert filter_by_colour(img, boxes, ref, CFG) == boxes[:1]
+
+
+def test_polygon_pixels_are_used_instead_of_wall_in_box():
+    img = np.full((H, W, 3), (180, 190, 200), np.uint8)
+    cv2.rectangle(img, (100, 70), (120, 90), bgr(30), -1)
+    box = (90, 60, 130, 100)
+    polygon = {box: [(100, 70), (120, 70), (120, 90), (100, 90)]}
+    hue = filter_by_colour(img, [box], 30, CFG, polygon)
+    assert hue == [box]
 
 
 def test_colour_only_finds_red_blobs_across_the_hue_wrap_and_ignores_others():
@@ -144,8 +169,9 @@ def test_holdmap_save_load_roundtrip(tmp_path):
     assert load_holdmap("pink-v3", tmp_path) == hm
 
 
-def test_detect_holds_needs_api_key(monkeypatch):
+def test_detect_holds_needs_api_key(monkeypatch, tmp_path):
     monkeypatch.delenv("ROBOFLOW_API_KEY", raising=False)
+    monkeypatch.setattr(holds, "REPO_ROOT", tmp_path)  # no .env here
     with pytest.raises(RuntimeError, match="ROBOFLOW_API_KEY"):
         detect_holds(blob_image([(10, 10, 3, 30)]), CFG)
 
@@ -179,3 +205,53 @@ def test_colour_only_splits_touching_holds_that_merge_into_one_big_blob():
     centres = sorted(((x0 + x1) // 2, (y0 + y1) // 2) for x0, y0, x1, y1 in boxes)
     assert len(boxes) == 3
     assert centres[0][0] == pytest.approx(100, abs=6) and centres[1][0] == pytest.approx(130, abs=6)
+
+
+def test_detect_hold_polygons_simplifies_outline_and_keys_by_box(monkeypatch):
+    dense = [{"x": 90 + i, "y": 75.0} for i in range(21)]  # many points along the top edge
+    pts = dense + [{"x": 110.0, "y": 85.0}, {"x": 90.0, "y": 85.0}]
+
+    class FakeClient:
+        def __init__(self, api_url, api_key):
+            pass
+
+        def infer(self, image, model_id):
+            return {
+                "predictions": [
+                    {"x": 100, "y": 80, "width": 20, "height": 10, "points": pts},
+                    {"x": 30, "y": 30, "width": 10, "height": 10},  # no outline
+                ]
+            }
+
+    import inference_sdk
+
+    monkeypatch.setenv("ROBOFLOW_API_KEY", "k")
+    monkeypatch.setattr(inference_sdk, "InferenceHTTPClient", FakeClient)
+    holds._detect_cache.clear()
+    img = blob_image([(100, 80, 5, 30)])
+    polys = detect_hold_polygons(img, CFG)
+    assert list(polys) == [(90, 75, 110, 85)]  # the box detect_holds returns; no outline, no entry
+    assert polys[(90, 75, 110, 85)] == [(90, 75), (110, 75), (110, 85), (90, 85)]
+    assert detect_holds(img, CFG) == [(90, 75, 110, 85), (25, 25, 35, 35)]
+
+
+def test_detect_holds_reads_the_key_from_dot_env(monkeypatch, tmp_path):
+    (tmp_path / ".env").write_text("ROBOFLOW_API_KEY=from-dotenv", encoding="utf-8")
+    monkeypatch.delenv("ROBOFLOW_API_KEY", raising=False)
+    monkeypatch.setattr(holds, "REPO_ROOT", tmp_path)
+    seen = []
+
+    class FakeClient:
+        def __init__(self, api_url, api_key):
+            seen.append(api_key)
+
+        def infer(self, image, model_id):
+            return {"predictions": []}
+
+    import inference_sdk
+
+    monkeypatch.setattr(inference_sdk, "InferenceHTTPClient", FakeClient)
+    holds._detect_cache.clear()
+    assert detect_holds(blob_image([(10, 10, 3, 30)]), CFG) == []
+    assert seen == ["from-dotenv"]
+    monkeypatch.delenv("ROBOFLOW_API_KEY", raising=False)  # do not leak into other tests

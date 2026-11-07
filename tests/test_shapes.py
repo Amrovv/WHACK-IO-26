@@ -1,12 +1,14 @@
 import pytest
 
 from coach.perception.shapes import (
+    box_intersects_rect,
     distance_to_polygon,
     is_valid_polygon,
     point_in_polygon,
     polygon_area,
     polygon_bounds,
     polygon_centroid,
+    polygon_intersects_rect,
 )
 
 SQUARE = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]
@@ -61,3 +63,16 @@ def test_valid_polygon_needs_three_corners_that_are_not_in_a_line():
     assert not is_valid_polygon([(0.0, 0.0), (1.0, 1.0)])
     assert not is_valid_polygon([(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)])
     assert not is_valid_polygon([])
+
+
+def test_polygon_rect_intersection_includes_corner_edge_cross_and_overlap():
+    rect = (0.0, 0.0, 2.0, 2.0)
+    assert polygon_intersects_rect([(2.0, 2.0), (3.0, 2.0), (3.0, 3.0)], rect)
+    assert polygon_intersects_rect([(-1.0, 1.0), (3.0, 1.0), (3.5, 1.5), (-1.5, 1.5)], rect)
+    assert polygon_intersects_rect([(0.5, 0.5), (3.0, 0.5), (3.0, 1.5)], rect)
+    assert not polygon_intersects_rect([(3.0, 3.0), (4.0, 3.0), (4.0, 4.0)], rect)
+
+
+def test_box_rect_intersection_includes_touching_edges():
+    assert box_intersects_rect((2, 0, 3, 1), (0, 0, 2, 2))
+    assert not box_intersects_rect((3, 0, 4, 1), (0, 0, 2, 2))

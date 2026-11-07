@@ -1,20 +1,21 @@
 """Plain OpenCV hold-map editor (setup tool, never part of the live loop).
 
     uv run python -m coach.perception.holdmap_editor --video data/footage/clip.mp4 --at 1.0 \
-        --problem pink-v3 [--mode detector|colour] [--colour-name pink]
+        --problem pink-v3 [--colour-name pink]
     uv run python -m coach.perception.holdmap_editor --image wall.jpg --problem paper-wall
     uv run python -m coach.perception.holdmap_editor --video clip.mp4 --problem pink-v3 --edit
 
+Click a route hold to filter Roboflow detections by its colour; detected polygons are retained.
+If Roboflow is unavailable, manual placement remains available.
 Use a frame from the SAME video as the climb (first seconds, wall empty) so colours match.
 `--edit` loads the saved map for --problem and lets you fix it (polygons included).
 
-Mouse:  first click picks the route colour · click a hold to toggle it in/out ·
-        drag on empty wall to draw a missing box · right-click a hold = delete it
-Keys:   n = no colour (white or grey holds): draw everything by hand ·
+Mouse:  click a hold to toggle it in/out · drag = erase · right-click a hold = delete it
+Keys:   r = toggle drag between erase and plain-box placement ·
         p = polygon: click the corners of a diagonal hold, Enter = close, Esc = cancel,
             right-click = remove the last corner ·
         u = undo · s + click = mark start · t + click = mark top · c = re-pick colour ·
-        m = switch detector/colour mode · Enter = save · Esc = quit without saving
+        Enter = save · Esc = quit
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from coach.perception.holds import (
     Shapes,
     build_holdmap_with_shapes,
     colour_name,
-    colour_only_holds,
+    detect_hold_polygons,
     detect_holds,
     filter_by_colour,
     load_holdmap_with_shapes,
@@ -42,15 +43,21 @@ from coach.perception.holds import (
     sample_colour,
     save_holdmap,
 )
-from coach.perception.shapes import is_valid_polygon, point_in_polygon, polygon_area, polygon_bounds
+from coach.perception.shapes import (
+    box_intersects_rect,
+    is_valid_polygon,
+    point_in_polygon,
+    polygon_bounds,
+    polygon_intersects_rect,
+)
 
 log = logging.getLogger(__name__)
 
 KEY_ENTER, KEY_ESC = 13, 27
 HELP_LINES = (
-    "click=toggle  right-click=delete  drag=box  u=undo  n=no colour (white holds)",
+    "click=toggle  right-click=delete  drag=erase  r=toggle erase/plain-box placement  u=undo",
     "p=polygon (click corners, Enter=close, Esc=cancel)  s/t+click=start/top",
-    "c=colour  m=mode  Enter=save  Esc=quit",
+    "c=colour  Enter=save  Esc=quit",
 )
 HELP_BAR_PX = 26
 MIN_BOX_PX = 3
@@ -68,13 +75,11 @@ def _area(box: Box) -> int:
 class EditorState:
     """All editing logic, with no window: easy to test with synthetic images and clicks."""
 
-    def __init__(
-        self, image: np.ndarray, cfg: dict, mode: str = "colour", colour: str | None = None
-    ) -> None:
-        self.image, self.cfg, self.mode = image, cfg, mode
+    def __init__(self, image: np.ndarray, cfg: dict, colour: str | None = None) -> None:
+        self.image, self.cfg = image, cfg
         self.colour_override = colour
         self.ref_hue: float | None = None
-        self.manual_only = False  # no colour: every hold is drawn by hand
+        self.detector_used = False
         self.auto: list[Box] = []
         self.excluded: set[Box] = set()  # auto boxes switched off (shown dim, click to restore)
         self.deleted: set[Box] = set()  # auto boxes removed for good (hidden; undo restores)
@@ -83,62 +88,47 @@ class EditorState:
         self.polygons: dict[Box, PixelPolygon] = {}  # a manual box's real outline (diagonal hold)
         self.start: set[Box] = set()
         self.top: set[Box] = set()
-        self.message = "click a hold of the route colour (white holds: press n)"
+        self.message = "click a hold of the route colour; press r to place a box"
 
-    @property
-    def ready(self) -> bool:
-        """Can holds be drawn and edited yet? Yes once a colour is picked or manual mode is on."""
-        return self.ref_hue is not None or self.manual_only
-
-    # -- colour / mode ------------------------------------------------------------------------
+    # -- colour selection ---------------------------------------------------------------------
     def pick_colour(self, point: tuple[int, int]) -> None:
         try:
             self.ref_hue, _ = sample_colour(self.image, point, self.cfg)
         except ValueError as e:
-            self.message = f"{e} (white or grey holds: press n)"
+            self.message = f"{e}; manual placement is available with r"
             return
-        self.manual_only = False
+        self.detector_used = False
         self.recompute()
-
-    def start_manual(self) -> None:
-        """No colour: skip detection and draw every hold (box or polygon) by hand."""
-        self.ref_hue = None
-        self.manual_only = True
-        self.message = "manual mode: drag = box, p = polygon for diagonal holds"
 
     def clear_colour(self) -> None:
         self.ref_hue = None
-        self.manual_only = False
-        self.message = "click a hold of the route colour (white holds: press n)"
-
-    def toggle_mode(self) -> None:
-        self.mode = "detector" if self.mode == "colour" else "colour"
-        if self.ref_hue is not None:
-            self.recompute()
-        else:
-            self.message = f"mode: {self.mode}"
+        self.detector_used = False
+        self.message = "click a hold to pick a route colour"
 
     def recompute(self) -> None:
-        """Re-run the automatic detection for the current colour and mode."""
+        """Re-run Roboflow detection for the current colour."""
         assert self.ref_hue is not None
-        if self.mode == "detector":
-            try:
-                found = detect_holds(self.image, self.cfg)
-                self.auto = filter_by_colour(self.image, found, self.ref_hue, self.cfg)
-            except Exception as e:  # no API key, no network, bad model id: fall back
-                log.warning("detector failed (%s): using colour-only mode", e)
-                self.mode = "colour"
-                self.auto = colour_only_holds(self.image, self.ref_hue, self.cfg)
-                self.message = "detector unavailable, switched to colour mode"
-                self._prune_marks()
-                return
-        else:
-            self.auto = colour_only_holds(self.image, self.ref_hue, self.cfg)
+        for box in self.auto:
+            if box not in self.manual:
+                self.polygons.pop(box, None)
+        self.auto = []
         self.excluded.clear()
         self.deleted.clear()
-        self._undo.clear()  # the automatic boxes changed, old snapshots no longer apply
+        self._undo.clear()
+        try:
+            found = detect_holds(self.image, self.cfg)
+            outlines = detect_hold_polygons(self.image, self.cfg)
+            self.auto = filter_by_colour(self.image, found, self.ref_hue, self.cfg, outlines)
+            self.polygons.update({box: outlines[box] for box in self.auto if box in outlines})
+            self.detector_used = True
+        except Exception as e:
+            log.warning("Roboflow detection failed: %s", e)
+            self.detector_used = False
+            self._prune_marks()
+            self.message = f"Roboflow unavailable: {e}; use r to place boxes or p for polygons"
+            return
         self._prune_marks()
-        self.message = f"{self.mode} mode: {len(self.auto)} holds found"
+        self.message = f"Roboflow found {len(self.auto)} holds"
 
     def _prune_marks(self) -> None:
         keep = set(self.included())
@@ -148,7 +138,8 @@ class EditorState:
     def load_existing(self, holdmap: HoldMap, shapes: Shapes) -> None:
         """Start from a saved map (every hold becomes an editable manual hold)."""
         h, w = self.image.shape[:2]
-        self.start_manual()
+        self.ref_hue = None
+        self.detector_used = False
         self.manual, self.polygons = [], {}
         self.start, self.top = set(), set()
         for hold in holdmap.holds:
@@ -180,8 +171,35 @@ class EditorState:
             return point_in_polygon(point, self.polygons[box])
         return _contains(box, point)
 
-    def _shape_area(self, box: Box) -> float:
-        return polygon_area(self.polygons[box]) if box in self.polygons else _area(box)
+    def _shape_area(self, box: Box) -> int:
+        return _area(box)
+
+    def erase_rect(self, p0: tuple[int, int], p1: tuple[int, int]) -> None:
+        """Remove every auto/manual hold touching a rectangle in a single undo step."""
+        rect = (min(p0[0], p1[0]), min(p0[1], p1[1]), max(p0[0], p1[0]), max(p0[1], p1[1]))
+        hits = [
+            box
+            for box in self.included()
+            if box in self.polygons and polygon_intersects_rect(self.polygons[box], rect)
+        ]
+        hits.extend(
+            box
+            for box in self.included()
+            if box not in self.polygons and box_intersects_rect(box, rect)
+        )
+        if not hits:
+            self.message = f"erase: no holds touched ({len(self.included())} kept)"
+            return
+        self._snapshot()
+        for box in hits:
+            if box in self.manual:
+                self.manual.remove(box)
+                self.polygons.pop(box, None)
+            else:
+                self.deleted.add(box)
+            self.start.discard(box)
+            self.top.discard(box)
+        self.message = f"erased {len(hits)} holds ({len(self.included())} kept)"
 
     def box_at(self, point: tuple[int, int]) -> Box | None:
         """The smallest hold (auto or manual) under the point."""
@@ -297,7 +315,7 @@ class EditorState:
 
     def build_with_shapes(self, problem_id: str) -> tuple[HoldMap, Shapes]:
         h, w = self.image.shape[:2]
-        mode = "manual" if self.manual else self.mode
+        mode = "detector" if self.detector_used else "manual"
         kept = set(self.included())
         return build_holdmap_with_shapes(
             problem_id,
@@ -326,6 +344,8 @@ class Editor:
         self.drag: tuple[int, int] | None = None
         self.saved: Path | None = None
         self.done = False
+        self.erase_mode = True
+        self.ref_pick = state.ref_hue is None
 
     # -- input (called by the window, or directly by tests) -----------------------------------
     def on_mouse(self, event: int, x: int, y: int) -> None:
@@ -344,19 +364,22 @@ class Editor:
             self.down, self.drag = (x, y), (x, y)
         elif event == cv2.EVENT_MOUSEMOVE and self.down is not None:
             self.drag = (x, y)
-        elif event == cv2.EVENT_RBUTTONDOWN and st.ready:
+        elif event == cv2.EVENT_RBUTTONDOWN:
             st.delete_at((x, y))
         elif event == cv2.EVENT_LBUTTONUP and self.down is not None:
             start, self.down, self.drag = self.down, None, None
             moved = max(abs(x - start[0]), abs(y - start[1]))
             if moved >= st.cfg["drag_min_px"]:
-                if st.ready:
+                if self.erase_mode:
+                    st.erase_rect(start, (x, y))
+                else:
                     st.add_box(start, (x, y))
-            elif not st.ready:
-                st.pick_colour((x, y))
             elif self.pending:
                 st.mark(self.pending, (x, y))
                 self.pending = None
+            elif self.ref_pick:
+                st.pick_colour((x, y))
+                self.ref_pick = False
             else:
                 st.toggle_at((x, y))
 
@@ -386,19 +409,17 @@ class Editor:
                 st.message = "nothing to save yet"
         elif key == ord("u"):
             st.undo()
+        elif key == ord("r"):
+            self.erase_mode = not self.erase_mode
+            st.message = f"drag action: {'erase' if self.erase_mode else 'plain box placement'}"
         elif key == ord("c"):
             st.clear_colour()
-        elif key == ord("n"):
-            st.start_manual()
-        elif key == ord("m"):
-            st.toggle_mode()
+            self.ref_pick = True
         elif key == ord("p"):
-            if st.ready:
-                self.poly = []
-                self.pending = None
-                st.message = "polygon: click the corners, Enter = close, Esc = cancel"
-            else:
-                st.message = "pick a colour first, or press n to draw by hand"
+            self.poly = []
+            self.pending = None
+            self.erase_mode = False
+            st.message = "polygon: click corners, Enter = close, Esc = cancel"
         elif key in (ord("s"), ord("t")):
             self.pending = "start" if key == ord("s") else "top"
             st.message = f"click a hold to mark as {self.pending}"
@@ -433,9 +454,29 @@ class Editor:
             for pt in self.poly:
                 cv2.circle(canvas, pt, 4, POLY_COLOUR, -1)
         if self.down is not None and self.drag is not None:
-            cv2.rectangle(canvas, self.down, self.drag, (255, 255, 255), 1)
+            erase = self.erase_mode
+            colour = (0, 0, 255) if erase else (255, 255, 255)
+            cv2.rectangle(canvas, self.down, self.drag, colour, 2 if erase else 1)
+            if erase:
+                rect = (*self.down, *self.drag)
+                x0, x1 = sorted((rect[0], rect[2]))
+                y0, y1 = sorted((rect[1], rect[3]))
+                for box in st.included():
+                    touches = (
+                        polygon_intersects_rect(st.polygons[box], (x0, y0, x1, y1))
+                        if box in st.polygons
+                        else box_intersects_rect(box, (x0, y0, x1, y1))
+                    )
+                    if touches:
+                        if box in st.polygons:
+                            pts = np.asarray(st.polygons[box], np.int32)
+                            cv2.polylines(canvas, [pts], True, (0, 0, 255), 3)
+                        else:
+                            cv2.rectangle(canvas, box[:2], box[2:], (0, 0, 255), 3)
         bar = np.zeros((HELP_BAR_PX * (1 + len(HELP_LINES)), canvas.shape[1], 3), np.uint8)
-        cv2.putText(bar, st.message, (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        action = "erase" if self.erase_mode else "plain box placement"
+        status = f"{st.message} | {len(st.included())} kept | drag: {action}"
+        cv2.putText(bar, status, (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
         for i, line in enumerate(HELP_LINES, start=1):
             y = 18 + i * HELP_BAR_PX
             cv2.putText(bar, line, (6, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
@@ -456,13 +497,12 @@ class Editor:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Hold map editor")
+    parser = argparse.ArgumentParser(description="Pick a hold colour, edit the map, and save it.")
     src = parser.add_mutually_exclusive_group(required=True)
     src.add_argument("--image")
     src.add_argument("--video")
     parser.add_argument("--at", type=float, default=1.0, help="seconds into --video")
     parser.add_argument("--problem", required=True)
-    parser.add_argument("--mode", choices=("detector", "colour"), default="colour")
     parser.add_argument("--colour-name", help="spoken colour name, e.g. pink")
     parser.add_argument(
         "--edit", action="store_true", help="start from the saved map for --problem"
@@ -476,7 +516,7 @@ def main() -> None:
             parser.error(f"cannot read image {args.image}")
     else:
         image = read_frame(args.video, args.at)
-    state = EditorState(image, load_holds_config(), args.mode, args.colour_name)
+    state = EditorState(image, load_holds_config(), args.colour_name)
     if args.edit:
         state.load_existing(*load_holdmap_with_shapes(args.problem))
     saved = Editor(state, args.problem).run()

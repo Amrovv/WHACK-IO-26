@@ -3,8 +3,8 @@
 Two ways to find the route's holds:
   * detector mode: a Roboflow detector finds all holds, then only boxes the same colour as the
     clicked hold are kept (`detect_holds` + `filter_by_colour`)
-  * colour-only mode: threshold the clicked hue directly (`colour_only_holds`); the default for
-    the paper wall and the fallback for the gym
+  * colour-only mode: threshold the clicked hue directly (`colour_only_holds`); explicit offline
+    mode for the paper wall and fallback when the detector is unavailable
 
 Setup-time only: `detect_holds` uses the network and must never run in the live loop.
 
@@ -25,6 +25,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from dotenv import load_dotenv
 
 from coach.contracts import Hold, HoldMap
 from coach.perception.config import REPO_ROOT, load_config
@@ -52,6 +53,8 @@ _HUE_NAMES = (
 
 
 def colour_name(hue: float) -> str:
+    if hue < 0:
+        return "white"
     for upper, name in _HUE_NAMES:
         if hue < upper:
             return name
@@ -69,8 +72,11 @@ def load_holds_config(path: str | Path | None = None) -> dict:
 
 
 def sample_colour(image_bgr: np.ndarray, point: tuple[int, int], cfg: dict) -> tuple[float, float]:
-    """Median (hue, saturation) in a small patch around a clicked point, ignoring pixels whose
-    saturation is below `min_saturation` (chalk, grey wall). Hue uses the circular median."""
+    """Median (hue, saturation) around a clicked point, ignoring low-saturation pixels.
+
+    A wider configured patch helps when a hand or shadow covers part of a hold. Hue uses the
+    circular median.
+    """
     x, y = point
     r = cfg["patch_radius_px"]
     h, w = image_bgr.shape[:2]
@@ -79,7 +85,11 @@ def sample_colour(image_bgr: np.ndarray, point: tuple[int, int], cfg: dict) -> t
     sat = hsv[:, 1]
     keep = hsv[sat >= cfg["min_saturation"]]
     if len(keep) == 0:
-        raise ValueError(f"no saturated pixels near {point}: click on the coloured hold")
+        value = hsv[:, 2]
+        white = (sat <= cfg["white_max_saturation"]) & (value >= cfg["white_min_value"])
+        if np.any(white):
+            return -1.0, float(np.median(value[white]))
+        raise ValueError(f"no coloured or white pixels near {point}: click on a hold")
     return circular_median_hue(keep[:, 0]), float(np.median(keep[:, 1]))
 
 
@@ -93,22 +103,55 @@ def circular_median_hue(hues: np.ndarray) -> float:
     return float(np.median(rotated) % HUE_RANGE)
 
 
-def box_hue(image_bgr: np.ndarray, box: Box, cfg: dict) -> float | None:
-    """Median hue of the saturated pixels inside a box, or None if there are none."""
+def box_hue(
+    image_bgr: np.ndarray, box: Box, cfg: dict, polygon: PixelPolygon | None = None
+) -> float | None:
+    """Median hue in the hold pixels inside a box or supplied polygon."""
     x0, y0, x1, y1 = box
-    hsv = cv2.cvtColor(image_bgr[max(y0, 0) : y1, max(x0, 0) : x1], cv2.COLOR_BGR2HSV)
+    x0, y0 = max(x0, 0), max(y0, 0)
+    crop = image_bgr[y0:y1, x0:x1]
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     hsv = hsv.reshape(-1, 3)
+    if polygon:
+        mask = np.zeros((y1 - y0, x1 - x0), np.uint8)
+        pts = np.array([[(x - x0, y - y0) for x, y in polygon]], dtype=np.int32)
+        cv2.fillPoly(mask, pts, 255)
+        hsv = hsv[mask.reshape(-1) > 0]
     hsv = hsv[hsv[:, 1] >= cfg["min_saturation"]]
     return circular_median_hue(hsv[:, 0]) if len(hsv) else None
 
 
 def filter_by_colour(
-    image_bgr: np.ndarray, boxes: list[Box], ref_hue: float, cfg: dict
+    image_bgr: np.ndarray,
+    boxes: list[Box],
+    ref_hue: float,
+    cfg: dict,
+    polygons: dict[Box, PixelPolygon] | None = None,
 ) -> list[Box]:
-    """Keep boxes whose median hue is within `hue_tolerance` of ref_hue (wrap-around aware)."""
+    """Keep boxes whose median hue is within `hue_tolerance` of ref_hue (wrap-around aware).
+    A white reference (hue < 0) keeps boxes where at least `white_min_fraction` of the hold
+    pixels (polygon if given, else box) are white."""
     kept = []
     for box in boxes:
-        hue = box_hue(image_bgr, box, cfg)
+        if ref_hue < 0:
+            x0, y0, x1, y1 = box
+            region = image_bgr[max(y0, 0) : y1, max(x0, 0) : x1]
+            if polygons and box in polygons:
+                mask = np.zeros(region.shape[:2], np.uint8)
+                pts = np.array(
+                    [[(x - max(x0, 0), y - max(y0, 0)) for x, y in polygons[box]]], np.int32
+                )
+                cv2.fillPoly(mask, pts, 255)
+                pixels = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)[mask > 0]
+            else:
+                pixels = cv2.cvtColor(region, cv2.COLOR_BGR2HSV).reshape(-1, 3)
+            white = (pixels[:, 1] <= cfg["white_max_saturation"]) & (
+                pixels[:, 2] >= cfg["white_min_value"]
+            )
+            if len(pixels) and white.mean() >= cfg["white_min_fraction"]:
+                kept.append(box)
+            continue
+        hue = box_hue(image_bgr, box, cfg, (polygons or {}).get(box))
         if hue is not None and hue_distance(hue, ref_hue) <= cfg["hue_tolerance"]:
             kept.append(box)
     return kept
@@ -117,6 +160,10 @@ def filter_by_colour(
 def hue_mask(image_bgr: np.ndarray, ref_hue: float, cfg: dict) -> np.ndarray:
     """Binary mask of pixels within hue_tolerance of ref_hue and saturated enough."""
     hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+    if ref_hue < 0:
+        return cv2.inRange(
+            hsv, (0, 0, cfg["white_min_value"]), (HUE_RANGE - 1, cfg["white_max_saturation"], 255)
+        )
     tol, min_sat = cfg["hue_tolerance"], cfg["min_saturation"]
     lo, hi = ref_hue - tol, ref_hue + tol
     if lo >= 0 and hi < HUE_RANGE:
@@ -182,35 +229,59 @@ def _split_blob(contour: np.ndarray, cfg: dict) -> list[tuple[Box, int]]:
     return pieces
 
 
-_detect_cache: dict[str, list[Box]] = {}
+_detect_cache: dict[str, list[tuple[Box, PixelPolygon | None]]] = {}
 
 
-def detect_holds(image_bgr: np.ndarray, cfg: dict) -> list[Box]:
-    """Roboflow hold detector (network; setup-time only). Cached per image hash."""
+def simplify_polygon(points: list[tuple[float, float]], cfg: dict) -> PixelPolygon | None:
+    """Reduce a detector outline (often 40+ points) to a few corners that are easy to edit.
+    Tolerance = `polygon_epsilon` x the outline's perimeter. None if it collapses to < 3 corners."""
+    contour = np.array(points, dtype=np.float32).reshape(-1, 1, 2)
+    eps = cfg["polygon_epsilon"] * cv2.arcLength(contour, True)
+    approx = cv2.approxPolyDP(contour, eps, True).reshape(-1, 2)
+    if len(approx) < 3:
+        return None
+    return [(round(float(x)), round(float(y))) for x, y in approx]
+
+
+def _detections(image_bgr: np.ndarray, cfg: dict) -> list[tuple[Box, PixelPolygon | None]]:
+    """Roboflow call (network; setup-time only). One (box, outline) per hold; the outline is
+    None for a plain detection model that returns no `points`. Cached per image hash."""
     key = hashlib.sha256(image_bgr.tobytes()).hexdigest() + cfg["detector_model"]
     if key in _detect_cache:
         return _detect_cache[key]
     from inference_sdk import InferenceHTTPClient
 
+    load_dotenv(REPO_ROOT / ".env")  # the key lives in .env; the shell does not export it
     api_key = os.environ.get("ROBOFLOW_API_KEY")
     if not api_key:
         raise RuntimeError("ROBOFLOW_API_KEY is not set (put it in .env), or use colour-only mode")
     client = InferenceHTTPClient(api_url=cfg["api_url"], api_key=api_key)
     result = client.infer(image_bgr, model_id=cfg["detector_model"])
     h, w = image_bgr.shape[:2]
-    boxes = []
+    found: list[tuple[Box, PixelPolygon | None]] = []
     for p in result.get("predictions", []):  # centre x/y + width/height in pixels
         x0, y0 = round(p["x"] - p["width"] / 2), round(p["y"] - p["height"] / 2)
-        boxes.append(
-            (
-                max(x0, 0),
-                max(y0, 0),
-                min(round(x0 + p["width"]), w),
-                min(round(y0 + p["height"]), h),
-            )
+        box = (
+            max(x0, 0),
+            max(y0, 0),
+            min(round(x0 + p["width"]), w),
+            min(round(y0 + p["height"]), h),
         )
-    _detect_cache[key] = boxes
-    return boxes
+        outline = [(min(max(pt["x"], 0), w), min(max(pt["y"], 0), h)) for pt in p.get("points", [])]
+        found.append((box, simplify_polygon(outline, cfg) if len(outline) >= 3 else None))
+    _detect_cache[key] = found
+    return found
+
+
+def detect_holds(image_bgr: np.ndarray, cfg: dict) -> list[Box]:
+    """Roboflow hold detector: the bounding boxes."""
+    return [box for box, _ in _detections(image_bgr, cfg)]
+
+
+def detect_hold_polygons(image_bgr: np.ndarray, cfg: dict) -> dict[Box, PixelPolygon]:
+    """Outlines for the detected holds (segmentation models only), keyed by the box that
+    `detect_holds` returns for the same hold."""
+    return {box: poly for box, poly in _detections(image_bgr, cfg) if poly is not None}
 
 
 def build_holdmap_with_shapes(
@@ -384,12 +455,17 @@ def main() -> None:
     cfg = load_holds_config()
     frame = read_frame(args.video, args.at)
     hue, sat = sample_colour(frame, tuple(args.click), cfg)
+    outlines: dict[Box, PixelPolygon] = {}
     if args.mode == "detector":
         boxes = filter_by_colour(frame, detect_holds(frame, cfg), hue, cfg)
+        found = detect_hold_polygons(frame, cfg)
+        outlines = {b: found[b] for b in boxes if b in found}
     else:
         boxes = colour_only_holds(frame, hue, cfg)
     h, w = frame.shape[:2]
-    hm = build_holdmap(args.problem, colour_name(hue), boxes, (w, h), args.mode, cfg)
+    hm, shapes = build_holdmap_with_shapes(
+        args.problem, colour_name(hue), boxes, (w, h), args.mode, cfg, polygons=outlines
+    )
     log.info(
         "clicked hue %.0f sat %.0f (%s): %d holds, mode %s",
         hue,
@@ -399,9 +475,9 @@ def main() -> None:
         hm.mode,
     )
     if not args.no_save:
-        log.info("saved %s", save_holdmap(hm))
+        log.info("saved %s", save_holdmap(hm, shapes=shapes))
     if args.out_image:
-        cv2.imwrite(args.out_image, draw_holds(frame, hm))
+        cv2.imwrite(args.out_image, draw_holds(frame, hm, shapes))
 
 
 if __name__ == "__main__":
