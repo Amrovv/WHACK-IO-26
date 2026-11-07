@@ -268,6 +268,29 @@ def test_a_brief_person_loss_does_not_make_a_hidden_limb_follow_a_bad_guess():
         assert s.limbs[Limb.RH] == pytest.approx((0.60, 0.14), abs=0.01)  # held, not the bad guess
 
 
+def test_frozen_limb_point_is_withheld_after_dip_and_returns_when_pose_resumes():
+    cfg = {**CFG, "contact_dip_frames": 3, "freeze_max_frames": 15}
+    tracker = PoseTracker(cfg, detector=lambda _frame, _ts: [])
+    good = hands_pose((0.4, 0.5), (0.6, 0.3))
+    for i in range(6):
+        tracker._smooth_limbs(i / 30, good)
+
+    hidden = dict(good)
+    for part in SWAP_GROUPS["hand"]:
+        hidden[f"right_{part}"] = (0.9, 0.9, 0.3)
+    early = [tracker._smooth_limbs((6 + i) / 30, hidden).get(Limb.RH) for i in range(3)]
+    assert all(point is not None for point in early)
+    assert Limb.RH not in tracker._smooth_limbs(9 / 30, hidden)  # left out, never None
+    assert Limb.RH not in tracker._smooth_limbs(10 / 30, hidden)
+
+    visible = dict(good)
+    for part in SWAP_GROUPS["hand"]:
+        visible[f"right_{part}"] = (0.7, 0.4, 0.9)
+    assert Limb.RH not in tracker._smooth_limbs(11 / 30, visible)
+    resumed = tracker._smooth_limbs(12 / 30, visible)[Limb.RH]
+    assert resumed is not None
+
+
 def test_a_long_person_loss_forgets_the_frozen_point():
     good = ((0.60, 0.14), 0.9)
     bad = ((0.58, 0.30), 0.1)
