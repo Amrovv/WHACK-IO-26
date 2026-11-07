@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# uv / venv
+.venv/
+
+# Env / secrets
+.env
+*.local
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Big files: share via the drive, never git
+models/*
+!models/README.md
+data/*
+!data/README.md
+
+# Agent context files: everyone has their own local copy, no need to track
+CLAUDE.md
+AGENTS.md
