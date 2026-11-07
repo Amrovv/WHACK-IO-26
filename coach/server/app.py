@@ -1,0 +1,300 @@
+"""Dashboard server: serves web/index.html, forwards every bus topic over /ws, streams /video.
+
+Owned by D.
+
+  GET /         web/index.html (and /fonts/* for its self-hosted fonts)
+  WS  /ws       one JSON message per bus item: {"topic", "t", "payload"}
+                  t: server monotonic time when the item reached the hub
+                  payload: to_jsonable(payload); "frame" JPEGs are base64 strings
+                  "state" is throttled to STATE_HZ per client
+                  on connect: "hello" (if given) and the latest "holdmap"
+  GET /video    MJPEG (multipart/x-mixed-replace) of the latest "frame", ~FRAME_FPS
+
+run.py awaits serve(bus, host, port). Replay a bus log with no pipeline running:
+
+  uv run python -m coach.server.app --replay data/bus_logs/x.jsonl [--loop]
+  then open http://localhost:8000/
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import base64
+import contextlib
+import json
+import logging
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
+from pathlib import Path
+from typing import Any
+
+import uvicorn
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+
+from coach.bus import Bus, to_jsonable
+from coach.contracts import TOPICS
+
+log = logging.getLogger("coach.server")
+
+WEB_DIR = Path(__file__).resolve().parents[2] / "web"
+
+# Streaming settings (dashboard plumbing, not coaching thresholds).
+STATE_HZ = 10.0  # max "state" messages per second per client
+FRAME_FPS = 10.0  # max MJPEG frames per second per /video client
+CLIENT_BACKLOG = 64  # messages queued per client; the oldest is dropped when full
+SHUTDOWN_GRACE_S = 1  # uvicorn waits this long for open streams on shutdown
+
+Clock = Callable[[], float]
+
+
+def encode(topic: str, t: float, payload: Any) -> str:
+    """One bus item as the dashboard's JSON message."""
+    if isinstance(payload, (bytes, bytearray)):
+        payload = base64.b64encode(payload).decode("ascii")
+    else:
+        payload = to_jsonable(payload)
+    return json.dumps({"topic": topic, "t": t, "payload": payload})
+
+
+def mjpeg_part(jpeg: bytes) -> bytes:
+    """One multipart/x-mixed-replace part."""
+    head = f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(jpeg)}\r\n\r\n"
+    return head.encode() + jpeg + b"\r\n"
+
+
+class Client:
+    """One dashboard connection: a bounded backlog plus its own state throttle."""
+
+    def __init__(self, clock: Clock) -> None:
+        self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=CLIENT_BACKLOG)
+        self.clock = clock
+        self.last_state = -float("inf")
+        self.dropped = 0
+
+    def offer(self, topic: str, msg: str) -> None:
+        if topic == "state":
+            now = self.clock()
+            if now - self.last_state < 1.0 / STATE_HZ:
+                return
+            self.last_state = now
+        if self.queue.full():  # newest wins; never block the hub on a slow browser
+            self.queue.get_nowait()
+            self.dropped += 1
+        self.queue.put_nowait(msg)
+
+
+class Hub:
+    """Subscribes to every bus topic once and fans items out to the connected clients.
+
+    Subscribing once (not per connection) means clients can come and go without leaving
+    dead queues on the bus.
+    """
+
+    def __init__(self, bus: Bus, hello: dict | None = None, clock: Clock = time.monotonic) -> None:
+        self.clock = clock
+        self.hello = hello
+        self.clients: set[Client] = set()
+        self.holdmap_msg: str | None = None
+        self.frame: bytes | None = None
+        self.frame_seq = 0
+        self._frame_cond = asyncio.Condition()
+        self._sources = [(topic, bus.subscribe(topic)) for topic in TOPICS]
+        self._tasks: list[asyncio.Task] = []
+
+    def start(self) -> None:
+        self._tasks = [asyncio.create_task(self._pump(t, q)) for t, q in self._sources]
+
+    async def stop(self) -> None:
+        for task in self._tasks:
+            task.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+
+    def connect(self) -> Client:
+        client = Client(self.clock)
+        if self.hello is not None:
+            client.offer("hello", encode("hello", self.clock(), self.hello))
+        if self.holdmap_msg is not None:
+            client.offer("holdmap", self.holdmap_msg)
+        self.clients.add(client)
+        return client
+
+    def disconnect(self, client: Client) -> None:
+        self.clients.discard(client)
+
+    async def _pump(self, topic: str, queue: asyncio.Queue) -> None:
+        while True:
+            payload = await queue.get()
+            await self.dispatch(topic, payload)
+
+    async def dispatch(self, topic: str, payload: Any) -> None:
+        if topic == "frame":
+            # Live frames are JPEG bytes; replayed ones are base64 text.
+            jpeg = base64.b64decode(payload) if isinstance(payload, str) else bytes(payload)
+            async with self._frame_cond:
+                self.frame, self.frame_seq = jpeg, self.frame_seq + 1
+                self._frame_cond.notify_all()
+        msg = encode(topic, self.clock(), payload)
+        if topic == "holdmap":
+            self.holdmap_msg = msg
+        for client in self.clients:
+            client.offer(topic, msg)
+
+    async def frames(self) -> AsyncIterator[bytes]:
+        """Yields each new frame, skipping any that arrive faster than FRAME_FPS."""
+        seen, last = self.frame_seq, -float("inf")
+        while True:
+            async with self._frame_cond:
+                await self._frame_cond.wait_for(lambda seen=seen: self.frame_seq != seen)
+                seen, jpeg = self.frame_seq, self.frame
+            now = self.clock()
+            if now - last < 1.0 / FRAME_FPS:
+                continue
+            last = now
+            yield jpeg
+
+
+def create_app(bus: Bus, hello: dict | None = None, clock: Clock = time.monotonic) -> FastAPI:
+    hub = Hub(bus, hello, clock)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app: FastAPI):
+        hub.start()
+        yield
+        await hub.stop()
+
+    app = FastAPI(title="Climbing Coach", lifespan=lifespan)
+    app.state.hub = hub
+
+    @app.get("/")
+    async def index() -> FileResponse:
+        return FileResponse(WEB_DIR / "index.html")
+
+    app.mount("/fonts", StaticFiles(directory=WEB_DIR / "fonts"), name="fonts")
+
+    @app.websocket("/ws")
+    async def ws(sock: WebSocket) -> None:
+        await sock.accept()
+        client = hub.connect()
+        log.info("dashboard connected (%d open)", len(hub.clients))
+        try:
+            while True:
+                await sock.send_text(await client.queue.get())
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        finally:
+            hub.disconnect(client)
+            log.info("dashboard disconnected (%d open)", len(hub.clients))
+
+    @app.get("/video")
+    async def video() -> StreamingResponse:
+        async def parts() -> AsyncIterator[bytes]:
+            async for jpeg in hub.frames():
+                yield mjpeg_part(jpeg)
+
+        return StreamingResponse(parts(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+    return app
+
+
+class _Server(uvicorn.Server):
+    """uvicorn without its own signal handling: the caller (run.py) owns Ctrl+C."""
+
+    @contextlib.contextmanager
+    def capture_signals(self):
+        yield
+
+
+async def serve(bus: Bus, host: str = "127.0.0.1", port: int = 8000, hello: dict | None = None):
+    """Run the dashboard server in the current loop until cancelled, then shut down cleanly."""
+    config = uvicorn.Config(
+        create_app(bus, hello),
+        host=host,
+        port=port,
+        log_level="warning",
+        timeout_graceful_shutdown=SHUTDOWN_GRACE_S,
+    )
+    server = _Server(config)
+    task = asyncio.ensure_future(server.serve())
+    log.info("dashboard at http://%s:%d/", host, port)
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        server.should_exit = True
+        await task
+        raise
+
+
+# ---- Replay -----------------------------------------------------------------------------
+
+
+def read_bus_log(path: Path) -> list[tuple[float, str, Any]]:
+    """Bus log lines {"t", "topic", "payload"} -> [(t, topic, payload)], sorted by t."""
+    records = []
+    for n, line in enumerate(path.read_text().splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+            records.append((float(rec["t"]), rec["topic"], rec["payload"]))
+        except (ValueError, KeyError) as e:
+            log.warning("%s:%d skipped (%s)", path, n, e)
+    records.sort(key=lambda r: r[0])
+    return records
+
+
+async def replay(
+    bus: Bus,
+    records: list[tuple[float, str, Any]],
+    loop: bool = False,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> None:
+    """Publish records at 1x, keeping their original spacing. Payloads stay plain JSON."""
+    if not records:
+        return
+    while True:
+        prev = records[0][0]
+        for t, topic, payload in records:
+            if t > prev:
+                await sleep(t - prev)
+            prev = t
+            bus.publish(topic, payload)
+        if not loop:
+            return
+
+
+async def _replay_main(args: argparse.Namespace) -> None:
+    bus = Bus()
+    bus.bind_loop()
+    records = read_bus_log(args.replay) if args.replay else []
+    if records:
+        span = records[-1][0] - records[0][0]
+        log.info("replaying %d items (%.1f s) from %s", len(records), span, args.replay)
+    hello = {"problem_id": f"replay:{args.replay.stem}" if args.replay else "none"}
+    server = asyncio.create_task(serve(bus, args.host, args.port, hello))
+    await asyncio.sleep(0)  # let the hub subscribe before the first publish
+    try:
+        await replay(bus, records, loop=args.loop)
+        if records:
+            log.info("replay finished; still serving (Ctrl+C to quit)")
+        await server
+    finally:
+        server.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await server
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    p = argparse.ArgumentParser(description="Serve the dashboard; optionally replay a bus log.")
+    p.add_argument("--replay", type=Path, metavar="PATH.jsonl", help="bus log to replay at 1x")
+    p.add_argument("--loop", action="store_true", help="restart the replay when it ends")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8000)
+    args = p.parse_args()
+    if args.replay and not args.replay.exists():
+        p.error(f"no such file: {args.replay}")
+    with contextlib.suppress(KeyboardInterrupt):
+        asyncio.run(_replay_main(args))
