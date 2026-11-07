@@ -557,3 +557,20 @@ def test_edit_loads_a_saved_map_with_polygons_and_roles_and_saves_it_back(white_
     assert [h.role for h in second.holds] == [h.role for h in first.holds]
     assert set(second_shapes) == set(first_shapes)
     assert second.colour == "white"
+
+
+def test_ui_scale_keeps_text_the_same_size_for_tall_images():
+    from coach.perception.holdmap_editor import DISPLAY_H, ui_scale
+
+    assert ui_scale(360) == 1.0 and ui_scale(DISPLAY_H) == 1.0  # small images are not shrunk
+    assert ui_scale(1920) == pytest.approx(1920 / DISPLAY_H)  # a tall photo shown smaller
+
+
+def test_wrap_text_keeps_every_line_inside_the_width():
+    from coach.perception.holdmap_editor import wrap_text
+
+    text = "click=toggle right-click=delete drag=erase r=toggle erase/plain-box placement u=undo"
+    lines = wrap_text(text, 300, 0.5, 1)
+    assert len(lines) > 1 and " ".join(lines) == text
+    for line in lines:
+        assert cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0][0] <= 300
