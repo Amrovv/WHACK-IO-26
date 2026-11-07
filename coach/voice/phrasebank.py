@@ -127,7 +127,7 @@ def slot_values(data: dict, route_colour: str | None = None) -> dict[str, str]:
     A problem's holds all share one colour, so `route_colour` fills {colour} unless the event
     names its own.
     """
-    data = {"colour": route_colour, **data}
+    data = {"colour": route_colour, "limb": data.get("foot"), **data}  # weight_shift sends "foot"
     sources = {
         "dir": ("dir", str),
         "colour": ("colour", str),

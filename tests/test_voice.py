@@ -295,6 +295,14 @@ def test_limb_slot_accepts_every_form_of_limb(limb: str) -> None:
     assert slot_values({"limb": limb}) == {"limb": "left hand"}
 
 
+def test_foot_fills_the_limb_slot() -> None:
+    assert slot_values({"foot": "left_foot"}) == {"limb": "left foot"}
+
+
+def test_limb_beats_foot() -> None:
+    assert slot_values({"limb": "RH", "foot": "left_foot"}) == {"limb": "right hand"}
+
+
 @pytest.mark.parametrize("data", [{"limb": "tail"}, {"hold_id": 99}, {"dir": None}, {"hold_id": 0}])
 def test_unspeakable_values_are_left_out(data: dict) -> None:
     assert slot_values(data) == {}

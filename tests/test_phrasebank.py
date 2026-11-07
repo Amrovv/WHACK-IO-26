@@ -1,3 +1,7 @@
+import json
+import sys
+
+import numpy as np
 import pytest
 import yaml
 
@@ -12,7 +16,8 @@ from coach.voice.phrasebank import (
     select_lines,
     word_count,
 )
-from coach.voice.tts import TTSParams
+from coach.voice.tts import TTS, TTSParams
+from scripts import build_phrasebank
 from scripts.build_phrasebank import (
     KEEP,
     KIND_MEANINGS,
@@ -21,7 +26,9 @@ from scripts.build_phrasebank import (
     MOODS,
     build_bank,
     build_prompt,
+    check_clips,
     count_table,
+    missing_clips,
     missing_llm_setting,
 )
 
@@ -155,3 +162,92 @@ def test_missing_llm_setting() -> None:
     assert "GEMINI_API_KEY" in missing_llm_setting(None, "model")
     assert "llm_model" in missing_llm_setting("key", MODEL_PLACEHOLDER)
     assert missing_llm_setting("key", "model") is None
+
+
+# Checking the audio cache
+
+
+class SilentEngine:
+    name = "fake"
+
+    def voice_id(self) -> str:
+        return "fake"
+
+    def speed(self) -> float:
+        return 1.0
+
+    def raw(self, text: str) -> np.ndarray:
+        return np.full(2400, 0.1, dtype=np.float32)
+
+
+CHECK_PERSONA = {"colours": ["pink"], "fillers": ["Right. Listen."]}
+CHECK_BANK = {"fall": {"0": {"neutral": ["Off again.", "{hold} again."]}}}
+
+
+@pytest.fixture
+def cache_tts(tmp_path) -> TTS:
+    return TTS(SilentEngine(), TTSParams(cache_dir=tmp_path))
+
+
+def render_all(tts: TTS) -> list[str]:
+    texts = render_texts(CHECK_BANK, CHECK_PERSONA["colours"], CHECK_PERSONA["fillers"])
+    for text in texts:
+        tts.synth(text)
+    return texts
+
+
+def test_check_passes_when_every_clip_is_cached(cache_tts, capsys) -> None:
+    texts = render_all(cache_tts)
+    assert check_clips(CHECK_BANK, CHECK_PERSONA, cache_tts) == 0
+    assert f"{len(texts)} of {len(texts)} clips are cached" in capsys.readouterr().out
+
+
+def test_check_names_a_missing_line_and_fails(cache_tts, capsys) -> None:
+    render_all(cache_tts)
+    cache_tts.cache_path("Off again.").unlink()
+    assert check_clips(CHECK_BANK, CHECK_PERSONA, cache_tts) == 1
+    assert "missing: 'Off again.'" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("clip", ["again.", "hold six", "pink", "up and left", "Right. Listen."])
+def test_check_covers_slot_pieces_fragments_and_fillers(cache_tts, clip: str) -> None:
+    texts = render_all(cache_tts)
+    cache_tts.cache_path(clip).unlink()
+    assert missing_clips(texts, cache_tts) == [clip]
+
+
+def test_a_corrupt_clip_counts_as_missing(cache_tts) -> None:
+    texts = render_all(cache_tts)
+    cache_tts.cache_path("Off again.").write_bytes(b"not audio")
+    assert missing_clips(texts, cache_tts) == ["Off again."]
+
+
+def test_clips_from_another_voice_do_not_count(cache_tts, tmp_path) -> None:
+    render_all(cache_tts)
+    other = TTS(SilentEngine(), TTSParams(cache_dir=tmp_path))
+    other.engine.voice_id = lambda: "another"
+    assert check_clips(CHECK_BANK, CHECK_PERSONA, other) == 1
+
+
+def test_an_empty_bank_fails_rather_than_passing_on_nothing(cache_tts) -> None:
+    assert check_clips({}, CHECK_PERSONA, cache_tts) == 1
+
+
+def test_render_fills_gaps_without_touching_the_bank(cache_tts, tmp_path, monkeypatch) -> None:
+    bank_path = tmp_path / "phrasebank.json"
+    bank_path.write_text(json.dumps(CHECK_BANK), encoding="utf-8")
+    before = bank_path.read_bytes()
+    monkeypatch.setattr(build_phrasebank, "BANK_PATH", bank_path)
+    monkeypatch.setattr(build_phrasebank, "make_tts", lambda *_args: cache_tts)
+    monkeypatch.setattr(build_phrasebank, "load_dotenv", lambda: None)
+    monkeypatch.setattr(build_phrasebank, "make_ask", lambda *_args: pytest.fail("called Gemini"))
+    monkeypatch.setenv("GEMINI_API_KEY", "set")
+    monkeypatch.setattr(sys, "argv", ["build_phrasebank", "--render"])
+    build_phrasebank.main()
+    assert bank_path.read_bytes() == before
+    assert cache_tts.cached("Off again.") is not None
+
+
+def test_check_never_synthesises(cache_tts) -> None:
+    cache_tts.engine.raw = lambda _text: pytest.fail("the check must not render")
+    assert check_clips(CHECK_BANK, CHECK_PERSONA, cache_tts) == 1
