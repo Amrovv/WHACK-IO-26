@@ -27,3 +27,9 @@ data/*
 # Agent context files: everyone has their own local copy, no need to track
 CLAUDE.md
 AGENTS.md
+CONTRIBUTING.md
+DELEGATION.md
+
+# Per-stage design explanations (local notes, worker-generated)
+design-stages-exp/
+
