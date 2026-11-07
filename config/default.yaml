@@ -74,5 +74,5 @@ voice:
   persona: config/personas/coach.yaml
   tts: kokoro
   output_device: null       # set to the demo speaker's name
-  llm_model: CURRENT-FLASH-LITE-MODEL  # check AI Studio at kickoff
+  llm_model: gemini-3.5-flash-lite
   debrief_first_sentence_timeout_s: 4
