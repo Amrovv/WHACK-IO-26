@@ -103,7 +103,8 @@ class Voice:
         return self._play(req, parts, text, generation)
 
     def is_speaking(self) -> bool:
-        return self._speaker.is_speaking()
+        """True for a whole debrief, gaps between sentences included, so a cue can't cut it."""
+        return self._debrief is not None or self._speaker.is_speaking()
 
     def stop(self) -> None:
         with self._lock:
