@@ -27,6 +27,10 @@ data/*
 # Agent context files: everyone has their own local copy, no need to track
 CLAUDE.md
 AGENTS.md
+
+# Local test videos for offline use; the folder is kept, its contents are not.
+videos/*
+!videos/.gitkeep
 CONTRIBUTING.md
 DELEGATION.md
 

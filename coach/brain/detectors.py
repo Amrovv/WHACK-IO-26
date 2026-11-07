@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from math import atan2, degrees, hypot
 from typing import Any
 
-from coach.brain.attempts import _value, make_event
+from coach.brain.attempts import make_event
+from coach.brain.config import cfg
 from coach.brain.features import Features, height_above
 from coach.contracts import ClimberState, CoachEvent, HoldMap, Limb
 
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DetectorContext:
-    config: Any
+    config: dict[str, Any]
     holdmap: HoldMap | None
     on_wall: bool
     last_fall_t: float | None
@@ -24,7 +25,13 @@ class DetectorContext:
 
 
 def _brain(ctx: DetectorContext, name: str) -> Any:
-    return _value(ctx.config, "brain", name)
+    return cfg(ctx.config, "brain", name)
+
+
+def _highest_contact(state: ClimberState) -> int | None:
+    return max(
+        (hold_id for hold_id in state.contacts.values() if hold_id is not None), default=None
+    )
 
 
 class Detector:
@@ -124,7 +131,11 @@ class Stalling(Detector):
                     make_event(
                         "stalling",
                         state.t,
-                        {"stage": stage, "seconds": features.hip_static_s},
+                        {
+                            "stage": stage,
+                            "seconds": features.hip_static_s,
+                            "hold_id": _highest_contact(state),
+                        },
                         ctx.config,
                     )
                 )
@@ -174,14 +185,15 @@ class FeetLow(Detector):
         if features.leg_length <= 0:
             return False, False
         lowest_foot_y = max(point[1] for point in feet if point is not None)
-        low = height_above(lowest_foot_y, state.hip[1]) / features.leg_length > float(
-            _brain(ctx, "feet_low_ratio")
-        )
+        low_ratio = height_above(lowest_foot_y, state.hip[1]) / features.leg_length
+        ratio = float(_brain(ctx, "feet_low_ratio"))
+        low = low_ratio > ratio
+        release = low_ratio > ratio * 0.95
         hands_high = all(
             height_above(shoulder[1], wrist[1]) > 0
             for shoulder, wrist in zip(shoulders, wrists, strict=True)
         )
-        return low and hands_high, low and hands_high
+        return low and hands_high, release and hands_high
 
     def _update(
         self, features: Features, state: ClimberState, ctx: DetectorContext
@@ -192,7 +204,21 @@ class FeetLow(Detector):
         fired = self._one_shot(
             condition, release, state.t, float(_brain(ctx, "debounce_ms")) / 1000
         )
-        return [make_event("feet_low", state.t, {}, ctx.config)] if fired else []
+        if not fired:
+            return []
+        feet = {Limb.LF: state.limbs.get(Limb.LF), Limb.RF: state.limbs.get(Limb.RF)}
+        trailing_foot = max(
+            (limb for limb, point in feet.items() if point is not None),
+            key=lambda limb: feet[limb][1],
+        )
+        return [
+            make_event(
+                "feet_low",
+                state.t,
+                {"hold_id": _highest_contact(state), "limb": trailing_foot.value},
+                ctx.config,
+            )
+        ]
 
 
 def direction_phrase(dx: float, dy: float) -> str:
@@ -470,7 +496,14 @@ class FeetCut(Detector):
             if (state.t - self._cut_since + 1e-9) >= feet_cut_s and not self._fired:
                 self._fired = True
                 self._last_valid = True
-                return [make_event("feet_cut", state.t, {}, ctx.config)]
+                return [
+                    make_event(
+                        "feet_cut",
+                        state.t,
+                        {"hold_id": _highest_contact(state)},
+                        ctx.config,
+                    )
+                ]
         else:
             self._cut_since = None
 
@@ -535,7 +568,10 @@ class WeightShift(Detector):
                 make_event(
                     "weight_shift",
                     state.t,
-                    {"foot": supporting_foot.value},
+                    {
+                        "foot": supporting_foot.value,
+                        "hold_id": state.contacts.get(supporting_foot),
+                    },
                     ctx.config,
                 )
             ]

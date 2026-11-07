@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from coach.brain.features import Features
 from coach.brain.memory import Memory
 from coach.contracts import AttemptSummary, ClimberState, CoachEvent, Limb, SpokenLine
@@ -137,7 +139,8 @@ def test_compliance_hand_searching_touches_suggested_hold():
     )
     # CONFIG has no hand_searching priority; it is a WATCHED kind for compliance only,
     # and told_you_so is what gets emitted here.
-    assert any(e.kind == "told_you_so" for e in events)
+    told_you_so = next(e for e in events if e.kind == "told_you_so")
+    assert told_you_so.data == {"cue": "hand_searching", "hold_id": 9, "limb": "left_hand"}
 
 
 def test_uncomplied_cue_expires_without_told_you_so():
@@ -182,7 +185,91 @@ def test_debrief_fires_once_per_attempt_with_history_habits_crux():
     history, habits, crux = voice.debriefs[0]
     assert len(history) == 1
     assert habits["feet_low"]["attempts"] == 1
+    assert habits["mood"] == "neutral"
     assert crux is None  # only one attempt
     # A second, distinct attempt debriefs again.
     mem.on_attempt_end(summary(2))
     assert len(voice.debriefs) == 2
+
+
+class AsyncFakeVoice(FakeVoice):
+    async def debrief(self, history, habits, crux_hold):
+        await asyncio.sleep(0)
+        self.debriefs.append((list(history), habits, crux_hold))
+
+
+async def test_debrief_task_is_retained_until_complete():
+    voice = AsyncFakeVoice()
+    mem = Memory(voice, CONFIG)
+
+    mem.on_attempt_end(summary(1))
+
+    assert len(mem._debrief_tasks) == 1
+    await asyncio.gather(*mem._debrief_tasks)
+    assert mem._debrief_tasks == []
+
+
+def test_summary_records_given_and_followed_cues_per_attempt():
+    mem = Memory(FakeVoice(), CONFIG)
+    mem.on_event(CoachEvent(t=10.0, kind="stalling", priority=1, ttl_s=1.2))
+    mem.observe(st(9.9), feat())
+    mem.on_spoken(SpokenLine(t_event=10.0, t_audio_start=10.0, kind="stalling", text="move"))
+    mem.observe(st(10.2), feat(hip_speed=0.1, highest_hold_id=3))
+
+    result = summary(1)
+    mem.on_attempt_end(result)
+
+    assert result.cues_given == ["stalling"]
+    assert result.cues_followed == ["stalling"]
+
+
+def test_summary_records_stall_seconds_per_attempt():
+    mem = Memory(FakeVoice(), CONFIG)
+    mem.observe(st(0.0, contacts={Limb.LH: 7}), feat(hip_static_s=0.0))
+    mem.observe(st(1.5, contacts={Limb.LH: 7}), feat(hip_static_s=1.0))
+
+    result = summary(1)
+    mem.on_attempt_end(result)
+
+    assert result.stalls == [(7, 1.5)]
+
+
+def test_crux_hold_uses_cumulative_stalls_after_summary_bookkeeping():
+    mem = Memory(FakeVoice(), CONFIG)
+    mem.observe(st(0.0, contacts={Limb.LH: 7}), feat(hip_static_s=0.0))
+    mem.observe(st(6.0, contacts={Limb.LH: 7}), feat(hip_static_s=1.0))
+    first = summary(1)
+    mem.on_attempt_end(first)
+
+    mem.on_attempt_end(summary(2, outcome="fall", high=5))
+
+    assert first.stalls == [(7, 6.0)]
+    assert mem.crux_hold() == 7
+
+
+def test_crux_hold_tie_is_deterministic():
+    # When two holds have exactly equal scores (stall_seconds + 5*falls),
+    # crux_hold() must return the same hold on every call.  We don't prescribe
+    # WHICH hold wins (Python set iteration order over equal-score keys is
+    # implementation-defined), only that the result is consistent.
+    mem = Memory(FakeVoice(), CONFIG)
+
+    # Arrange: hold 3 and hold 7 each accumulate exactly 5 stall-seconds and
+    # 0 falls → both have score 5.0.  We use two attempts to satisfy the
+    # "at least two attempts" guard.
+    mem.observe(st(0.0, contacts={Limb.LH: 3}), feat(hip_static_s=0.0))
+    mem.observe(st(5.0, contacts={Limb.LH: 3}), feat(hip_static_s=1.0))  # ~5 s at hold 3
+    mem.on_attempt_end(summary(1))
+
+    mem.observe(st(10.0, contacts={Limb.LH: 7}), feat(hip_static_s=0.0))
+    mem.observe(st(15.0, contacts={Limb.LH: 7}), feat(hip_static_s=1.0))  # ~5 s at hold 7
+    mem.on_attempt_end(summary(2))
+
+    # Both holds must have been recorded.
+    assert 3 in mem._stall_seconds and 7 in mem._stall_seconds
+
+    # The result must be the same hold on every call.
+    first_result = mem.crux_hold()
+    assert first_result is not None
+    for _ in range(10):
+        assert mem.crux_hold() == first_result, "crux_hold() is not deterministic for tied scores"

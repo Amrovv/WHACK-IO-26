@@ -21,9 +21,7 @@ def to_jsonable(obj: Any) -> Any:
     if isinstance(obj, Enum):
         return obj.value
     if isinstance(obj, dict):
-        return {
-            (k.value if isinstance(k, Enum) else k): to_jsonable(v) for k, v in obj.items()
-        }
+        return {(k.value if isinstance(k, Enum) else k): to_jsonable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [to_jsonable(v) for v in obj]
     return obj
@@ -85,9 +83,7 @@ if __name__ == "__main__":
         bus = Bus()
         bus.bind_loop()
         queue = bus.subscribe("event")
-        bus.publish(
-            "event", CoachEvent(t=time.monotonic(), kind="top", priority=0, ttl_s=2.0)
-        )
+        bus.publish("event", CoachEvent(t=time.monotonic(), kind="top", priority=0, ttl_s=2.0))
         got = await queue.get()
         print(f"received: {got}")
 

@@ -234,3 +234,41 @@ def test_every_suppressed_candidate_is_published() -> None:
     assert len(published) == len(candidates)
     assert all(topic == "suppressed" for topic, _ in published)
     assert all(isinstance(payload, Suppressed) for _, payload in published)
+
+
+def test_budget_unblocks_when_only_oldest_exits_window() -> None:
+    # The budget must unblock as soon as the OLDEST spoken timestamp exits the
+    # rolling window, without waiting for all entries to expire.
+    clock, voice, published = FakeClock(now=10.0), FakeVoice(), []
+    arbiter = Arbiter(
+        voice,
+        config(budget_lines=3.0, budget_window_s=10.0),
+        clock=clock,
+        publish=lambda topic, payload: published.append((topic, payload)),
+    )
+
+    # Fill the budget: speak 3 events at t=10, t=11, t=12.
+    for index in range(3):
+        candidate = event(f"kind-fill-{index}", t=clock.now, ttl=60.0)
+        arbiter.offer(candidate, 1, "neutral")
+        assert arbiter.tick() is candidate, f"fill event {index} should have been spoken"
+        voice.speaking = False
+        clock.advance(1.0)
+    # clock is now at 13.0; spoken_times = [10, 11, 12]; budget full.
+
+    blocked = event("blocked", t=clock.now, ttl=60.0)
+    arbiter.offer(blocked, 1, "neutral")
+    assert arbiter.tick() is None
+    assert reasons(published)[-1] == "budget"
+
+    # Advance to just past when the OLDEST entry (t=10) exits the 10-second window.
+    # At now=20.1: cutoff = 20.1 - 10 = 10.1 > 10 → oldest trimmed.
+    # spoken_times = [11, 12]; len=2 < 3 → budget available.
+    # The two remaining entries (11, 12) are still inside the window (11+10=21 > 20.1).
+    clock.advance(7.1)  # 13.0 + 7.1 = 20.1
+    blocked2 = event("unblocked", t=clock.now, ttl=60.0)
+    arbiter.offer(blocked2, 1, "neutral")
+    assert arbiter.tick() is blocked2, (
+        "budget should unblock once the oldest entry exits the window, "
+        "even if other entries are still inside it"
+    )

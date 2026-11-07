@@ -209,6 +209,7 @@ def test_feet_cut_timing_and_reset():
     events = detector.update(feature(), state(0.41, contacts=c_cut), context)
     assert len(events) == 1
     assert events[0].kind == "feet_cut"
+    assert events[0].data["hold_id"] == 6
     assert detector.still_valid(events[0], state(0.41, contacts=c_cut))
 
     # t=0.5: still in the same cut episode -> does not re-fire
@@ -251,6 +252,7 @@ def test_weight_shift_conditions_and_debouncing():
     assert len(events) == 1
     assert events[0].kind == "weight_shift"
     assert events[0].data["foot"] == "left_foot"
+    assert events[0].data["hold_id"] == 1
 
     # Hip directly over foot (dx <= threshold) -> does not trigger
     det_centered = WeightShift()
@@ -321,3 +323,38 @@ def test_good_tier_detectors_factory():
         "FeetCut",
         "WeightShift",
     ]
+
+
+def test_quiet_feet_does_not_fire_on_alternating_holds():
+    # A foot alternating between hold A and hold B (not returning to the SAME
+    # hold) must NOT trigger QuietFeet.  Only same-hold re-contact within the
+    # window is a fidget; moving to a different hold is normal footwork.
+    detector = QuietFeet()
+    context = ctx()
+
+    # Phase 1: LF touches hold 4, then hold 5 (never re-contacts hold 4).
+    c_a = {Limb.LF: 4, Limb.RF: 2, Limb.LH: 6, Limb.RH: 7}
+    c_none = {Limb.LF: None, Limb.RF: 2, Limb.LH: 6, Limb.RH: 7}
+    c_b = {Limb.LF: 5, Limb.RF: 2, Limb.LH: 6, Limb.RH: 7}
+
+    # t=0.0: LF on hold 4.
+    assert detector.update(feature(), state(0.0, contacts=c_a), context) == []
+    # t=0.1: LF leaves hold 4.
+    assert detector.update(feature(), state(0.1, contacts=c_none), context) == []
+    # t=0.3: LF lands on hold 5 (not hold 4) → no quiet_feet.
+    assert detector.update(feature(), state(0.3, contacts=c_b), context) == []
+
+    # Phase 2: LF leaves hold 5, then returns to hold 4 → still not same hold
+    # as the last left hold (hold 5), so no event.
+    # t=0.5: LF leaves hold 5.
+    assert detector.update(feature(), state(0.5, contacts=c_none), context) == []
+    # t=0.7: LF returns to hold 4, but _last_hold[LF] is 5, not 4 → no event.
+    assert detector.update(feature(), state(0.7, contacts=c_a), context) == []
+
+    # Phase 3: Confirm it still fires for a true same-hold fidget.
+    # LF leaves hold 4, then immediately re-contacts hold 4 within window.
+    assert detector.update(feature(), state(0.9, contacts=c_none), context) == []
+    events = detector.update(feature(), state(1.1, contacts=c_a), context)
+    assert len(events) == 1
+    assert events[0].kind == "quiet_feet"
+    assert events[0].data["hold_id"] == 4

@@ -2,27 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
 
+from coach.brain.config import cfg
 from coach.brain.features import Features, height_above
 from coach.contracts import AttemptSummary, ClimberState, CoachEvent, HoldMap, Limb
 
 
-def _section(config: Mapping[str, Any] | object, name: str) -> Any:
-    if isinstance(config, Mapping):
-        return config[name]
-    return getattr(config, name)
-
-
-def _value(config: Mapping[str, Any] | object, section: str, name: str) -> Any:
-    part = _section(config, section)
-    return part[name] if isinstance(part, Mapping) else getattr(part, name)
-
-
-def make_event(kind: str, t: float, data: dict, config: Mapping[str, Any] | object) -> CoachEvent:
-    priority = int(_value(config, "brain", "priorities")[kind])
-    ttl = float(_value(config, "arbiter", "ttl_s")[f"p{priority}"])
+def make_event(kind: str, t: float, data: dict, config: dict[str, Any]) -> CoachEvent:
+    priority = int(cfg(config, "brain", "priorities")[kind])
+    ttl = float(cfg(config, "arbiter", "ttl_s")[f"p{priority}"])
     return CoachEvent(t=t, kind=kind, priority=priority, ttl_s=ttl, data=data)
 
 
@@ -33,7 +22,7 @@ class AttemptTracker:
     only events so callers can publish events without special tuple handling.
     """
 
-    def __init__(self, holdmap: HoldMap | None, config: Mapping[str, Any] | object) -> None:
+    def __init__(self, holdmap: HoldMap | None, config: dict[str, Any]) -> None:
         self.holdmap = holdmap
         self.config = config
         self.phase = "GROUND"
@@ -58,7 +47,7 @@ class AttemptTracker:
             standing is not None
             and features.leg_length > 0
             and height_above(standing, state.hip[1])
-            >= float(_value(self.config, "brain", "on_wall_margin")) * features.leg_length
+            >= float(cfg(self.config, "brain", "on_wall_margin")) * features.leg_length
         )
 
     def _grounded(self, state: ClimberState, features: Features) -> bool:
@@ -112,7 +101,7 @@ class AttemptTracker:
             elif self._raised(state, features):
                 self._raised_since = self._raised_since or state.t
                 if state.t - self._raised_since >= float(
-                    _value(self.config, "brain", "on_wall_settle_s")
+                    cfg(self.config, "brain", "on_wall_settle_s")
                 ):
                     events.append(self._enter_wall(state))
             else:
@@ -134,7 +123,7 @@ class AttemptTracker:
 
         if self._is_top(state):
             self._top_since = self._top_since or state.t
-            if state.t - self._top_since >= float(_value(self.config, "brain", "top_hold_s")):
+            if state.t - self._top_since >= float(cfg(self.config, "brain", "top_hold_s")):
                 events.append(
                     make_event("top", state.t, {"attempt_no": self._attempt_no}, self.config)
                 )
@@ -143,19 +132,22 @@ class AttemptTracker:
         else:
             self._top_since = None
 
-        if features.hip_velocity_y > float(_value(self.config, "brain", "fall_speed")):
+        if features.hip_velocity_y > float(cfg(self.config, "brain", "fall_speed")):
             self._fall_seen = True
         if self._grounded(state, features):
             self._ground_since = self._ground_since or state.t
-            if state.t - self._ground_since >= float(
-                _value(self.config, "brain", "ground_settle_s")
-            ):
+            if state.t - self._ground_since >= float(cfg(self.config, "brain", "ground_settle_s")):
                 outcome = "fall" if self._fall_seen else "downclimb"
                 # Only "fall" is a spoken event kind; "downclimb" just closes the attempt
                 # quietly (it is an AttemptSummary outcome, not one of EVENT_KINDS).
                 if outcome == "fall":
                     events.append(
-                        make_event("fall", state.t, {"attempt_no": self._attempt_no}, self.config)
+                        make_event(
+                            "fall",
+                            state.t,
+                            {"attempt_no": self._attempt_no, "hold_id": self._attempt_high},
+                            self.config,
+                        )
                     )
                 self._finish(state, outcome)
         else:
