@@ -131,7 +131,7 @@ class Speaker:
         """Fade out over ~20 ms, then clear the buffer."""
         with self._lock:
             remaining = self._buf.size - self._pos
-            if remaining <= 0:
+            if remaining <= 0 or self._fade_left > 0:  # nothing playing, or already fading
                 return
             self._fade_total = self._fade_left = min(self._fade_n, remaining)
             # Truncate so playback ends exactly when the fade does.

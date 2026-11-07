@@ -87,3 +87,19 @@ def test_elevenlabs_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     with pytest.raises(RuntimeError):
         ElevenLabsTTS(TTSParams())
+
+
+def test_params_from_persona_voice_key() -> None:
+    assert TTSParams.from_config({}, {"voice": "bm_george"}).kokoro_voice == "bm_george"
+    p = TTSParams.from_config({}, {"voice": {"kokoro_voice": "bm_lewis", "speed": 0.9}})
+    assert (p.kokoro_voice, p.speed) == ("bm_lewis", 0.9)
+
+
+def test_persona_tts_block_beats_voice_key() -> None:
+    persona = {"voice": {"speed": 0.9}, "tts": {"speed": 1.1}}
+    assert TTSParams.from_config({}, persona).speed == 1.1
+
+
+def test_unknown_persona_setting_warns(caplog: pytest.LogCaptureFixture) -> None:
+    TTSParams.from_config({}, {"voice": {"nme": "bm_george"}})
+    assert "nme" in caplog.text

@@ -3,7 +3,8 @@
 Engines (config voice.tts): kokoro (default, local), elevenlabs (offline phrase-bank builder
 only, needs ELEVENLABS_API_KEY), say (macOS fallback).
 
-Persona YAML may carry a `tts:` block; all keys optional:
+Persona YAML may carry a `voice:` key and/or a `tts:` block; all keys optional, `tts:` wins:
+    voice: af_heart  (or voice: {kokoro_voice: af_heart, speed: 1.0})
     tts: {kokoro_voice: af_heart, speed: 1.0, elevenlabs_voice_id: ..., say_voice: Samantha}
 """
 
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
+from dotenv import load_dotenv
 
 log = logging.getLogger(__name__)
 
@@ -60,11 +62,17 @@ class TTSParams:
 
     @classmethod
     def from_config(cls, cfg: dict | None = None, persona: dict | None = None) -> TTSParams:
-        """Build from the `voice` config section (tts_* keys) and a persona's `tts` block."""
+        """Build from the `voice` config section (`tts_params` key) and a persona's settings."""
+        persona = persona or {}
+        voice = persona.get("voice") or {}
+        if isinstance(voice, str):
+            voice = {"kokoro_voice": voice}
         merged: dict[str, Any] = {}
-        for src in ((cfg or {}).get("tts_params") or {}, (persona or {}).get("tts") or {}):
+        for src in ((cfg or {}).get("tts_params") or {}, voice, persona.get("tts") or {}):
             merged.update(src)
         known = {k: v for k, v in merged.items() if k in cls.__dataclass_fields__}
+        if unknown := sorted(set(merged) - set(known)):
+            log.warning("ignoring unknown TTS settings: %s", unknown)
         if "cache_dir" in known:
             known["cache_dir"] = Path(known["cache_dir"])
         return cls(**known)
@@ -295,6 +303,7 @@ def main() -> None:
     ap.add_argument("--engine", help="engine for a one-off synth (default: kokoro)")
     ap.add_argument("--text", default="Feet up, you're dangling.")
     args = ap.parse_args()
+    load_dotenv()
     params = TTSParams()
     if args.bench:
         bench(params)
