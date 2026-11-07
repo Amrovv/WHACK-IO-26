@@ -35,6 +35,14 @@ brain:
   cue_mute_hip_speed: 0.6           # suppress cue detectors while hip speed exceeds this
   next_hold_distance_penalty: 0.5   # weight on distance when scoring HandSearching's next hold
 
+  # Memory + compliance (B5)
+  compliance_window_s: 3.0          # watch this long after a cue for the expected change
+  compliance_progress_s: 5.0        # a followed cue + new higher hold within this = told_you_so
+  arms_bent_comply_margin_deg: 10   # elbows must exceed arms_bent_deg + this to count as complied
+  feet_low_comply_rise_ratio: 0.3   # lowest foot must rise this * leg_length to count as complied
+  mood_impressed_rate: 0.6          # compliance rate over last 2 attempts above this = impressed
+  mood_exasperated_attempts: 3      # same habit firing in this many attempts = exasperated
+
   priorities:               # event kind -> arbiter priority (0 big moment, 1 cue, 2 banter)
     attempt_start: 2
     hand_searching: 1
