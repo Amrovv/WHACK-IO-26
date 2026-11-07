@@ -6,6 +6,7 @@ from coach.brain.detectors import (
     ArmsBent,
     DetectorContext,
     FeetLow,
+    HandSearching,
     Stalling,
     mvp_detectors,
 )
@@ -131,3 +132,77 @@ def test_gate(context):
 
 def test_missing_optional_integration_data_is_skipped():
     pytest.skip("optional labelled footage is not present in this checkout")
+
+
+def test_feet_low_release_band_suppresses_refiring():
+    # After FeetLow fires, hovering the ratio just below the trigger threshold
+    # but above the 95% release band should NOT re-arm the detector.
+    # feet_low_ratio = 0.9; theoretical release = 0.9 * 0.95 = 0.855.
+    #
+    # NOTE: The current _condition() implementation returns the same boolean
+    # for both the trigger and the release, so there is no actual 95% hysteresis
+    # band: once the condition becomes False (foot rises above 0.9 * leg_length),
+    # _active is immediately cleared and the detector re-arms.  This test
+    # documents the INTENDED behaviour; it is marked xfail because the band is
+    # not yet implemented.
+    pytest.xfail(
+        "FeetLow._condition() returns the same value for trigger and release - "
+        "the 95% hysteresis band described in the comment is not implemented"
+    )
+
+    # --- code below documents the intended behaviour once the band is added ---
+    kp_high_hands = {
+        "left_shoulder": (0.4, 0.4, 1),
+        "right_shoulder": (0.6, 0.4, 1),
+        "left_wrist": (0.4, 0.2, 1),
+        "right_wrist": (0.6, 0.2, 1),
+    }
+    # leg_length = 0.3; ratio = 0.9; threshold = 0.27.
+    # Foot at y=0.9, hip at y=0.5 → height_above(0.9, 0.5)/0.3 = 1.33 > 0.9 → fires.
+    # At 94% → 0.9*0.3*0.94 = 0.254; height 0.254 / 0.3 = 0.847 < 0.9 (below trigger)
+    # but > 0.855 (above release), so _active should stay True and NOT re-fire.
+    detector = FeetLow()
+    f = feature(leg_length=0.3)
+    limbs_fire = {Limb.LF: (0.4, 0.9), Limb.RF: (0.6, 0.9)}  # low
+    # Debounce fires after 0.4 s.
+    assert detector.update(f, state(0, limbs=limbs_fire, keypoints=kp_high_hands), ctx()) == []
+    fired = detector.update(
+        f, state(0.4, limbs=limbs_fire, keypoints=kp_high_hands, contacts={Limb.LH: 4}), ctx()
+    )
+    assert len(fired) == 1 and fired[0].kind == "feet_low"
+    # Hover at 94% of trigger threshold (between release and trigger): must NOT re-fire.
+    limbs_hover = {Limb.LF: (0.4, 0.75), Limb.RF: (0.6, 0.75)}  # above 95% band, below trigger
+    assert detector.update(f, state(0.8, limbs=limbs_hover, keypoints=kp_high_hands), ctx()) == []
+    # Drop back past the release threshold: must re-arm and eventually re-fire.
+    limbs_low_again = {Limb.LF: (0.4, 0.95), Limb.RF: (0.6, 0.95)}
+    assert (
+        detector.update(f, state(1.2, limbs=limbs_low_again, keypoints=kp_high_hands), ctx()) == []
+    )
+    fired2 = detector.update(
+        f, state(1.6, limbs=limbs_low_again, keypoints=kp_high_hands, contacts={Limb.LH: 4}), ctx()
+    )
+    assert len(fired2) == 1 and fired2[0].kind == "feet_low"
+
+
+def test_hand_searching_discards_holds_beyond_arm_length():
+    # HandSearching must skip any candidate hold whose shoulder→hold distance
+    # exceeds arm_length, even if that hold would otherwise score higher.
+    #
+    # Setup: shoulder at (0.5, 0.4). arm_length = 0.3.
+    # Hold A at (0.55, 0.2): reach = hypot(0.05, 0.2) ≈ 0.206 < 0.3  → in reach.
+    # Hold B at (0.9, 0.2): reach = hypot(0.4, 0.2) ≈ 0.447 > 0.3  → out of reach.
+    # Hold B is higher (y=0.2) so it would score more by height; it must be excluded.
+
+    holds = [
+        Hold(3, (0.55, 0.2), (0, 0, 0, 0)),  # in reach
+        Hold(9, (0.90, 0.2), (0, 0, 0, 0)),  # beyond arm_length; higher score if reachable
+    ]
+    holdmap = HoldMap("p", "red", holds, (100, 100), "manual")
+    # LH at (0.5, 0.5), shoulder at (0.5, 0.4).
+    limbs = {Limb.LH: (0.5, 0.5), Limb.RH: (0.8, 0.8), Limb.LF: (0.4, 0.9), Limb.RF: (0.6, 0.9)}
+    kp = {"left_shoulder": (0.5, 0.4, 1.0), "right_shoulder": (0.8, 0.7, 1.0)}
+    detector = HandSearching()
+    f = feature(hand_moving_no_contact_s={Limb.LH: 0.4}, arm_length=0.3)
+    events = detector.update(f, state(0, limbs=limbs, keypoints=kp), ctx(holdmap=holdmap))
+    assert len(events) == 1
+    assert events[0].data["hold_id"] == 3, "expected in-reach hold 3, but got out-of-reach hold 9"

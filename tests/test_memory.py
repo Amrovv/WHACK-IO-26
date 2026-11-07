@@ -245,3 +245,31 @@ def test_crux_hold_uses_cumulative_stalls_after_summary_bookkeeping():
 
     assert first.stalls == [(7, 6.0)]
     assert mem.crux_hold() == 7
+
+
+def test_crux_hold_tie_is_deterministic():
+    # When two holds have exactly equal scores (stall_seconds + 5*falls),
+    # crux_hold() must return the same hold on every call.  We don't prescribe
+    # WHICH hold wins (Python set iteration order over equal-score keys is
+    # implementation-defined), only that the result is consistent.
+    mem = Memory(FakeVoice(), CONFIG)
+
+    # Arrange: hold 3 and hold 7 each accumulate exactly 5 stall-seconds and
+    # 0 falls → both have score 5.0.  We use two attempts to satisfy the
+    # "at least two attempts" guard.
+    mem.observe(st(0.0, contacts={Limb.LH: 3}), feat(hip_static_s=0.0))
+    mem.observe(st(5.0, contacts={Limb.LH: 3}), feat(hip_static_s=1.0))  # ~5 s at hold 3
+    mem.on_attempt_end(summary(1))
+
+    mem.observe(st(10.0, contacts={Limb.LH: 7}), feat(hip_static_s=0.0))
+    mem.observe(st(15.0, contacts={Limb.LH: 7}), feat(hip_static_s=1.0))  # ~5 s at hold 7
+    mem.on_attempt_end(summary(2))
+
+    # Both holds must have been recorded.
+    assert 3 in mem._stall_seconds and 7 in mem._stall_seconds
+
+    # The result must be the same hold on every call.
+    first_result = mem.crux_hold()
+    assert first_result is not None
+    for _ in range(10):
+        assert mem.crux_hold() == first_result, "crux_hold() is not deterministic for tied scores"
