@@ -8,6 +8,7 @@ perception:
   contact_margin: 0.2       # x arm length, around each hold box
   contact_settle_ms: 150
   contact_release_ratio: 1.6   # release box = margin x this (hysteresis)
+  contact_dip_frames: 3        # keep a contact through a visibility dip this short
   contact_still_speed: 0.4     # limb is 'still' below this speed (normalised units per second)
   min_visibility: 0.4          # landmarks below this give no contact and freeze the limb point
   resume_visibility: 0.7       # a frozen limb follows the pose again only above this...

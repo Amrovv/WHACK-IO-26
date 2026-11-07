@@ -106,13 +106,23 @@ class ContactTracker:
                 if self._low_vis[limb] > self._cfg["lost_memory_frames"]:
                     self._on[limb], self._still_since[limb] = None, None
                     self._prev.pop(limb, None)
-                contacts[limb] = None
+                # A one-or-two-frame visibility dip keeps the contact the limb already had (the
+                # point is frozen meanwhile); a longer one reports no contact.
+                dip = self._low_vis[limb] <= self._cfg.get("contact_dip_frames", 0)
+                contacts[limb] = self._on[limb] if dip else None
                 continue
             self._low_vis[limb] = 0
             self._update_stillness(limb, state.t, point)
             held = self._by_id.get(self._on[limb]) if self._on[limb] is not None else None
             if held is not None and self._reach(held, point, release_margin) is not None:
-                contacts[limb] = held.id  # hysteresis: stay on until clearly outside
+                # hysteresis: stay on until clearly outside, unless the point is now ON another
+                # hold while only near this one (an overlapping neighbour must not keep it)
+                if self._reach(held, point, 0.0) is None:
+                    inside = self._holds_containing(point)
+                    if inside is not None:
+                        self._on[limb] = contacts[limb] = inside
+                        continue
+                contacts[limb] = held.id
                 continue
             self._on[limb] = None
             since = self._still_since[limb]
@@ -149,6 +159,17 @@ class ContactTracker:
         if not _inside(point, hold.bbox, margin):
             return None
         return _distance_to_box(point, hold.bbox)
+
+    def _holds_containing(self, point: Point) -> int | None:
+        """The polygon hold the point is on (nearest centre if several), else None. Only polygons
+        count: a plain box is a loose approximation, so being inside one does not take a limb away
+        from the hold it is already on."""
+        on = [
+            (_dist(point, h.center), h.id)
+            for h in self._holds
+            if h.id in self._shapes and self._reach(h, point, 0.0) == 0.0
+        ]
+        return min(on)[1] if on else None
 
     def _nearest_hold(self, point: Point, margin: float) -> int | None:
         reached = []

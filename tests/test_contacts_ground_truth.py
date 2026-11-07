@@ -49,9 +49,7 @@ TRUTH = {  # frame -> {limb: hold id or None}
 }
 KNOWN_MISSES = {
     (150, RF),  # settles 0.15 s after stepping from hold 1 to 2, so f150 is just inside the window
-    (180, RH),
     (240, RH),  # still inside hold 4's box at its top edge; releases at f246 (hysteresis lag)
-    (450, LH),
 }
 
 
