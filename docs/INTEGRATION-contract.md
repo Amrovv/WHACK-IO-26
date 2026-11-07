@@ -91,3 +91,15 @@ file replays and the live camera diverge.
 extra fields per hold (e.g. an optional `"polygon"` for diagonal holds) for perception's own
 use — `scripts/replay_brain.py` and any other `Hold` loader must build `Hold` from only the
 four contract fields and ignore the rest, never `Hold(**hold)`.
+
+## Known decision: `high_point` / `highest_hold_id` counts feet, not just hands
+
+`FeatureTracker.highest_hold_id` and `AttemptTracker`'s `high_point` event both take the max
+hold id across **all four limbs' contacts**, not just the hands. This is intentional (matches
+the B guide's "highest hold touched" wording) and legitimate climbing moments (heel hooks,
+high steps) do reach a foot higher than any hand has been. If stray `high_point` cues or an
+inflated high-point number show up on real footage, the likely cause is a bad foot-contact
+reading from perception, not a brain bug — flag it rather than assuming the brain is wrong.
+Switching to hands-only is a one-line change in each of `features.py`/`attempts.py` if the
+team decides the cue should mean something different — get agreement first, it changes the
+cue's meaning, not just a threshold.
