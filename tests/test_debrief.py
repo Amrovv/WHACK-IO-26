@@ -11,8 +11,9 @@ import yaml
 from test_voice import FakeSpeaker, FakeStream, FakeTTS, Rig, bank_of
 
 import coach.voice.voice as voice_module
+from coach.brain.arbiter import Arbiter
 from coach.bus import Bus
-from coach.contracts import AttemptSummary, Limb
+from coach.contracts import AttemptSummary, CoachEvent, Limb
 from coach.voice import debrief as debrief_module
 from coach.voice.debrief import (
     DEFAULT_TIP,
@@ -34,8 +35,10 @@ from coach.voice.voice import Voice, make_voice
 FILLER = "Right. Listen."
 EARLIER_RULE = "earlier attempt"
 TIMEOUT_S = 0.05
+GAP_S = 0.2  # a pause in the stream, long enough for the speaker to go quiet
 WAIT_S = 2.0
 LATEST = "Attempt 2, you fell at hold 6."
+ARBITER = {"global_gap_s": 0, "cooldown_s": 0, "budget_lines": 9, "budget_window_s": 60}
 
 
 def counts(attempts: int, total: int) -> dict:
@@ -731,6 +734,65 @@ async def test_a_new_debrief_replaces_the_running_one() -> None:
     await asyncio.wait_for(running, WAIT_S)
     assert first.closed
     assert said[-1] == "Hold 4 again."
+
+
+async def in_the_gap_after_first_sentence(rig: Rig) -> None:
+    """Wait until the speaker has gone quiet with the next sentence still to come."""
+    await until(lambda: len(rig.speaker.played) == 2 and not rig.speaker.speaking)
+
+
+def gappy() -> Rig:
+    rig = cuttable(FakeLLM("One here. ", GAP_S, "Two here. ", timeout_s=WAIT_S))
+    rig.speaker.held = False
+    return rig
+
+
+async def test_is_speaking_stays_true_between_sentences() -> None:
+    rig = gappy()
+    task = asyncio.create_task(rig.voice.debrief(TWO_ATTEMPTS, {}, None))
+    await in_the_gap_after_first_sentence(rig)
+    assert rig.voice.is_speaking()
+    await asyncio.wait_for(task, WAIT_S)
+    assert not rig.voice.is_speaking()
+
+
+async def test_is_speaking_goes_false_as_soon_as_a_debrief_is_cut() -> None:
+    rig = gappy()
+    task = asyncio.create_task(rig.voice.debrief(TWO_ATTEMPTS, {}, None))
+    await in_the_gap_after_first_sentence(rig)
+    rig.voice.stop()
+    assert not rig.voice.is_speaking()
+    await asyncio.wait_for(task, WAIT_S)
+
+
+async def test_a_cue_in_a_gap_is_suppressed_and_the_debrief_finishes() -> None:
+    rig = gappy()
+    suppressed = []
+    arbiter = Arbiter(
+        rig.voice, ARBITER, clock=rig.clock, publish=lambda _topic, item: suppressed.append(item)
+    )
+    queue = rig.bus.subscribe("debrief_text")
+    task = asyncio.create_task(rig.voice.debrief(TWO_ATTEMPTS, {}, None))
+    await in_the_gap_after_first_sentence(rig)
+    arbiter.offer(CoachEvent(rig.clock.t, "feet_low", 1, 1.2, {}), 0, "neutral")
+    assert arbiter.tick() is None
+    await asyncio.wait_for(task, WAIT_S)
+    assert [item.reason for item in suppressed] == ["busy"]
+    assert captions(rig, queue) == [FILLER, "One here.", "Two here."]
+
+
+async def test_a_top_priority_cue_in_a_gap_still_cuts_the_debrief() -> None:
+    rig = gappy()
+    arbiter = Arbiter(rig.voice, ARBITER, clock=rig.clock)
+    queue = rig.bus.subscribe("debrief_text")
+    task = asyncio.create_task(rig.voice.debrief(TWO_ATTEMPTS, {}, None))
+    await in_the_gap_after_first_sentence(rig)
+    event = CoachEvent(rig.clock.t, "feet_low", 0, 1.2, {})
+    arbiter.offer(event, 0, "neutral")
+    assert arbiter.tick() is event
+    await asyncio.wait_for(task, WAIT_S)
+    assert captions(rig, queue) == [FILLER, "One here."]
+    assert [line.text for line in rig.lines()] == ["Feet up."]
 
 
 async def test_stop_after_a_debrief_is_harmless() -> None:
