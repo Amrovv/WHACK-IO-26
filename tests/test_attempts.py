@@ -134,8 +134,13 @@ def test_fall_summary():
     attempt, feature = make_tracker()
     run(attempt, feature, s(0))
     run(attempt, feature, s(1, contacts={Limb.LF: 1, Limb.RF: 1}))
-    run(attempt, feature, s(1.5, hip=0.45, contacts={limb: None for limb in Limb}))
+    run(
+        attempt,
+        feature,
+        s(1.5, hip=0.45, contacts={Limb.LH: 1, Limb.RH: None, Limb.LF: None, Limb.RF: None}),
+    )
     run(attempt, feature, s(1.8, hip=0.8, contacts={limb: None for limb in Limb}))
     events = run(attempt, feature, s(3, hip=0.7, contacts={limb: None for limb in Limb}))
     assert "fall" in [e.kind for e in events]
+    assert next(e for e in events if e.kind == "fall").data["hold_id"] == 1
     assert attempt.finished_attempts[-1].outcome == "fall"

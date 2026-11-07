@@ -65,8 +65,13 @@ def test_stalling_escalates_and_resets():
     detector = Stalling()
     events = []
     for t, seconds in ((0, 3.9), (0.4, 4), (4.4, 7), (7.4, 10), (7.8, 10)):
-        events += detector.update(feature(hip_static_s=seconds), state(t), ctx())
+        events += detector.update(
+            feature(hip_static_s=seconds),
+            state(t, contacts={Limb.LH: 3, Limb.RH: 5}),
+            ctx(),
+        )
     assert [(event.data["stage"]) for event in events] == [0, 1, 2]
+    assert all(event.data["hold_id"] == 5 for event in events)
     assert detector.still_valid(events[-1], state(8))
     detector.update(feature(hip_static_s=0, hip_speed=0.1), state(8), ctx())
     assert not detector.still_valid(events[-1], state(8))
@@ -93,7 +98,11 @@ def test_feet_low_requires_high_hands():
     detector = FeetLow()
     f = feature(leg_length=0.3)
     assert detector.update(f, state(0, limbs=limbs, keypoints=kp), ctx()) == []
-    assert detector.update(f, state(0.4, limbs=limbs, keypoints=kp), ctx())[0].kind == "feet_low"
+    event = detector.update(f, state(0.4, limbs=limbs, keypoints=kp, contacts={Limb.LH: 4}), ctx())[
+        0
+    ]
+    assert event.kind == "feet_low"
+    assert event.data == {"hold_id": 4, "limb": Limb.LF.value}
     low_kp = {**kp, "left_wrist": (0.4, 0.5), "right_wrist": (0.6, 0.5)}
     assert detector.update(f, state(1, limbs=limbs, keypoints=low_kp), ctx()) == []
 

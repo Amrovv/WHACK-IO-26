@@ -209,6 +209,7 @@ def test_feet_cut_timing_and_reset():
     events = detector.update(feature(), state(0.41, contacts=c_cut), context)
     assert len(events) == 1
     assert events[0].kind == "feet_cut"
+    assert events[0].data["hold_id"] == 6
     assert detector.still_valid(events[0], state(0.41, contacts=c_cut))
 
     # t=0.5: still in the same cut episode -> does not re-fire
@@ -251,6 +252,7 @@ def test_weight_shift_conditions_and_debouncing():
     assert len(events) == 1
     assert events[0].kind == "weight_shift"
     assert events[0].data["foot"] == "left_foot"
+    assert events[0].data["hold_id"] == 1
 
     # Hip directly over foot (dx <= threshold) -> does not trigger
     det_centered = WeightShift()
