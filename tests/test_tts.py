@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -12,6 +13,7 @@ from coach.voice.tts import (
     make_tts,
     normalise_loudness,
     trim_silence,
+    with_overrides,
 )
 
 
@@ -103,3 +105,47 @@ def test_persona_tts_block_beats_voice_key() -> None:
 def test_unknown_persona_setting_warns(caplog: pytest.LogCaptureFixture) -> None:
     TTSParams.from_config({}, {"voice": {"nme": "bm_george"}})
     assert "nme" in caplog.text
+
+
+def test_overrides_beat_persona_and_leave_it_unchanged() -> None:
+    persona = {"voice": {"kokoro_voice": "bm_lewis", "kokoro_lang": "b", "speed": 0.95}}
+    p = TTSParams.from_config({}, with_overrides(persona, "am_onyx", 1.1))
+    assert (p.kokoro_voice, p.kokoro_lang, p.speed) == ("am_onyx", "a", 1.1)
+    assert "tts" not in persona
+
+
+def test_no_overrides_keep_persona_settings() -> None:
+    persona = {"voice": {"kokoro_voice": "bm_lewis", "kokoro_lang": "b", "speed": 0.95}}
+    p = TTSParams.from_config({}, with_overrides(persona, None, None))
+    assert (p.kokoro_voice, p.kokoro_lang, p.speed) == ("bm_lewis", "b", 0.95)
+
+
+def test_cached_finds_rendered_clips_without_synthesising(tmp_path: Path) -> None:
+    pipeline = FakePipeline()
+    params = TTSParams(cache_dir=tmp_path)
+    tts = TTS(KokoroTTS(params, pipeline=pipeline), params)
+    assert tts.cached("Feet up.") is None
+    assert pipeline.calls == 0
+    audio = tts.synth("Feet up.")
+    np.testing.assert_array_equal(tts.cached("Feet up."), audio)
+    assert pipeline.calls == 1
+
+
+def test_cached_treats_a_corrupt_file_as_missing(tmp_path: Path) -> None:
+    params = TTSParams(cache_dir=tmp_path)
+    tts = TTS(KokoroTTS(params, pipeline=FakePipeline()), params)
+    tts.cache_path("Feet up.").write_bytes(b"not a numpy file")
+    assert tts.cached("Feet up.") is None
+
+
+def test_warmup_runs_a_real_inference_without_touching_the_cache(tmp_path: Path) -> None:
+    pipeline = FakePipeline()
+    params = TTSParams(cache_dir=tmp_path)
+    TTS(KokoroTTS(params, pipeline=pipeline), params).warmup()
+    assert pipeline.calls == 1
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_warmup_is_a_no_op_for_engines_without_one(tmp_path: Path) -> None:
+    params = TTSParams(cache_dir=tmp_path)
+    TTS(SimpleNamespace(), params).warmup()

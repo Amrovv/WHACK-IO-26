@@ -27,12 +27,14 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
+import yaml
 from dotenv import load_dotenv
 
 log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 24_000
 CACHE_DIR = Path("data/audio_cache")
+CONFIG_PATH = Path("config/default.yaml")
 BENCH_LINES = (
     "Feet up, you're dangling.",
     "Nice, keep that hip in.",
@@ -41,6 +43,7 @@ BENCH_LINES = (
     "That was close, try the left foot higher.",
 )
 SAY_BASE_WPM = 175
+WARMUP_TEXT = "Ready."
 ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice}?output_format=pcm_24000"
 
 
@@ -67,6 +70,7 @@ class TTSParams:
         voice = persona.get("voice") or {}
         if isinstance(voice, str):
             voice = {"kokoro_voice": voice}
+        voice = {k: v for k, v in voice.items() if k != "tone"}  # `tone` is for the LLM prompt
         merged: dict[str, Any] = {}
         for src in ((cfg or {}).get("tts_params") or {}, voice, persona.get("tts") or {}):
             merged.update(src)
@@ -144,7 +148,8 @@ class KokoroTTS:
         return self._pipeline
 
     def warmup(self) -> None:
-        self._get_pipeline()
+        """Load the model and voice pack and run the first inference, the slow one-off steps."""
+        self.raw(WARMUP_TEXT)
 
     def raw(self, text: str) -> np.ndarray:
         gen = self._get_pipeline()(text, voice=self.p.kokoro_voice, speed=self.p.speed)
@@ -231,15 +236,29 @@ class TTS:
         key = json.dumps([self.engine.name, self.engine.voice_id(), self.engine.speed(), text])
         return self.p.cache_dir / f"{hashlib.sha256(key.encode()).hexdigest()[:32]}.npy"
 
-    def synth(self, text: str) -> np.ndarray:
+    def warmup(self) -> None:
+        """Pay the engine's one-off start-up cost now, if it has one."""
+        if hasattr(self.engine, "warmup"):
+            self.engine.warmup()
+
+    def cached(self, text: str) -> np.ndarray | None:
+        """The clip if it is already on disk; never synthesises, so it is safe on the fast path."""
         path = self.cache_path(text)
-        if self.use_cache and path.exists():
-            try:
-                return np.load(path)
-            except (OSError, ValueError):
-                log.warning("corrupt cache entry %s, resynthesising", path)
+        if not self.use_cache or not path.exists():
+            return None
+        try:
+            return np.load(path)
+        except (OSError, ValueError):
+            log.warning("corrupt cache entry %s, resynthesising", path)
+            return None
+
+    def synth(self, text: str) -> np.ndarray:
+        audio = self.cached(text)
+        if audio is not None:
+            return audio
         audio = postprocess(self.engine.raw(text), self.p)
         if self.use_cache:
+            path = self.cache_path(text)
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(f".{os.getpid()}.tmp.npy")
             np.save(tmp, audio)
@@ -297,18 +316,32 @@ def bench(params: TTSParams, lines: tuple[str, ...] = BENCH_LINES) -> dict[str, 
     return results
 
 
+def with_overrides(persona: dict, voice: str | None, speed: float | None) -> dict:
+    """A copy of `persona` with one-off settings applied; the persona file is left alone."""
+    tts = dict(persona.get("tts") or {})
+    if voice:
+        tts |= {"kokoro_voice": voice, "kokoro_lang": voice[0]}  # am_* -> a, bm_* -> b
+    if speed is not None:
+        tts["speed"] = speed
+    return {**persona, "tts": tts}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--bench", action="store_true", help="time five lines on each available engine")
-    ap.add_argument("--engine", help="engine for a one-off synth (default: kokoro)")
+    ap.add_argument("--engine", help="engine for a one-off synth (default: config voice.tts)")
+    ap.add_argument("--voice", help="try another Kokoro voice, e.g. bm_george")
+    ap.add_argument("--speed", type=float, help="try another speed, e.g. 0.9")
     ap.add_argument("--text", default="Feet up, you're dangling.")
     args = ap.parse_args()
     load_dotenv()
-    params = TTSParams()
+    cfg = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))["voice"]
+    persona = yaml.safe_load(Path(cfg["persona"]).read_text(encoding="utf-8"))
+    persona = with_overrides(persona, args.voice, args.speed)
     if args.bench:
-        bench(params)
+        bench(TTSParams.from_config(cfg, persona))
         return
-    tts = make_tts({"tts": args.engine or "kokoro"})
+    tts = make_tts(cfg, persona, engine=args.engine)
     audio = tts.synth(args.text)
     log.info("synthesised %.2fs of audio", audio.size / SAMPLE_RATE)
     from coach.voice.speaker import Speaker
