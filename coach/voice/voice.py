@@ -3,6 +3,9 @@
 say() never waits for synthesis. If a clip isn't on disk it returns False at once and a worker
 renders the clip, playing the line only if it is ready by the deadline and nothing has replaced
 it. So True always means audio started; the `spoken` topic is the full record of what was heard.
+
+debrief() plays a filler, then streams sentences from the LLM (or a template) back to back. Any
+say() or stop() cuts it: the stream, pending synthesis and queued audio all go.
 """
 
 from __future__ import annotations
@@ -20,9 +23,17 @@ from pathlib import Path
 
 import numpy as np
 import yaml
+from dotenv import load_dotenv
 
 from coach.bus import Bus
 from coach.contracts import AttemptSummary, CoachEvent, HoldMap, SpeakRequest, SpokenLine
+from coach.voice.debrief import (
+    DebriefLLM,
+    debrief_payload,
+    make_debrief_llm,
+    stream_debrief,
+    template_sentences,
+)
 from coach.voice.phrasebank import SLOT_RE, slot_values, stitch
 from coach.voice.speaker import Speaker, concat
 from coach.voice.tts import CONFIG_PATH, TTS, make_tts
@@ -32,6 +43,8 @@ log = logging.getLogger(__name__)
 BANK_PATH = Path("data/phrasebank.json")
 NEUTRAL = "neutral"
 DEMO_DEADLINE_S = 5.0
+SPEAKER_POLL_S = 0.02  # how often a queued debrief sentence checks the speaker has gone quiet
+NO_DEADLINE = float("inf")
 
 
 def fallback_keys(kind: str, level: int, mood: str) -> list[tuple[str, int, str]]:
@@ -51,6 +64,7 @@ class Voice:
         clock: Callable[[], float] = time.monotonic,
         rng: random.Random | None = None,
         pool: Executor | None = None,
+        debrief_llm: DebriefLLM | None = None,
     ) -> None:
         self._bank = bank
         self._tts = tts
@@ -67,6 +81,8 @@ class Voice:
         self._route_colour: str | None = None
         self._lock = threading.Lock()  # makes "still current?" and starting playback one step
         self._generation = 0  # bumped by every say/stop/debrief; older pending lines are dropped
+        self._debrief_llm = debrief_llm  # None: template debriefs only
+        self._debrief: asyncio.Task | None = None  # the running debrief, guarded by _lock
 
     def say(self, req: SpeakRequest) -> bool:
         if self._clock() > req.deadline:
@@ -91,27 +107,39 @@ class Voice:
 
     def stop(self) -> None:
         with self._lock:
-            self._generation += 1
+            self._next_generation()
             self._speaker.stop()
 
     async def debrief(
         self, history: list[AttemptSummary], habits: dict, crux_hold: int | None
     ) -> None:
-        """Plays the opening filler only; streaming the debrief itself is task C5."""
-        if not self._fillers:
-            return
-        filler = self._draw(("filler",), self._fillers, lambda _line: True)
-        generation = self._supersede()
-        loop = asyncio.get_running_loop()
-        audio = await loop.run_in_executor(self._pool, self._tts.synth, filler)
-        if self._start(audio, float("inf"), generation) is not None:
-            self._bus.publish("debrief_text", filler)
+        """Speak a debrief, returning when it ends or say()/stop() cuts it. Never raises."""
+        payload = debrief_payload(history, habits, crux_hold)
+        with self._lock:
+            generation = self._next_generation()
+            task = self._debrief = asyncio.create_task(self._run_debrief(payload, generation))
+        try:
+            await task
+        except asyncio.CancelledError:
+            if asyncio.current_task().cancelling():  # our caller gave up, not say() or stop()
+                with self._lock:
+                    if self._debrief is task:
+                        self._next_generation()
+                raise
+            log.info("debrief cut")
+        except Exception:
+            log.exception("debrief failed")
+        finally:
+            with self._lock:
+                if self._debrief is task:
+                    self._debrief = None
 
     def warm_up(self) -> None:
         """Load the TTS engine on the worker, so the first on-demand line can make its deadline."""
         self._pool.submit(self._warm_up)
 
     def close(self) -> None:
+        self.stop()
         self._pool.shutdown(wait=False, cancel_futures=True)
         self._speaker.close()
 
@@ -149,8 +177,60 @@ class Voice:
 
     def _supersede(self) -> int:
         with self._lock:
-            self._generation += 1
-            return self._generation
+            return self._next_generation()
+
+    def _next_generation(self) -> int:
+        """Invalidate everything pending and cut any debrief. The caller holds the lock."""
+        self._generation += 1
+        if self._debrief is not None:
+            task, self._debrief = self._debrief, None
+            self._speaker.stop()  # the line replacing it may still need rendering
+            try:  # say() and stop() can come from any thread
+                task.get_loop().call_soon_threadsafe(task.cancel)
+            except RuntimeError:  # its loop has closed, so the task is gone anyway
+                log.debug("debrief loop already closed")
+        return self._generation
+
+    async def _run_debrief(self, payload: dict, generation: int) -> None:
+        speech: asyncio.Queue[str | None] = asyncio.Queue()
+        if self._fillers:
+            speech.put_nowait(self._draw(("filler",), self._fillers, lambda _line: True))
+        async with asyncio.TaskGroup() as group:
+            group.create_task(self._speak_queue(speech, generation))
+            if not await self._stream_llm(payload, speech):
+                for sentence in template_sentences(payload):
+                    speech.put_nowait(sentence)
+            speech.put_nowait(None)
+
+    async def _stream_llm(self, payload: dict, speech: asyncio.Queue[str | None]) -> int:
+        if self._debrief_llm is None or not payload["attempts"]:
+            return 0
+        return await stream_debrief(self._debrief_llm, payload, speech.put_nowait)
+
+    async def _speak_queue(self, speech: asyncio.Queue[str | None], generation: int) -> None:
+        """Play sentences in order, after whatever is already playing, such as the fall line.
+
+        Each is rendered while the one before it plays. Cached clips skip the worker, so the
+        filler can't wait behind warm-up.
+        """
+        loop = asyncio.get_running_loop()
+        while (sentence := await speech.get()) is not None:
+            try:
+                audio = self._tts.cached(sentence)
+                if audio is None:
+                    audio = await loop.run_in_executor(self._pool, self._tts.synth, sentence)
+            except Exception:  # one lost sentence shouldn't lose the rest
+                log.exception("debrief synthesis failed for %r", sentence)
+                continue
+            await self._until_quiet()
+            if self._start(audio, NO_DEADLINE, generation) is None:
+                return
+            self._bus.publish("debrief_text", sentence)
+        await self._until_quiet()
+
+    async def _until_quiet(self) -> None:
+        while self._speaker.is_speaking():
+            await asyncio.sleep(SPEAKER_POLL_S)
 
     def _render_and_play(
         self, req: SpeakRequest, clips: list[str], text: str, generation: int
@@ -188,14 +268,22 @@ class Voice:
 def make_voice(cfg: dict, bus: Bus, no_llm: bool = False, bank: dict | None = None) -> Voice:
     """Build a Voice from the full config, as run.py does. The phrase bank must already be built.
 
-    `no_llm` is accepted for run.py and has no effect until debrief uses the LLM (task C5).
+    Debriefs use the template if `no_llm` is set or GEMINI_API_KEY is missing.
     """
+    load_dotenv()
     voice_cfg = cfg["voice"]
     persona = yaml.safe_load(Path(voice_cfg["persona"]).read_text(encoding="utf-8"))
     if bank is None:
         bank = json.loads(BANK_PATH.read_text(encoding="utf-8"))
     speaker = Speaker(device=voice_cfg.get("output_device"))
-    voice = Voice(bank, make_tts(voice_cfg, persona), speaker, bus, fillers=persona["fillers"])
+    voice = Voice(
+        bank,
+        make_tts(voice_cfg, persona),
+        speaker,
+        bus,
+        fillers=persona["fillers"],
+        debrief_llm=None if no_llm else make_debrief_llm(voice_cfg, persona),
+    )
     voice.warm_up()
     return voice
 
@@ -206,13 +294,26 @@ def main() -> None:
     ap.add_argument("--level", type=int, default=2)
     ap.add_argument("--mood", default=NEUTRAL)
     ap.add_argument("--line", help="say this line instead of using data/phrasebank.json")
+    ap.add_argument("--debrief", action="store_true", help="speak a sample debrief instead")
+    ap.add_argument("--no-llm", action="store_true", help="use the template debrief")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
     bank = {args.kind: {str(args.level): {args.mood: [args.line]}}} if args.line else None
     bus = Bus()
     spoken = bus.subscribe("spoken")
-    voice = make_voice(cfg, bus, bank=bank)
+    voice = make_voice(cfg, bus, no_llm=args.no_llm, bank=bank)
+
+    if args.debrief:
+        history = [
+            AttemptSummary(1, 21.0, 4, "fall", [(4, 6.5)], ["feet_low"], []),
+            AttemptSummary(2, 34.0, 6, "fall", [(6, 8.0)], ["feet_low"], ["feet_low"]),
+        ]
+        asyncio.run(
+            voice.debrief(history, {"feet_low": {"attempts": 2, "total": 3}, "mood": args.mood}, 6)
+        )
+        voice.close()
+        return
 
     now = time.monotonic()
     data = {"limb": "LH", "hold_id": 6, "dir": "up and left", "colour": "pink"}

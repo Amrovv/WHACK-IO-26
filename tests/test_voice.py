@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import random
 import sys
@@ -97,9 +96,16 @@ class FakeTTS:
 
 
 class Rig:
-    def __init__(self, bank: dict, rendered: list[str] | None = None, fillers=()) -> None:
+    def __init__(
+        self,
+        bank: dict,
+        rendered: list[str] | None = None,
+        fillers=(),
+        debrief_llm=None,
+        speaker_type=None,
+    ) -> None:
         self.clock = FakeClock()
-        self.speaker = FakeSpeaker(self.clock)
+        self.speaker = (speaker_type or FakeSpeaker)(self.clock)
         self.tts = FakeTTS(render_texts(bank, [], []) if rendered is None else rendered)
         self.bus = Bus()
         self.spoken = self.bus.subscribe("spoken")
@@ -113,6 +119,7 @@ class Rig:
             clock=self.clock,
             rng=random.Random(1),
             pool=self.pool,
+            debrief_llm=debrief_llm,
         )
 
     def request(self, kind="feet_low", level=0, mood="neutral", data=None, deadline_in=1.0):
@@ -416,7 +423,7 @@ def test_failed_synthesis_is_logged_not_raised(caplog: pytest.LogCaptureFixture)
     assert rig.speaker.played == []
 
 
-# Delegation and debrief
+# Delegation and set-up
 
 
 def test_is_speaking_and_stop_delegate_to_the_speaker() -> None:
@@ -426,14 +433,6 @@ def test_is_speaking_and_stop_delegate_to_the_speaker() -> None:
     assert rig.voice.is_speaking()
     rig.voice.stop()
     assert rig.speaker.stops == 1
-
-
-def test_debrief_plays_a_filler_and_captions_it() -> None:
-    rig = Rig({}, rendered=["Right. Listen."], fillers=["Right. Listen."])
-    captions = rig.bus.subscribe("debrief_text")
-    asyncio.run(rig.voice.debrief([], {}, None))
-    assert len(rig.speaker.played) == 1
-    assert captions.get_nowait() == "Right. Listen."
 
 
 def test_warm_up_runs_on_the_worker() -> None:
@@ -465,9 +464,3 @@ def test_make_voice_matches_what_run_py_calls(monkeypatch: pytest.MonkeyPatch) -
     voice = built(cfg, Bus(), no_llm=True, bank={})
     assert warmed == [voice]
     voice.close()
-
-
-def test_debrief_without_fillers_is_silent() -> None:
-    rig = Rig({})
-    asyncio.run(rig.voice.debrief([], {}, None))
-    assert rig.speaker.played == []

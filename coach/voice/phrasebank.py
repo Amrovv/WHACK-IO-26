@@ -62,6 +62,11 @@ def _normalise(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", text.casefold().replace("’", "'").replace("'", "")))
 
 
+def has_banned_phrase(line: str, banned: Iterable[str]) -> bool:
+    normalised = f" {_normalise(line)} "
+    return any(f" {_normalise(phrase)} " in normalised for phrase in banned)
+
+
 def reject_reason(line: object, max_words: int, banned: Iterable[str]) -> str | None:
     """Why a generated line can't be used, or None if it passes."""
     if not isinstance(line, str) or not line.strip():
@@ -75,8 +80,7 @@ def reject_reason(line: object, max_words: int, banned: Iterable[str]) -> str | 
         return "emoji"
     if _FIXED_FACT_RE.search(SLOT_RE.sub(" ", line)):
         return "hard-coded side or number"
-    normalised = f" {_normalise(line)} "
-    if any(f" {_normalise(phrase)} " in normalised for phrase in banned):
+    if has_banned_phrase(line, banned):
         return "banned phrase"
     return None
 
