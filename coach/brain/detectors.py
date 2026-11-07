@@ -28,6 +28,12 @@ def _brain(ctx: DetectorContext, name: str) -> Any:
     return cfg(ctx.config, "brain", name)
 
 
+def _highest_contact(state: ClimberState) -> int | None:
+    return max(
+        (hold_id for hold_id in state.contacts.values() if hold_id is not None), default=None
+    )
+
+
 class Detector:
     """Base class with the common wall/mute gate and debounce machinery.
 
@@ -125,7 +131,11 @@ class Stalling(Detector):
                     make_event(
                         "stalling",
                         state.t,
-                        {"stage": stage, "seconds": features.hip_static_s},
+                        {
+                            "stage": stage,
+                            "seconds": features.hip_static_s,
+                            "hold_id": _highest_contact(state),
+                        },
                         ctx.config,
                     )
                 )
@@ -193,7 +203,21 @@ class FeetLow(Detector):
         fired = self._one_shot(
             condition, release, state.t, float(_brain(ctx, "debounce_ms")) / 1000
         )
-        return [make_event("feet_low", state.t, {}, ctx.config)] if fired else []
+        if not fired:
+            return []
+        feet = {Limb.LF: state.limbs.get(Limb.LF), Limb.RF: state.limbs.get(Limb.RF)}
+        trailing_foot = max(
+            (limb for limb, point in feet.items() if point is not None),
+            key=lambda limb: feet[limb][1],
+        )
+        return [
+            make_event(
+                "feet_low",
+                state.t,
+                {"hold_id": _highest_contact(state), "limb": trailing_foot.value},
+                ctx.config,
+            )
+        ]
 
 
 def direction_phrase(dx: float, dy: float) -> str:
@@ -471,7 +495,14 @@ class FeetCut(Detector):
             if (state.t - self._cut_since + 1e-9) >= feet_cut_s and not self._fired:
                 self._fired = True
                 self._last_valid = True
-                return [make_event("feet_cut", state.t, {}, ctx.config)]
+                return [
+                    make_event(
+                        "feet_cut",
+                        state.t,
+                        {"hold_id": _highest_contact(state)},
+                        ctx.config,
+                    )
+                ]
         else:
             self._cut_since = None
 
@@ -536,7 +567,10 @@ class WeightShift(Detector):
                 make_event(
                     "weight_shift",
                     state.t,
-                    {"foot": supporting_foot.value},
+                    {
+                        "foot": supporting_foot.value,
+                        "hold_id": state.contacts.get(supporting_foot),
+                    },
                     ctx.config,
                 )
             ]

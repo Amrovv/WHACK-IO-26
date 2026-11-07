@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from coach.brain.features import Features
 from coach.brain.memory import Memory
 from coach.contracts import AttemptSummary, ClimberState, CoachEvent, Limb, SpokenLine
@@ -137,7 +139,8 @@ def test_compliance_hand_searching_touches_suggested_hold():
     )
     # CONFIG has no hand_searching priority; it is a WATCHED kind for compliance only,
     # and told_you_so is what gets emitted here.
-    assert any(e.kind == "told_you_so" for e in events)
+    told_you_so = next(e for e in events if e.kind == "told_you_so")
+    assert told_you_so.data == {"cue": "hand_searching", "hold_id": 9, "limb": "left_hand"}
 
 
 def test_uncomplied_cue_expires_without_told_you_so():
@@ -182,10 +185,28 @@ def test_debrief_fires_once_per_attempt_with_history_habits_crux():
     history, habits, crux = voice.debriefs[0]
     assert len(history) == 1
     assert habits["feet_low"]["attempts"] == 1
+    assert habits["mood"] == "neutral"
     assert crux is None  # only one attempt
     # A second, distinct attempt debriefs again.
     mem.on_attempt_end(summary(2))
     assert len(voice.debriefs) == 2
+
+
+class AsyncFakeVoice(FakeVoice):
+    async def debrief(self, history, habits, crux_hold):
+        await asyncio.sleep(0)
+        self.debriefs.append((list(history), habits, crux_hold))
+
+
+async def test_debrief_task_is_retained_until_complete():
+    voice = AsyncFakeVoice()
+    mem = Memory(voice, CONFIG)
+
+    mem.on_attempt_end(summary(1))
+
+    assert len(mem._debrief_tasks) == 1
+    await asyncio.gather(*mem._debrief_tasks)
+    assert mem._debrief_tasks == []
 
 
 def test_summary_records_given_and_followed_cues_per_attempt():

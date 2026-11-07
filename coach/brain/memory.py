@@ -99,6 +99,7 @@ class Memory:
         self._last_state: ClimberState | None = None
         self._last_t: float | None = None
         self._debriefed_attempt = -1
+        self._debrief_tasks: list[asyncio.Task[Any]] = []
 
     # ---- feeds (called by the orchestrator each tick / on each bus message) ----
 
@@ -154,9 +155,10 @@ class Memory:
                 if watch.followed_t is not None and state.t - watch.followed_t <= progress:
                     high = features.highest_hold_id
                     if high is not None and high > watch.progress_base_hold:
-                        events.append(
-                            make_event("told_you_so", state.t, {"cue": watch.kind}, self.config)
-                        )
+                        data = {"cue": watch.kind, "hold_id": high}
+                        if "limb" in watch.data:
+                            data["limb"] = watch.data["limb"]
+                        events.append(make_event("told_you_so", state.t, data, self.config))
                         self._watches.remove(watch)
                 else:
                     self._watches.remove(watch)
@@ -191,10 +193,17 @@ class Memory:
         if self._debriefed_attempt == summary.attempt_no:
             return
         self._debriefed_attempt = summary.attempt_no
-        result = self.voice.debrief(list(self.history), self.habits().as_dict(), self.crux_hold())
+        habits = {**self.habits().as_dict(), "mood": self.mood()}
+        result = self.voice.debrief(list(self.history), habits, self.crux_hold())
         if inspect.isawaitable(result):
             try:
-                asyncio.get_running_loop().create_task(result)
+                task = asyncio.get_running_loop().create_task(result)
+                self._debrief_tasks.append(task)
+
+                def remove_task(completed: asyncio.Task[Any]) -> None:
+                    self._debrief_tasks.remove(completed)
+
+                task.add_done_callback(remove_task)
             except RuntimeError:
                 # No running loop (e.g. a sync test harness); the orchestrator owns
                 # the loop in production, so just drop the un-awaited coroutine.

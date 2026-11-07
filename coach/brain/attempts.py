@@ -142,7 +142,12 @@ class AttemptTracker:
                 # quietly (it is an AttemptSummary outcome, not one of EVENT_KINDS).
                 if outcome == "fall":
                     events.append(
-                        make_event("fall", state.t, {"attempt_no": self._attempt_no}, self.config)
+                        make_event(
+                            "fall",
+                            state.t,
+                            {"attempt_no": self._attempt_no, "hold_id": self._attempt_high},
+                            self.config,
+                        )
                     )
                 self._finish(state, outcome)
         else:
