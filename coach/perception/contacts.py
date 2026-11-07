@@ -99,7 +99,16 @@ class ContactTracker:
         contacts: dict[Limb, int | None] = {}
         for limb in Limb:
             point = state.limbs.get(limb)
-            if point is None or not self._visible(state.keypoints, limb):
+            if point is None:
+                # PoseTracker uses None after its short frozen-point grace period. Unlike a
+                # raw visibility dip, this is an explicit unusable-point signal: do not extend
+                # the contact-dip grace a second time.
+                self._on[limb], self._still_since[limb] = None, None
+                self._low_vis[limb] = 0
+                self._prev.pop(limb, None)
+                contacts[limb] = None
+                continue
+            if not self._visible(state.keypoints, limb):
                 # No contact is reported while the limb is hidden, but a brief dip keeps the hold
                 # memory so the limb needn't settle again; a long one clears it.
                 self._low_vis[limb] += 1
