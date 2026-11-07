@@ -27,6 +27,7 @@ import cv2
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 log = logging.getLogger("stream_test")
 WEB_DIR = Path(__file__).resolve().parent
@@ -107,6 +108,8 @@ def build_app(frames: LatestFrame, use_base64: bool, ws_video: bool) -> FastAPI:
     @app.get("/")
     async def index() -> FileResponse:
         return FileResponse(WEB_DIR / "index.html")
+
+    app.mount("/fonts", StaticFiles(directory=WEB_DIR / "fonts"), name="fonts")
 
     @app.websocket("/ws")
     async def ws(sock: WebSocket) -> None:

@@ -1,0 +1,35 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "broken-image",
+        "value": "*",
+        "files": [
+          "web/index.html"
+        ],
+        "createdAt": "2026-11-07T13:19:16.954Z",
+        "reason": "Claude: #video src is set at runtime from /video or WebSocket frames and is visibility:hidden until then"
+      },
+      {
+        "rule": "cramped-padding",
+        "value": "*",
+        "files": [
+          "web/index.html"
+        ],
+        "createdAt": "2026-11-07T13:23:26.788Z",
+        "reason": "Claude: #frame is the video frame; the image and overlay canvas fill it edge to edge by design"
+      },
+      {
+        "rule": "cramped-padding",
+        "value": "*",
+        "files": [
+          ".impeccable/mocks/decision/assigned.html"
+        ],
+        "createdAt": "2026-11-07T13:23:51.754Z",
+        "reason": "Claude: spent decision-round sketch, not shipped UI; the live dashboard is web/index.html"
+      }
+    ]
+  }
+}

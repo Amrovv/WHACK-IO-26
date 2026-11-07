@@ -1,6 +1,7 @@
 <!doctype html>
 <!--
   Climbing Coach live dashboard. Plain HTML/CSS/JS, no build step.
+  Built to be read from 3 m away on a laptop screen. Fonts are served from web/fonts/ (no internet needed).
 
   Video: <img src="/video"> (MJPEG or any image stream), or JPEG frames over the WebSocket:
          binary messages, or {"topic": "frame", "data": "<base64 jpeg>"}. The first WebSocket
@@ -20,9 +21,9 @@
   Extra, optional (not bus topics, for the server to send if it can):
     mood          "neutral" | "impressed" | "exasperated"  (or {"mood": ...})
     hello         {"no_llm": bool, "persona": str, "mood": str, "problem_id": str}
-  Any payload with a "mood" field also updates the mood badge.
+  Any payload with a "mood" field also updates the mood shown beside the caption.
 
-  URL params: ?demo=1 fake data, no server needed.  ?offline=1 force the offline badge.
+  URL params: ?demo=1 fake data, no server needed.  ?offline=1 force the offline flag.
               ?ws=<url> override the WebSocket url.   ?video=<url> override the video url.
 -->
 <html lang="en">
@@ -31,159 +32,266 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Climbing Coach</title>
 <style>
+  @font-face {
+    font-family: "Atkinson Hyperlegible Next";
+    src: url("/fonts/atkinson-hyperlegible-next-latin.woff2") format("woff2");
+    font-weight: 400 800; font-display: swap;
+  }
+  @font-face {
+    font-family: "Atkinson Hyperlegible Mono";
+    src: url("/fonts/atkinson-hyperlegible-mono-latin.woff2") format("woff2");
+    font-weight: 500 800; font-display: swap;
+  }
+
   :root {
-    --bg: #0b0d10;
-    --panel: #151920;
-    --panel-2: #1d222b;
-    --line: #2a313c;
-    --text: #eef1f5;
-    --muted: #8a94a3;
-    --dim: #5b6472;
-    --accent: #4fd1c5;
-    --good: #48bb78;
-    --warn: #f6ad55;
-    --bad: #fc5c65;
-    --gold: #f6c945;
+    /* The logbook, after dark: graphite page, light pencil ink, field-book yellow for the coach's voice,
+       red pen for sends. The problem's own hold colour (set from the hold map) marks the live hold. */
+    color-scheme: dark;
+    --page: #16181b;
+    --page-2: #202327;
+    --ink: #eef0ea;
+    --graphite: #b4bac1;
+    --pencil: #8c939a;
+    --rule: #33383e;
+    --rule-strong: #565c63;
+    --cover: #f2c230;
+    --cover-ink: #2a2306;
+    --red: #ff5a6e;
+    --hold: #eef0ea;
+    --hold-ink: #16181b;
+    --frame: #0b0c0d;
+    /* Limb colours, used only on the video overlay. */
     --lh: #4fc3f7;
-    --rh: #f06292;
-    --lf: #aed581;
-    --rf: #ffb74d;
+    --rh: #b388ff;
+    --lf: #9ccc65;
+    --rf: #e0e0e0;
+
+    /* One three-step size ramp, tuned for reading at 3 m. */
+    --s: clamp(16px, min(1.45vw, 2.35vh), 24px);
+    --m: clamp(24px, min(2.6vw, 4.2vh), 44px);
+    --l: clamp(72px, min(5.6vw, 9vh), 96px);
+
+    --rule-w: 3px;
+    --gap: clamp(12px, 1.4vw, 24px);
+    --head-h: clamp(56px, 8.8vh, 88px);
+    --cap-h: clamp(165px, 21vh, 220px);
+    --ladder-w: clamp(130px, 12vw, 200px);
+    --side-w: clamp(260px, 25vw, 420px);
+
+    --sans: "Atkinson Hyperlegible Next", system-ui, sans-serif;
+    --mono: "Atkinson Hyperlegible Mono", ui-monospace, monospace;
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  body { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; padding: 16px; overflow: hidden; }
+  html, body { margin: 0; height: 100%; background: var(--page); color: var(--ink); font-family: var(--sans); }
+  body {
+    display: grid; overflow: hidden;
+    grid-template-columns: minmax(0, 1fr) var(--ladder-w) var(--side-w);
+    grid-template-rows: var(--head-h) minmax(0, 1fr) var(--cap-h);
+    grid-template-areas: "head head head" "stage ladder side" "cap cap cap";
+  }
+  ::selection { background: var(--cover); color: var(--cover-ink); }
+  * { scrollbar-width: thin; scrollbar-color: var(--pencil) transparent; }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  [hidden] { display: none !important; }
 
-  /* Left: video + caption */
-  #left { display: flex; flex-direction: column; gap: 16px; min-height: 0; min-width: 0; }
-  /* #stage takes the free space; #frame is sized by JS to the video's aspect ratio and centred,
-     so the rounded corners belong to the picture itself (no letterbox, nothing clipped). */
-  #stage { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
-  #frame { position: relative; width: 100%; height: 100%; background: #000; border-radius: 12px; overflow: hidden; }
+  /* ---- Running head: where we are, like a book's guide words ---- */
+  #head { grid-area: head; display: flex; align-items: center; gap: var(--gap);
+    padding: 0 calc(var(--gap) * 1.4); border-bottom: var(--rule-w) solid var(--rule-strong); min-width: 0; }
+  #where { font-size: var(--m); font-weight: 800; letter-spacing: -0.01em; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  #where .sep { color: var(--pencil); font-weight: 400; margin: 0 0.3em; }
+  #where .live-hold { display: inline-block; min-width: 1.5em; padding: 0 0.2em; text-align: center;
+    background: var(--hold); color: var(--hold-ink); }
+  #flags { margin-left: auto; display: flex; gap: calc(var(--gap) * 0.6); align-items: center; flex: none; }
+  .flag { font-size: var(--s); font-weight: 600; color: var(--graphite); white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 0.45em; }
+  .flag.boxed { border: 2px solid var(--ink); color: var(--ink); padding: 0.1em 0.5em; }
+  .dot { width: 0.7em; height: 0.7em; border-radius: 50%; border: 2px solid currentColor; flex: none; }
+  #conn.live { color: var(--ink); }
+  #conn.live .dot { background: var(--ink); }
+
+  /* ---- Video ---- */
+  #stage { grid-area: stage; position: relative; min-height: 0; min-width: 0;
+    display: flex; align-items: center; justify-content: center; padding: var(--gap) 0 var(--gap) calc(var(--gap) * 1.4); }
+  /* #frame is sized by JS to the video's aspect ratio, so the picture fills it with nothing clipped. */
+  #frame { position: relative; width: 100%; height: 100%; background: var(--frame); overflow: hidden; outline: 2px solid var(--rule); }
   #video, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   #video { object-fit: fill; }
   #video:not([src]) { visibility: hidden; }
-  #novideo { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    color: var(--dim); font-size: 28px; }
-  #status { position: absolute; top: 12px; left: 12px; display: flex; gap: 8px; }
-  #caption { min-height: 150px; max-height: 32vh; overflow: hidden; background: var(--panel); border-radius: 12px;
-    padding: 20px 28px; font-size: 48px; font-weight: 700; line-height: 1.2;
-    display: flex; align-items: center; transition: opacity 0.8s ease; }
-  #caption.faded { opacity: 0.15; }
-  #caption.debrief { font-size: 34px; font-weight: 500; align-items: flex-end; }
-  #caption .who { color: var(--accent); margin-right: 14px; }
+  #novideo { position: absolute; left: 0.8em; bottom: 0.6em; color: #c9ced3; font-size: var(--s); font-weight: 600; }
+  #novideo small { font-weight: 400; color: #9aa1a7; margin-left: 0.4em; }
 
-  /* Right: panels */
-  #right { display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; }
-  .panel { background: var(--panel); border-radius: 12px; padding: 14px 16px; }
-  .panel h2 { margin: 0 0 10px; font-size: 16px; font-weight: 600; letter-spacing: 0.08em;
-    text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 8px; }
-  .panel h2 .spacer { flex: 1; }
-  .badges { display: flex; gap: 8px; flex-wrap: wrap; }
-  .badge { font-size: 20px; font-weight: 700; padding: 6px 14px; border-radius: 999px;
-    background: var(--panel-2); border: 2px solid var(--line); white-space: nowrap; }
-  .badge.small { font-size: 14px; padding: 3px 10px; }
-  .badge.live { background: var(--bad); border-color: var(--bad); color: #fff; }
-  .badge.live::before { content: "● "; animation: blink 1.6s ease-in-out infinite; }
-  @keyframes blink { 50% { opacity: 0.25; } }
-  .badge.down { border-color: var(--muted); color: var(--muted); }
-  .badge.offline { border-color: var(--warn); color: var(--warn); }
-  .mood-neutral { border-color: var(--muted); }
-  .mood-impressed { border-color: var(--good); color: var(--good); }
-  .mood-exasperated { border-color: var(--bad); color: var(--bad); }
+  /* ---- Hold ladder: the problem, top hold at the top; each attempt ticked at its highpoint ---- */
+  #ladder { grid-area: ladder; min-width: 0; display: grid; grid-template-rows: repeat(var(--n, 1), minmax(0, 1fr));
+    padding: var(--gap) 0 var(--gap) var(--gap); min-height: 0; }
+  #ladder:empty::after { content: "No hold map yet"; align-self: center; color: var(--pencil);
+    font-size: var(--s); text-align: center; }
+  .rung { display: flex; align-items: center; gap: 0.35em; border-top: 2px solid var(--rule); min-height: 0; min-width: 0;
+    overflow: hidden; font-size: var(--rung-fs, var(--m)); }
+  .rung:last-child { border-bottom: 2px solid var(--rule); }
+  .rung .n { flex: none; width: 1.65em; text-align: center; font-family: var(--mono); font-weight: 700;
+    color: var(--pencil); line-height: 1.15; }
+  .rung.high .n { color: var(--ink); box-shadow: inset 0 0 0 3px var(--ink); }
+  .rung.now .n { color: var(--hold-ink); background: var(--hold); box-shadow: none; }
+  .rung .marks { display: flex; align-items: center; gap: 0.15em; min-width: 0; overflow: hidden; }
+  .mark { display: inline-flex; align-items: center; height: 0.95em; }
+  .mark svg { height: 100%; width: auto; overflow: visible; }
+  .mark path { fill: none; stroke: var(--graphite); stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; }
+  .mark.top path { stroke: var(--red); stroke-width: 3.6; }
+  .mark .a { font-family: var(--mono); font-size: 0.7em; font-weight: 700; color: var(--graphite); margin-left: 0.1em; }
+  .mark.top .a { color: var(--red); }
+  .mark.fresh path { stroke-dasharray: 40; stroke-dashoffset: 40; animation: pencil 0.7s var(--ease-out) 0.15s forwards; }
+  @keyframes pencil { to { stroke-dashoffset: 0; } }
 
-  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .stat { background: var(--panel-2); border-radius: 10px; padding: 10px 12px; }
-  .stat .label { font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
-  .stat .value { font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
-  .stat .value small { font-size: 18px; font-weight: 600; color: var(--muted); margin-left: 4px; }
-  .lat-good { color: var(--good); } .lat-warn { color: var(--warn); } .lat-bad { color: var(--bad); }
+  /* ---- Side column: ruled, not carded ---- */
+  #side { grid-area: side; border-left: var(--rule-w) solid var(--rule-strong); margin-left: var(--gap);
+    display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  .sect { padding: calc(var(--gap) * 0.65) calc(var(--gap) * 1.2); border-bottom: 2px solid var(--rule); }
+  .sect h2 { margin: 0 0 0.35em; font-size: var(--s); font-weight: 700; color: var(--graphite);
+    display: flex; align-items: baseline; gap: 0.5em; }
+  .sect h2 .aside { margin-left: auto; font-weight: 400; color: var(--pencil); }
 
-  #attempts { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
-  #attempts:empty::after { content: "No attempts yet"; color: var(--dim); font-size: 18px; }
-  .card { flex: 0 0 auto; min-width: 150px; background: var(--panel-2); border-radius: 10px; padding: 10px 12px;
-    border-left: 6px solid var(--line); }
-  .card.top { border-left-color: var(--good); }
-  .card.fall { border-left-color: var(--bad); }
-  .card.downclimb { border-left-color: var(--warn); }
-  .card .n { font-size: 14px; color: var(--muted); text-transform: uppercase; }
-  .card .o { font-size: 26px; font-weight: 800; text-transform: capitalize; }
-  .card .d { font-size: 17px; color: var(--muted); margin-top: 2px; }
+  #lat-row { display: flex; align-items: flex-end; gap: var(--gap); }
+  #lat-last { font-size: var(--l); font-weight: 700; line-height: 0.95; white-space: nowrap; }
+  #lat-last small, .unit { font-size: var(--s); font-weight: 500; color: var(--graphite); margin-left: 0.2em; }
+  #lat-last.late { background: var(--ink); color: var(--page); padding: 0 0.12em; }
+  #lat-last.late small { color: var(--page); }
+  #lat-hist { flex: 1; height: calc(var(--l) * 0.9); min-width: 0; display: block; }
+  #lat-hist .bar { fill: var(--graphite); }
+  #lat-hist .bar.late { fill: var(--ink); }
+  #lat-hist .target { stroke: var(--ink); stroke-width: 1.5; stroke-dasharray: 4 3; }
+  #lat-sub { font-size: var(--s); color: var(--graphite); margin-top: 0.35em; }
+  #lat-sub b { color: var(--ink); }
 
-  #timeline-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-  #timeline { flex: 1; min-height: 0; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
-  #timeline li { padding: 8px 4px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; align-items: baseline; }
-  #timeline .txt { flex: 1; font-size: 22px; }
-  #timeline .meta { font-size: 15px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+  #attempts { display: flex; flex-direction: column; }
+  #attempts:empty::after { content: "No attempts yet"; color: var(--pencil); font-size: var(--s); }
+  .att { padding: 0.25em 0; border-top: 1px solid var(--rule); font-size: var(--s); min-width: 0; }
+  .att:first-child { border-top: 0; padding-top: 0; }
+  .att .row { display: flex; align-items: center; gap: 0.45em; min-width: 0; }
+  .att .mark { font-size: var(--m); }
+
+  .att .o { font-size: var(--m); font-weight: 800; line-height: 1.1; white-space: nowrap; }
+  .att.top .o { color: var(--red); }
+  .att .d { color: var(--graphite); }
+  .att .d b { color: var(--ink); font-family: var(--mono); }
+  .att.live .o { color: var(--ink); }
+  .att.live .mark .a { color: var(--ink); }
+  #attempts-more { font-size: var(--s); color: var(--pencil); margin-top: 0.4em; }
+
+  #timeline-sect { flex: 1; min-height: 0; display: flex; flex-direction: column; border-bottom: 0; }
+  #timeline { flex: 1; min-height: 0; overflow-y: auto; margin: 0; padding: 0; list-style: none; font-size: var(--s); }
+  #timeline.overflowing {
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 1.6em), transparent);
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 1.6em), transparent); }
+  #timeline li { padding: 0.25em 0; border-bottom: 1px solid var(--rule); line-height: 1.2; display: flex; gap: 0.6em; align-items: baseline; }
+  #timeline .txt { flex: 1; min-width: 0; }
+  #timeline .meta { flex: none; font-size: 0.8em; color: var(--pencil); font-family: var(--mono); }
   #timeline li.spoken .txt { font-weight: 700; }
-  #timeline li.suppressed { color: var(--dim); }
-  #timeline li.suppressed .txt { font-size: 18px; }
-  #timeline li.suppressed .meta { color: var(--dim); }
-  #timeline li.attempt .txt { color: var(--accent); font-weight: 600; }
+  #timeline li.suppressed { color: var(--pencil); }
+  #timeline li.suppressed .txt { text-decoration: line-through; text-decoration-thickness: 1.5px; }
+  #timeline li.attempt .txt { font-weight: 700; color: var(--ink); }
+  #timeline li.attempt.top .txt { color: var(--red); }
+  #timeline li.debrief .txt { font-style: italic; color: var(--graphite); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #timeline.hide-suppressed li.suppressed { display: none; }
-  #timeline:empty::after { content: "Waiting for the coach…"; color: var(--dim); font-size: 18px; }
-  label.toggle { font-size: 14px; text-transform: none; letter-spacing: 0; color: var(--muted);
-    display: flex; align-items: center; gap: 6px; cursor: pointer; }
-  label.toggle input { width: 18px; height: 18px; }
+  #timeline:empty::after { content: "Waiting for the coach…"; color: var(--pencil); }
+  label.toggle { margin-left: auto; font-weight: 400; color: var(--graphite); display: inline-flex;
+    align-items: center; gap: 0.35em; cursor: pointer; }
+  label.toggle input { width: 1em; height: 1em; margin: 0; accent-color: var(--ink); cursor: pointer; }
+  label.toggle input:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
 
+  /* ---- Caption: the coach's voice, the one yellow thing on screen ---- */
+  #caption { grid-area: cap; background: var(--cover); color: var(--cover-ink);
+    display: flex; align-items: center; gap: calc(var(--gap) * 1.4); padding: 0 calc(var(--gap) * 1.8); min-width: 0; overflow: hidden; }
+  #cap-who { flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 0.3em; font-size: var(--s); }
+  #cap-who .who { font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; border: var(--rule-w) solid var(--cover-ink);
+    padding: 0.15em 0.5em; }
+  #cap-who .mood { font-weight: 600; }
+  #cap-text { flex: 1; min-width: 0; font-size: var(--l); font-weight: 800; line-height: 1.05; letter-spacing: -0.015em;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; text-wrap: balance; }
+  #cap-ms { flex: none; font-size: var(--m); font-weight: 700; white-space: nowrap; }
+  body.debriefing { --cap-h: clamp(165px, 34vh, 340px); }
+  #caption.debrief #cap-text { font-size: var(--m); font-weight: 600; line-height: 1.2; letter-spacing: 0;
+    -webkit-line-clamp: 5; text-wrap: pretty; }
+  #caption.debrief.long #cap-text { font-size: calc(var(--m) * 0.8); -webkit-line-clamp: 7; }
+  #caption.idle #cap-text, #caption.idle #cap-ms { color: rgba(42, 35, 6, 0.62); }
+  #caption.waiting #cap-text { font-size: var(--m); font-weight: 600; color: rgba(42, 35, 6, 0.7); }
+  #cap-text.arrive { animation: arrive 0.45s var(--ease-out); }
+  @keyframes arrive { from { opacity: 0.35; transform: translateY(0.18em); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    #cap-text.arrive, .mark.fresh path { animation: none; stroke-dashoffset: 0; }
+  }
+
+  /* Narrow screens: stack everything and scroll; the ladder runs left (1) to right (top). */
   @media (max-width: 900px) {
-    body { grid-template-columns: 1fr; overflow: auto; }
-    #stage { min-height: 50vh; }
-    #caption { font-size: 32px; }
+    :root { --s: 16px; --m: 24px; --l: 36px; }
+    html, body { height: auto; }
+    body { overflow: auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto;
+      grid-template-areas: "head" "cap" "stage" "ladder" "side"; }
+    #head { flex-wrap: wrap; padding: 12px 16px; }
+    #flags { margin-left: 0; flex: 1 1 100%; flex-wrap: wrap; }
+    #where { white-space: normal; }
+    #stage { height: 56vw; padding: 12px 16px; }
+    #ladder { grid-template-rows: auto; grid-template-columns: repeat(var(--n, 1), minmax(0, 1fr)); grid-auto-flow: column;
+      direction: rtl; padding: 0 16px 12px; }
+    .rung { direction: ltr; flex-direction: column; border-top: 0; border-left: 2px solid var(--rule); --rung-fs: 22px; }
+    .rung:last-child { border-bottom: 0; }
+    #side { border-left: 0; border-top: var(--rule-w) solid var(--rule-strong); margin-left: 0; }
+    #timeline { max-height: 60vh; }
+    #caption { padding: 14px 16px; flex-wrap: wrap; gap: 10px 16px; }
   }
 </style>
 </head>
 <body>
-<section id="left">
-  <div id="stage"><div id="frame">
-    <div id="novideo">No video</div>
-    <img id="video" alt="">
+<header id="head">
+  <div id="where">Waiting for the first attempt</div>
+  <div id="flags">
+    <span id="problem" class="flag" hidden></span>
+    <span id="holds-mode" class="flag boxed" hidden>Colour-only holds</span>
+    <span id="offline" class="flag boxed" hidden>Offline: no LLM</span>
+    <span id="conn" class="flag"><span class="dot"></span><span class="label">Disconnected</span></span>
+  </div>
+</header>
+
+<section id="stage" aria-label="Camera">
+  <div id="frame">
+    <div id="novideo">No video<small>waiting for the camera stream</small></div>
+    <img id="video" alt="Live camera view of the climber">
     <canvas id="overlay"></canvas>
-    <div id="status" class="badges">
-      <span id="conn" class="badge small down">disconnected</span>
-    </div>
   </div>
-  </div>
-  <div id="caption" class="faded"></div>
 </section>
 
-<aside id="right">
-  <div class="panel">
-    <div class="badges">
-      <span id="mood" class="badge mood-neutral">Mood: neutral</span>
-      <span id="offline" class="badge offline" hidden>Offline mode</span>
-      <span id="problem" class="badge" hidden></span>
+<section id="ladder" aria-label="Holds, top to bottom, with each attempt's highpoint"></section>
+
+<aside id="side">
+  <div class="sect">
+    <h2>Cue latency <span class="aside">target <span class="num" id="lat-target"></span> ms</span></h2>
+    <div id="lat-row">
+      <div id="lat-last" class="num">–</div>
+      <svg id="lat-hist" preserveAspectRatio="none" aria-hidden="true"></svg>
     </div>
+    <div id="lat-sub">No cues spoken yet</div>
   </div>
 
-  <div class="panel">
-    <h2>Cue latency</h2>
-    <div class="stats">
-      <div class="stat"><div class="label">Last</div><div class="value" id="lat-last">–</div></div>
-      <div class="stat"><div class="label">Median</div><div class="value" id="lat-median">–</div></div>
-    </div>
-  </div>
-
-  <div class="panel">
-    <h2>Current attempt <span class="spacer"></span><span id="cur-no" class="badge small">–</span></h2>
-    <div class="stats">
-      <div class="stat"><div class="label">Events detected</div><div class="value" id="cur-events">0</div></div>
-      <div class="stat"><div class="label">Lines spoken</div><div class="value" id="cur-spoken">0</div></div>
-    </div>
-  </div>
-
-  <div class="panel">
+  <div class="sect">
     <h2>Attempts</h2>
     <div id="attempts"></div>
+    <div id="attempts-more" hidden></div>
   </div>
 
-  <div class="panel" id="timeline-panel">
-    <h2>Timeline <span class="spacer"></span>
-      <label class="toggle"><input type="checkbox" id="hide-supp"> hide suppressed</label>
-    </h2>
+  <div class="sect" id="timeline-sect">
+    <h2>Timeline <label class="toggle"><input type="checkbox" id="hide-supp"> Hide suppressed</label></h2>
     <ul id="timeline"></ul>
   </div>
 </aside>
+
+<section id="caption" class="waiting" aria-live="polite">
+  <div id="cap-who"><span class="who">Coach</span><span class="mood" id="mood" hidden></span></div>
+  <div id="cap-text">The coach will speak here.</div>
+  <div id="cap-ms" class="num"></div>
+</section>
 
 <script>
 "use strict";
@@ -192,9 +300,12 @@
 const CAPTION_FADE_MS = 4000;
 const TIMELINE_MAX = 200;
 const LATENCY_WINDOW = 50;          // cues used for the median
+const LATENCY_HIST = 24;            // bars in the latency history
 const LATENCY_WARN_MS = 800;        // target from CLAUDE.md
-const LATENCY_GOOD_MS = 500;
 const RECONNECT_MAX_MS = 5000;
+const DEBRIEF_LONG_CHARS = 240;    // longer debriefs step down a size
+const HEAD_PAINT_MS = 250;          // running head refresh
+const ATTEMPT_CELLS = 2;            // newest attempts shown as cells; all of them are on the ladder
 
 const params = new URLSearchParams(location.search);
 const WS_URL = params.get("ws") ||
@@ -206,6 +317,14 @@ const DEMO = params.has("demo");
 const LIMB_ALIASES = { left_hand: "LH", right_hand: "RH", left_foot: "LF", right_foot: "RF",
                        LH: "LH", RH: "RH", LF: "LF", RF: "RF" };
 const LIMB_COLOURS = { LH: css("--lh"), RH: css("--rh"), LF: css("--lf"), RF: css("--rf") };
+
+// Hold-map colour names -> swatch for the live hold. Hex strings pass through.
+const HOLD_COLOURS = { pink: "#e8458b", red: "#d93a3a", orange: "#f08a24", yellow: "#e8d44d", green: "#2fa35b",
+  blue: "#3d7cf0", purple: "#9b5bd6", black: "#4a5057", white: "#ffffff", grey: "#8a9098", gray: "#8a9098",
+  teal: "#14a3a3", brown: "#8a5a32" };
+
+// Problem colours that would read as send red or the coach's yellow: the live hold uses the plain ink block instead.
+const CLASHING_HOLD_COLOURS = new Set(["pink", "red", "orange", "yellow"]);
 
 // MediaPipe pose landmark names, in index order (keypoints may be keyed by index).
 const MP_NAMES = ["nose", "left_eye_inner", "left_eye", "left_eye_outer", "right_eye_inner", "right_eye",
@@ -231,17 +350,28 @@ const S = {
   state: null,
   latencies: [],
   attemptNo: null,
+  attemptStartT: null,   // state.t at attempt_start
+  attemptLive: false,    // between attempt_start and its summary
+  liveHold: null,        // highest hold a limb is on right now
+  highHold: null,        // highest hold reached this attempt
+  attempts: [],          // finished: { no, outcome, high }
+  freshAttempt: null,    // attempt number whose tick should draw in
+  lastOutcome: null,
   curEvents: 0,
   curSpoken: 0,
   debriefing: false,
   captionTimer: null,
   overlayDirty: true,
+  headDirty: true,
 };
 
 const $ = (id) => document.getElementById(id);
 function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function clock() { return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
+function holdCount() { return S.holdmap?.holds?.length || 0; }
+const OUTCOME_WORDS = { top: "Top", fall: "Fall", downclimb: "Down-climb" };
+function outcomeWord(o) { return OUTCOME_WORDS[o] || (o ? o[0].toUpperCase() + o.slice(1) : "?"); }
 
 // ---- Message routing --------------------------------------------------------
 function handle(msg) {
@@ -249,8 +379,8 @@ function handle(msg) {
   const data = msg.data ?? msg.payload;
   if (data && typeof data === "object" && typeof data.mood === "string") setMood(data.mood);
   switch (topic) {
-    case "holdmap": S.holdmap = data; S.overlayDirty = true; showProblem(data?.problem_id); break;
-    case "state": S.state = data; S.overlayDirty = true; break;
+    case "holdmap": onHoldmap(data); break;
+    case "state": onState(data); break;
     case "frame": showBase64Frame(typeof data === "string" ? data : data?.jpeg); break;
     case "event": onEvent(data); break;
     case "suppressed": onSuppressed(data); break;
@@ -267,30 +397,68 @@ function onHello(d) {
   if (d.problem_id) showProblem(d.problem_id);
 }
 
+function onHoldmap(hm) {
+  S.holdmap = hm;
+  S.overlayDirty = true;
+  showProblem(hm?.problem_id);
+  $("holds-mode").hidden = hm?.mode !== "colour";
+  const c = String(hm?.colour || "").toLowerCase();
+  const swatch = c.startsWith("#") || CLASHING_HOLD_COLOURS.has(c) ? null : HOLD_COLOURS[c];
+  const root = document.documentElement.style;
+  if (swatch) {
+    root.setProperty("--hold", swatch);
+    root.setProperty("--hold-ink", luminance(swatch) > 0.55 ? "#16181b" : "#ffffff");
+  } else {
+    root.removeProperty("--hold"); root.removeProperty("--hold-ink");
+  }
+  renderLadder();
+  S.headDirty = true;
+}
+
+function luminance(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  if (Number.isNaN(n) || hex.length !== 7) return 0;
+  return (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+}
+
+function onState(st) {
+  S.state = st;
+  S.overlayDirty = true;
+  const ids = Object.values(normLimbs(st?.contacts)).filter((id) => id != null);
+  const live = st?.person_found !== false && ids.length ? Math.max(...ids) : null;
+  if (live !== S.liveHold) { S.liveHold = live; renderLadderMarks(); }
+  if (S.attemptLive && live != null && (S.highHold == null || live > S.highHold)) { S.highHold = live; renderLadderMarks(); }
+  S.headDirty = true;
+}
+
 function showProblem(id) {
   if (!id) return;
-  const colour = S.holdmap?.colour ? ` · ${S.holdmap.colour}` : "";
-  $("problem").textContent = `Problem ${id}${colour}`;
+  $("problem").textContent = `Problem ${id}`;
   $("problem").hidden = false;
 }
 
 function setMood(m) {
   if (!m) return;
   const el = $("mood");
-  el.className = `badge mood-${m}`;
-  el.textContent = `Mood: ${m}`;
+  el.hidden = m === "neutral";
+  el.textContent = m[0].toUpperCase() + m.slice(1);
 }
 
 function onEvent(ev) {
   if (!ev) return;
   if (ev.kind === "attempt_start") {
     S.attemptNo = (S.attemptNo ?? 0) + 1;
+    S.attemptStartT = ev.t ?? S.state?.t ?? null;
+    S.attemptLive = true;
+    S.highHold = null;
     S.curEvents = 0;
     S.curSpoken = 0;
     S.debriefing = false;
-    addTimeline("attempt", `Attempt ${S.attemptNo} started`, clock());
+    addTimeline("attempt", `Attempt ${S.attemptNo} started`, "");
+    renderLadderMarks();
   }
   S.curEvents++;
+  S.headDirty = true;
   renderCurrent();
 }
 
@@ -298,7 +466,7 @@ function onSuppressed(s) {
   if (!s) return;
   const ev = s.event || {};
   const detail = describeEventData(ev.data);
-  addTimeline("suppressed", `${ev.kind || "event"}${detail}`, `${s.reason || "?"} · ${clock()}`);
+  addTimeline("suppressed", `${ev.kind || "event"}${detail}`, s.reason || "?");
 }
 
 function describeEventData(d) {
@@ -319,63 +487,166 @@ function onSpoken(line) {
     if (S.latencies.length > LATENCY_WINDOW) S.latencies.shift();
   }
   S.curSpoken++;
-  addTimeline("spoken", line.text, `${hasLat ? ms + " ms · " : ""}${line.kind || ""} · ${clock()}`);
+  addTimeline("spoken", line.text, hasLat ? `${ms} ms` : line.kind || "");
   S.debriefing = false;
-  setCaption(`<span class="who">Coach</span>${esc(line.text)}`, false);
+  setCaption(line.text, false, hasLat ? `${ms} ms` : "");
   renderLatency();
   renderCurrent();
 }
 
 function onDebrief(text) {
   if (!text) return;
-  const cap = $("caption");
+  const t = text.trim();
   if (!S.debriefing) {
     S.debriefing = true;
-    cap.innerHTML = `<span><span class="who">Debrief</span><span id="debrief-body"></span></span>`;
+    setCaption(t, true, "");
+  } else {
+    const el = $("cap-text");
+    el.textContent += " " + t;
+    setCaption(null, true, "");
   }
-  const body = $("debrief-body");
-  body.textContent += (body.textContent ? " " : "") + text.trim();
-  setCaption(null, true);
-  addTimeline("debrief", text.trim(), `debrief · ${clock()}`);
+  addTimeline("debrief", t, "debrief");
 }
 
 function onAttempt(a) {
   if (!a) return;
-  if (a.attempt_no != null) S.attemptNo = a.attempt_no;
-  const stalls = (a.stalls || []).map(([id, sec]) => `#${id} ${Number(sec).toFixed(1)}s`).join(", ");
-  const card = document.createElement("div");
-  card.className = `card ${a.outcome || ""}`;
-  card.innerHTML = `
-    <div class="n">Attempt ${esc(a.attempt_no ?? "?")}</div>
-    <div class="o">${esc(a.outcome || "?")}</div>
-    <div class="d">High hold: <b>${a.high_hold_id ?? "–"}</b>${S.holdmap ? ` / ${S.holdmap.holds.length}` : ""}</div>
-    <div class="d">${a.duration_s != null ? Number(a.duration_s).toFixed(1) + " s" : ""}</div>
-    <div class="d">Stalls: ${stalls || "none"}</div>`;
-  $("attempts").prepend(card);
-  addTimeline("attempt", `Attempt ${a.attempt_no ?? "?"}: ${a.outcome || "?"}, high hold ${a.high_hold_id ?? "–"}`, clock());
+  const no = a.attempt_no ?? S.attemptNo ?? S.attempts.length + 1;
+  S.attemptNo = no;
+  S.attemptLive = false;
+  S.lastOutcome = a.outcome;
+  S.attempts = S.attempts.filter((x) => x.no !== no);
+  S.attempts.push({ no, outcome: a.outcome, high: a.high_hold_id, duration: a.duration_s, stalls: a.stalls || [] });
+  S.freshAttempt = no;
+  S.highHold = a.high_hold_id ?? S.highHold;
+  renderAttempts();
+  renderLadderMarks();
+  const cls = a.outcome === "top" ? "attempt top" : "attempt";
+  addTimeline(cls, `Attempt ${no}: ${outcomeWord(a.outcome).toLowerCase()}, high hold ${a.high_hold_id ?? "–"}`, "");
+  S.headDirty = true;
   renderCurrent();
 }
 
-// ---- Rendering: panels ------------------------------------------------------
-function setCaption(html, debrief) {
-  const cap = $("caption");
-  if (html !== null) cap.innerHTML = html;
+// ---- Rendering: running head ------------------------------------------------
+function renderHead() {
+  S.headDirty = false;
+  const sep = `<span class="sep">·</span>`;
+  const n = holdCount();
+  const of = n ? ` of ${n}` : "";
+  let html;
+  if (S.attemptNo == null) {
+    html = "Waiting for the first attempt";
+  } else if (S.attemptLive) {
+    const hold = S.liveHold ?? S.highHold;
+    const holdTxt = hold != null ? `hold <span class="live-hold num">${hold}</span>${of}` : "on the floor";
+    const el = S.state?.t != null && S.attemptStartT != null ? Math.max(0, S.state.t - S.attemptStartT) : null;
+    html = `Attempt ${S.attemptNo}${sep}${holdTxt}${el != null ? sep + `<span class="num">${fmtTime(el)}</span>` : ""}`;
+  } else {
+    const last = S.attempts.find((x) => x.no === S.attemptNo);
+    const verb = last?.outcome === "top" ? "topped" : last?.outcome === "downclimb" ? "down at" : "fell at";
+    html = `Attempt ${S.attemptNo}${sep}${verb} <span class="num">${last?.high ?? "–"}</span>${of}`;
+  }
+  $("where").innerHTML = html;
+}
+
+function fmtTime(s) {
+  const m = Math.floor(s / 60), r = Math.floor(s % 60);
+  return `${m}:${String(r).padStart(2, "0")}`;
+}
+
+// ---- Rendering: hold ladder -------------------------------------------------
+const MARK_FALL = `<svg viewBox="0 0 16 24"><path d="M4 21 L12 3"/></svg>`;
+const MARK_TOP = `<svg viewBox="0 0 24 24"><path d="M3 13 L9 20 L21 4"/></svg>`;
+
+// One pencil mark per attempt: a red tick for a send, a graphite slash otherwise, with the attempt number.
+function markHtml(a, fresh = false) {
+  const top = a.outcome === "top";
+  return `<span class="mark${top ? " top" : ""}${fresh ? " fresh" : ""}" title="Attempt ${esc(a.no)}: ${esc(outcomeWord(a.outcome))}">` +
+    `${top ? MARK_TOP : MARK_FALL}<span class="a">${esc(a.no)}</span></span>`;
+}
+
+function renderLadder() {
+  const el = $("ladder");
+  const holds = [...(S.holdmap?.holds || [])].sort((a, b) => b.id - a.id);
+  el.style.setProperty("--n", Math.max(holds.length, 1));
+  el.innerHTML = holds.map((h) => {
+    return `<div class="rung" data-id="${h.id}"><span class="n">${h.id}</span><span class="marks"></span></div>`;
+  }).join("");
+  fitLadder();
+  renderLadderMarks();
+}
+
+// Numbers scale with the rung height so 20 holds still fit.
+function fitLadder() {
+  const el = $("ladder");
+  const rung = el.querySelector(".rung");
+  if (!rung || matchMedia("(max-width: 900px)").matches) return;
+  const h = rung.getBoundingClientRect().height;
+  el.style.setProperty("--rung-fs", `${Math.max(14, Math.min(parseFloat(css("--m")) || 40, h * 0.66))}px`);
+}
+
+function renderLadderMarks() {
+  for (const rung of document.querySelectorAll(".rung")) {
+    const id = +rung.dataset.id;
+    rung.classList.toggle("now", S.attemptLive && id === S.liveHold);
+    rung.classList.toggle("high", S.attemptLive && id === S.highHold);
+    const marks = S.attempts.filter((a) => a.high === id).map((a) => markHtml(a, a.no === S.freshAttempt));
+    rung.querySelector(".marks").innerHTML = marks.join("");
+  }
+  S.freshAttempt = null;
+}
+
+// ---- Rendering: side column -------------------------------------------------
+function renderAttempts() {
+  const newest = [...S.attempts].sort((a, b) => b.no - a.no);
+  const n = holdCount();
+  // The attempt in progress is an open entry at the top, with this attempt's counts.
+  const live = S.attemptLive ? `<div class="att live" title="Attempt ${esc(S.attemptNo)}, in progress">
+      <div class="row"><span class="mark"><span class="a">${esc(S.attemptNo)}</span></span><span class="o">Climbing</span></div>
+      <div class="d"><b>${S.curEvents}</b> events · <b>${S.curSpoken}</b> spoken</div></div>` : "";
+  const shown = newest.slice(0, S.attemptLive ? ATTEMPT_CELLS - 1 : ATTEMPT_CELLS);
+  $("attempts").innerHTML = live + shown.map((a) => {
+    const k = (a.stalls || []).length;
+    const stalls = k ? `${k} stall${k > 1 ? "s" : ""}` : "no stalls";
+    const dur = a.duration != null ? `${Number(a.duration).toFixed(1)} s · ` : "";
+    return `<div class="att ${esc(a.outcome || "")}" title="Attempt ${esc(a.no)}">
+      <div class="row">${markHtml(a)}<span class="o">${esc(outcomeWord(a.outcome))}</span></div>
+      <div class="d">hold <span class="num">${a.high ?? "–"}${n ? "/" + n : ""}</span> · ${dur}${stalls}</div></div>`;
+  }).join("");
+  const more = newest.length - shown.length;
+  $("attempts-more").hidden = more <= 0;
+  $("attempts-more").textContent = `${more} earlier, ticked on the ladder`;
+}
+
+function setCaption(text, debrief, ms) {
+  const cap = $("caption"), txt = $("cap-text");
+  if (text !== null) {
+    txt.textContent = text;
+    txt.classList.remove("arrive"); void txt.offsetWidth; txt.classList.add("arrive");
+  }
+  $("cap-who").querySelector(".who").textContent = debrief ? "Debrief" : "Coach";
+  $("cap-ms").textContent = ms;
   cap.classList.toggle("debrief", debrief);
-  cap.classList.remove("faded");
+  cap.classList.toggle("long", debrief && txt.textContent.length > DEBRIEF_LONG_CHARS);
+  const wasTall = document.body.classList.contains("debriefing");
+  document.body.classList.remove("debriefing");
+  const tall = debrief && txt.scrollHeight > txt.clientHeight + 2;
+  document.body.classList.toggle("debriefing", tall);
+  if (tall !== wasTall) S.overlayDirty = true;
+  cap.classList.remove("idle", "waiting");
   clearTimeout(S.captionTimer);
-  S.captionTimer = setTimeout(() => cap.classList.add("faded"), CAPTION_FADE_MS);
+  if (!debrief) S.captionTimer = setTimeout(() => cap.classList.add("idle"), CAPTION_FADE_MS);
 }
 
 function addTimeline(cls, text, meta) {
   const li = document.createElement("li");
   li.className = cls;
+  li.title = `${clock()} · ${text}`;
   li.innerHTML = `<span class="txt">${esc(text)}</span><span class="meta">${esc(meta)}</span>`;
   const ul = $("timeline");
   ul.prepend(li);
   while (ul.children.length > TIMELINE_MAX) ul.lastChild.remove();
+  ul.classList.toggle("overflowing", ul.scrollHeight > ul.clientHeight + 2);
 }
-
-function latClass(ms) { return ms <= LATENCY_GOOD_MS ? "lat-good" : ms <= LATENCY_WARN_MS ? "lat-warn" : "lat-bad"; }
 
 function renderLatency() {
   const l = S.latencies;
@@ -384,14 +655,36 @@ function renderLatency() {
   const sorted = [...l].sort((a, b) => a - b);
   const mid = sorted.length >> 1;
   const median = Math.round(sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2);
-  $("lat-last").innerHTML = `<span class="${latClass(last)}">${last}</span><small>ms</small>`;
-  $("lat-median").innerHTML = `<span class="${latClass(median)}">${median}</span><small>ms (n=${l.length})</small>`;
+  const lateCount = l.filter((ms) => ms > LATENCY_WARN_MS).length;
+  const el = $("lat-last");
+  el.innerHTML = `${last}<small>ms</small>`;
+  el.classList.toggle("late", last > LATENCY_WARN_MS);
+  $("lat-sub").innerHTML = `median <b class="num">${median}</b> ms<br><span class="num">${l.length}</span> cues · ` +
+    (lateCount ? `<b class="num">${lateCount}</b> over target` : "all on target");
+  renderLatencyHistory();
 }
 
-function renderCurrent() {
-  $("cur-no").textContent = S.attemptNo != null ? `#${S.attemptNo}` : "–";
-  $("cur-events").textContent = S.curEvents;
-  $("cur-spoken").textContent = S.curSpoken;
+function renderLatencyHistory() {
+  const svg = $("lat-hist");
+  const vals = S.latencies.slice(-LATENCY_HIST);
+  const max = Math.max(LATENCY_WARN_MS * 1.5, ...vals);
+  const W = 100, H = 40, bw = W / LATENCY_HIST;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const bars = vals.map((ms, i) => {
+    const h = Math.max(1, (ms / max) * H);
+    const x = (LATENCY_HIST - vals.length + i) * bw;
+    return `<rect class="bar${ms > LATENCY_WARN_MS ? " late" : ""}" x="${x + bw * 0.18}" y="${H - h}" width="${bw * 0.64}" height="${h}"/>`;
+  }).join("");
+  const ty = H - (LATENCY_WARN_MS / max) * H;
+  svg.innerHTML = bars + `<line class="target" x1="0" x2="${W}" y1="${ty}" y2="${ty}" vector-effect="non-scaling-stroke"/>`;
+}
+
+function renderCurrent() { renderAttempts(); }
+
+function setConn(kind, label) {
+  const el = $("conn");
+  el.className = `flag ${kind}`;
+  el.querySelector(".label").textContent = label;
 }
 
 // ---- Rendering: overlay -----------------------------------------------------
@@ -409,15 +702,27 @@ function fitFrame() {
   const stage = $("stage"), frameEl = $("frame");
   let iw = video.naturalWidth, ih = video.naturalHeight;
   if (!iw || !ih) [iw, ih] = S.holdmap?.image_size || [16, 9];
-  const sw = stage.clientWidth, sh = stage.clientHeight;
-  if (!sw || !sh) return;
+  const cs = getComputedStyle(stage);
+  const sw = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const sh = stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  if (sw <= 0 || sh <= 0) return;
   const scale = Math.min(sw / iw, sh / ih);
   const w = `${Math.floor(iw * scale)}px`, h = `${Math.floor(ih * scale)}px`;
   if (frameEl.style.width !== w || frameEl.style.height !== h) {
     frameEl.style.width = w;
     frameEl.style.height = h;
     S.overlayDirty = true;
+    alignLadder();
   }
+}
+
+function alignLadder() {
+  const ladder = $("ladder");
+  if (matchMedia("(max-width: 900px)").matches) { ladder.style.paddingTop = ladder.style.paddingBottom = ""; return; }
+  const f = $("frame").getBoundingClientRect(), l = ladder.getBoundingClientRect();
+  ladder.style.paddingTop = `${Math.max(0, f.top - l.top)}px`;
+  ladder.style.paddingBottom = `${Math.max(0, l.bottom - f.bottom)}px`;
+  fitLadder();
 }
 
 function resizeCanvas() {
@@ -433,12 +738,16 @@ function normLimbs(obj) {
   return out;
 }
 
+const OVERLAY_FONT = '"Atkinson Hyperlegible Next", system-ui, sans-serif';
+
 function drawOverlay() {
   resizeCanvas();
   const dpr = window.devicePixelRatio || 1;
   const R = contentRect();
   const P = ([x, y]) => [R.x + x * R.w, R.y + y * R.h];
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // Labels scale with the picture so they stay readable at a distance.
+  const u = Math.max(0.65, Math.min(1.6, R.w / (900 * dpr))) * dpr;
 
   const st = S.state && S.state.person_found !== false ? S.state : null;
   const contacts = normLimbs(st?.contacts);
@@ -446,9 +755,11 @@ function drawOverlay() {
   const heldBy = {};  // hold id -> [limb]
   for (const [limb, id] of Object.entries(contacts)) if (id != null) (heldBy[id] ||= []).push(limb);
 
-  // Holds
+  // Holds: white outlines, numbered; a held hold takes its limb's colour.
   const holds = S.holdmap?.holds || [];
   const byId = {};
+  const placed = [];
+  const hits = (r) => placed.some((q) => r.x0 < q.x1 && r.x1 > q.x0 && r.y0 < q.y1 && r.y1 > q.y0);
   ctx.textBaseline = "middle";
   ctx.textAlign = "center";
   for (const h of holds) {
@@ -456,23 +767,26 @@ function drawOverlay() {
     const [x0, y0] = P([h.bbox[0], h.bbox[1]]);
     const [x1, y1] = P([h.bbox[2], h.bbox[3]]);
     const users = heldBy[h.id];
-    const roleColour = h.role === "start" ? css("--good") : h.role === "top" ? css("--gold") : "rgba(255,255,255,0.75)";
     if (users) {
       ctx.fillStyle = LIMB_COLOURS[users[0]] + "55";
       ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
     }
-    ctx.lineWidth = (users ? 4 : h.role === "mid" ? 2 : 3) * dpr;
-    ctx.strokeStyle = users ? LIMB_COLOURS[users[0]] : roleColour;
+    ctx.lineWidth = (users ? 4 : h.role === "mid" ? 2 : 3) * u;
+    ctx.strokeStyle = users ? LIMB_COLOURS[users[0]] : "rgba(255,255,255,0.8)";
     ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
 
-    const label = h.role === "start" ? `${h.id} S` : h.role === "top" ? `${h.id} TOP` : `${h.id}`;
-    ctx.font = `700 ${16 * dpr}px system-ui, sans-serif`;
-    const tw = ctx.measureText(label).width + 10 * dpr, th = 22 * dpr;
-    const lx = (x0 + x1) / 2, ly = y0 - th / 2 - 2 * dpr;
-    ctx.fillStyle = h.role === "mid" ? "rgba(0,0,0,0.7)" : roleColour;
+    const label = h.role === "start" ? `${h.id} START` : h.role === "top" ? `${h.id} TOP` : `${h.id}`;
+    ctx.font = `700 ${17 * u}px ${OVERLAY_FONT}`;
+    const tw = ctx.measureText(label).width + 12 * u, th = 24 * u;
+    const lx = (x0 + x1) / 2;
+    let ly = Math.max(th / 2, y0 - th / 2 - 3 * u);
+    const box = (y) => ({ x0: lx - tw / 2, x1: lx + tw / 2, y0: y - th / 2, y1: y + th / 2 });
+    if (hits(box(ly))) ly = y1 + th / 2 + 3 * u;   // try below the hold instead
+    placed.push(box(ly));
+    ctx.fillStyle = h.role === "mid" ? "rgba(17,19,21,0.78)" : "#ffffff";
     ctx.fillRect(lx - tw / 2, ly - th / 2, tw, th);
-    ctx.fillStyle = h.role === "mid" ? "#fff" : "#000";
-    ctx.fillText(label, lx, ly);
+    ctx.fillStyle = h.role === "mid" ? "#ffffff" : "#111315";
+    ctx.fillText(label, lx, ly + 1 * u);
   }
 
   if (!st) return;
@@ -482,23 +796,23 @@ function drawOverlay() {
   for (const [k, v] of Object.entries(st.keypoints || {})) kp[/^\d+$/.test(k) ? MP_NAMES[+k] : k] = v;
   const vis = (p) => p && (p[2] == null || p[2] >= MIN_VISIBILITY);
   ctx.lineCap = "round";
-  ctx.lineWidth = 4 * dpr;
-  ctx.strokeStyle = "rgba(255,255,255,0.85)";
+  ctx.lineWidth = 4 * u;
+  ctx.strokeStyle = "rgba(255,255,255,0.88)";
   for (const [a, b] of BONES) {
     if (!vis(kp[a]) || !vis(kp[b])) continue;
     const [ax, ay] = P(kp[a]), [bx, by] = P(kp[b]);
     ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
   }
-  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.fillStyle = "rgba(255,255,255,0.92)";
   for (const p of Object.values(kp)) {
     if (!vis(p)) continue;
     const [x, y] = P(p);
-    ctx.beginPath(); ctx.arc(x, y, 3 * dpr, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x, y, 3 * u, 0, Math.PI * 2); ctx.fill();
   }
   if (st.hip) {
     const [x, y] = P(st.hip);
-    ctx.strokeStyle = css("--accent"); ctx.lineWidth = 3 * dpr;
-    ctx.beginPath(); ctx.arc(x, y, 9 * dpr, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 3 * u;
+    ctx.beginPath(); ctx.arc(x, y, 10 * u, 0, Math.PI * 2); ctx.stroke();
   }
 
   // Limb points, with a line to the hold they're on
@@ -509,23 +823,28 @@ function drawOverlay() {
     const hold = byId[contacts[limb]];
     if (hold) {
       const [hx, hy] = P(hold.center);
-      ctx.strokeStyle = colour; ctx.lineWidth = 2 * dpr; ctx.setLineDash([6 * dpr, 4 * dpr]);
+      ctx.strokeStyle = colour; ctx.lineWidth = 2 * u; ctx.setLineDash([6 * u, 4 * u]);
       ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(hx, hy); ctx.stroke();
       ctx.setLineDash([]);
     }
-    ctx.fillStyle = colour; ctx.strokeStyle = "#000"; ctx.lineWidth = 2 * dpr;
-    ctx.beginPath(); ctx.arc(x, y, (hold ? 12 : 9) * dpr, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = "#000"; ctx.font = `800 ${11 * dpr}px system-ui, sans-serif`;
-    ctx.fillText(limb, x, y);
+    ctx.fillStyle = colour; ctx.strokeStyle = "#111315"; ctx.lineWidth = 2 * u;
+    ctx.beginPath(); ctx.arc(x, y, (hold ? 13 : 10) * u, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#111315"; ctx.font = `800 ${11 * u}px ${OVERLAY_FONT}`;
+    ctx.fillText(limb, x, y + 0.5 * u);
   }
 }
 
+let stageKey = "";
 function frame() {
   fitFrame();
+  const r = $("stage").getBoundingClientRect(), f = $("frame").getBoundingClientRect();
+  const key = `${r.top}|${r.height}|${f.top}|${f.height}`;
+  if (key !== stageKey) { stageKey = key; alignLadder(); }
   if (S.overlayDirty) { S.overlayDirty = false; drawOverlay(); }
   requestAnimationFrame(frame);
 }
-new ResizeObserver(() => { S.overlayDirty = true; }).observe(canvas);
+setInterval(() => { if (S.headDirty) renderHead(); }, HEAD_PAINT_MS);
+new ResizeObserver(() => { S.overlayDirty = true; fitLadder(); }).observe(document.body);
 
 // ---- Video ------------------------------------------------------------------
 // Two ways in: an MJPEG stream at /video, or JPEG frames over the WebSocket (binary
@@ -564,8 +883,7 @@ function connect() {
   ws.binaryType = "blob";
   ws.onopen = () => {
     backoff = 500;
-    $("conn").className = "badge small live";
-    $("conn").textContent = "LIVE";
+    setConn("live", "Live");
     loadVideo();
   };
   ws.onmessage = (e) => {
@@ -574,8 +892,7 @@ function connect() {
   };
   ws.onclose = () => {
     wsVideo = false;
-    $("conn").className = "badge small down";
-    $("conn").textContent = "reconnecting…";
+    setConn("down", "Reconnecting…");
     retry();
   };
 }
@@ -583,8 +900,7 @@ function retry() { setTimeout(connect, backoff); backoff = Math.min(backoff * 2,
 
 // ---- Demo mode (?demo=1): fake bus traffic, no server ------------------------
 function runDemo() {
-  $("conn").className = "badge small offline";
-  $("conn").textContent = "demo";
+  setConn("demo", "Demo data");
   const holds = [];
   const path = [[0.45, 0.88], [0.55, 0.86], [0.5, 0.74], [0.42, 0.63], [0.56, 0.55],
                 [0.47, 0.44], [0.58, 0.34], [0.5, 0.24], [0.44, 0.14], [0.52, 0.06]];
@@ -643,7 +959,8 @@ function runDemo() {
   }, 2500);
   setInterval(() => {   // attempt end + debrief, every 30 s
     const outcome = ["fall", "top", "downclimb"][attempt % 3];
-    handle({ topic: "attempt", data: { attempt_no: attempt, duration_s: 28.4, high_hold_id: outcome === "top" ? 10 : 6,
+    const high = { fall: 6, top: 10, downclimb: 8 }[outcome];
+    handle({ topic: "attempt", data: { attempt_no: attempt, duration_s: 28.4, high_hold_id: high,
       outcome, stalls: [[5, 3.2], [7, 1.8]], cues_given: [], cues_followed: [] } });
     handle({ topic: "mood", data: outcome === "top" ? "impressed" : "exasperated" });
     ["Right, attempt " + attempt + ".", "You hung on hold 5 for three seconds.",
@@ -655,8 +972,10 @@ function runDemo() {
 
 // ---- Start ------------------------------------------------------------------
 $("hide-supp").addEventListener("change", (e) => $("timeline").classList.toggle("hide-suppressed", e.target.checked));
+$("lat-target").textContent = LATENCY_WARN_MS;
 if (params.has("offline")) $("offline").hidden = false;
 renderCurrent();
+renderLadder();
 requestAnimationFrame(frame);
 if (DEMO) runDemo(); else connect();
 </script>
