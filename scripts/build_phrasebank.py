@@ -118,8 +118,9 @@ def build_prompt(persona: dict, kind: str, level: int, mood: str) -> str:
     examples = [
         line
         for line in persona["examples"][mood]
-        if reject_reason(line, max_words, blocked_phrases(persona)) is None
+        if reject_reason(line, max_words, blocked_phrases(persona, kind)) is None
     ]
+    off_topic = (persona.get("off_topic") or {}).get(kind, [])
     return "\n".join(
         (
             f"Event: {kind}: {KIND_MEANINGS[kind]}.",
@@ -135,6 +136,7 @@ def build_prompt(persona: dict, kind: str, level: int, mood: str) -> str:
             "You don't know the side, hold number, colour or how many times something happened, "
             "so never state them: no left or right, no numbers, no colour names, no counts. Use "
             "a slot or leave it out.",
+            *([f"Never say, for this event: {' | '.join(off_topic)}"] if off_topic else []),
             "Return a JSON list of strings.",
         )
     )
@@ -155,7 +157,7 @@ def build_bank(ask: Ask, persona: dict, kinds: tuple[str, ...], previous: dict) 
                     lines = select_lines(
                         candidates,
                         max_words,
-                        blocked_phrases(persona),
+                        blocked_phrases(persona, kind),
                         KEEP,
                         level_slot(kind, level),
                     )
@@ -166,6 +168,26 @@ def build_bank(ask: Ask, persona: dict, kinds: tuple[str, ...], previous: dict) 
                     lines = previous.get(kind, {}).get(str(level), {}).get(mood, [])
                 bank[kind][str(level)][mood] = lines
     return bank
+
+
+def prune_bank(bank: dict, persona: dict) -> tuple[dict, int]:
+    """The bank without lines today's rules reject (e.g. a new off_topic phrase), and how many
+    were dropped. Lets a rule change clean an existing bank without regenerating it."""
+    pruned: dict = {}
+    dropped = 0
+    for kind, levels in bank.items():
+        banned = blocked_phrases(persona, kind)
+        pruned[kind] = {}
+        for level, moods in levels.items():
+            max_words = persona["max_words"][f"level{level}"]
+            pruned[kind][level] = {}
+            for mood, lines in moods.items():
+                kept = [line for line in lines if reject_reason(line, max_words, banned) is None]
+                for line in set(lines) - set(kept):
+                    log.info("pruned %s L%s %s: %r", kind, level, mood, line)
+                dropped += len(lines) - len(kept)
+                pruned[kind][level][mood] = kept
+    return pruned, dropped
 
 
 def make_ask(api_key: str, model: str, system_instruction: str) -> Ask:
@@ -254,6 +276,7 @@ def main() -> None:
     voice_cfg = load_yaml(CONFIG_PATH)["voice"]
     persona = load_yaml(voice_cfg["persona"])
     bank = json.loads(BANK_PATH.read_text(encoding="utf-8")) if BANK_PATH.exists() else {}
+    bank, pruned = prune_bank(bank, persona)
 
     if args.check:
         raise SystemExit(check_clips(bank, persona, make_tts(voice_cfg, persona)))
@@ -274,7 +297,7 @@ def main() -> None:
     if args.dry_run:
         print(json.dumps(bank, indent=2, ensure_ascii=False))
     else:
-        if not missing:
+        if not missing or pruned:
             write_bank(bank)
         tts = make_tts(voice_cfg, persona)
         for text in texts:

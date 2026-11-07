@@ -296,3 +296,61 @@ def test_hold_places_name_holds_by_height_on_the_route() -> None:
     assert places == {1: "low hold", 2: "middle hold", 3: "high hold", 4: "top hold"}
     assert slot_values({"hold_id": 3}, None, places) == {"hold": "high hold"}
     assert slot_values({"hold_id": 3}) == {"hold": "hold three"}  # no hold map yet
+
+
+def test_off_topic_phrases_are_blocked_only_for_their_event() -> None:
+    from coach.voice.phrasebank import blocked_phrases, reject_reason
+
+    persona = {
+        "banned_phrases": [],
+        "colours": [],
+        "off_topic": {"fall": ["feet first"], "hand_searching": ["chalk"]},
+    }
+    assert reject_reason("Feet first.", 4, blocked_phrases(persona, "fall")) == "banned phrase"
+    assert reject_reason("Feet first.", 4, blocked_phrases(persona, "feet_low")) is None
+    assert reject_reason("Grab the chalk.", 4, blocked_phrases(persona, "hand_searching"))
+    assert reject_reason("Chalk up.", 4, blocked_phrases(persona, "fall")) is None
+
+
+def test_prune_bank_drops_lines_new_rules_reject() -> None:
+    from scripts.build_phrasebank import prune_bank
+
+    persona = {
+        "banned_phrases": [],
+        "colours": [],
+        "max_words": {"level0": 4},
+        "off_topic": {"fall": ["feet first"]},
+    }
+    bank = {
+        "fall": {"0": {"neutral": ["Feet first.", "Chalk up."]}},
+        "feet_low": {"0": {"neutral": ["Feet first."]}},
+    }
+    pruned, dropped = prune_bank(bank, persona)
+    assert dropped == 1
+    assert pruned["fall"]["0"]["neutral"] == ["Chalk up."]
+    assert pruned["feet_low"]["0"]["neutral"] == ["Feet first."]
+
+
+def test_persona_hold_bands_tell_climb2_holds_apart() -> None:
+    import json
+    from pathlib import Path
+
+    import yaml
+
+    from coach.contracts import Hold, HoldMap
+    from coach.voice.phrasebank import hold_places
+
+    persona = yaml.safe_load(Path("config/personas/coach.yaml").read_text())
+    raw = json.loads(Path("data/holdmaps/climb2.json").read_text())
+    holds = [Hold(h["id"], tuple(h["center"]), tuple(h["bbox"])) for h in raw["holds"]]
+    holdmap = HoldMap("climb2", raw["colour"], holds, tuple(raw["image_size"]), raw["mode"])
+    places = hold_places(holdmap, persona["hold_places"])
+    assert [places[i] for i in (1, 2, 3, 7, 8)] == [
+        "bottom hold",
+        "low hold",
+        "middle hold",
+        "high hold",
+        "top hold",
+    ]
+    assert len(set(places.values())) == 6  # 4-6 sit within 0.1 of each other: one name
+    assert all(len(name.split()) <= 2 for name in places.values())

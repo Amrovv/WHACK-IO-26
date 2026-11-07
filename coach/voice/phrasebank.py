@@ -261,9 +261,13 @@ def render_texts(
     return sorted(texts)
 
 
-def blocked_phrases(persona: dict) -> list[str]:
-    """Banned phrases plus colour names, which must come from the {colour} slot."""
-    return [*persona["banned_phrases"], *persona["colours"]]
+def blocked_phrases(persona: dict, kind: str | None = None) -> list[str]:
+    """Banned phrases plus colour names, which must come from the {colour} slot.
+
+    With `kind`, also the persona's off_topic phrases for that event.
+    """
+    off_topic = (persona.get("off_topic") or {}).get(kind, []) if kind else []
+    return [*persona["banned_phrases"], *persona["colours"], *off_topic]
 
 
 def persona_instruction(persona: dict) -> str:
