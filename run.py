@@ -45,6 +45,31 @@ def load(module: str, name: str, fallback=None):
         return fallback
 
 
+def clip_info(path: str) -> dict:
+    """Frame count and fps of a video file, so the dashboard can show clip progress."""
+    import cv2
+
+    cap = cv2.VideoCapture(path)
+    try:
+        frames, fps = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), float(cap.get(cv2.CAP_PROP_FPS))
+    finally:
+        cap.release()
+    return {"frames": frames, "fps": fps} if frames > 0 and fps > 0 else {}
+
+
+def build_hello(args: argparse.Namespace, probe=clip_info) -> dict:
+    """What the dashboard is told on connect: live camera, or real-time analysis of a clip."""
+    hello = {"problem_id": args.problem, "no_llm": args.no_llm}
+    if isinstance(args.source, int) and not args.replay_pose:
+        hello.update(mode="live", source={"kind": "camera", "index": args.source})
+    elif isinstance(args.source, str):
+        hello.update(mode="offline", source={"kind": "file", "name": Path(args.source).name})
+        hello["source"].update(probe(args.source))
+    else:
+        hello.update(mode="offline", source={"kind": "poses", "name": args.replay_pose.name})
+    return hello
+
+
 def source_spec(text: str) -> int | str:
     """cam:N -> camera index, file:PATH -> path."""
     kind, _, value = text.partition(":")
@@ -92,6 +117,7 @@ class QuietServer:
         config = uvicorn.Config(
             app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=1
         )
+        self.app = app
         self.server = _Server(config)
         self.url = f"http://{host}:{port}/"
 
@@ -102,6 +128,9 @@ class QuietServer:
             log.error("dashboard server failed to start on %s: %s", self.url, e)
 
     def stop(self) -> None:
+        hub = getattr(self.app.state, "hub", None)
+        if hub is not None:  # end open dashboards and video streams so shutdown is quick
+            hub.close()
         self.server.should_exit = True
 
 
@@ -150,8 +179,7 @@ async def main(args: argparse.Namespace) -> int:
     server = None
     if not args.fast:
         create_app = load("coach.server", "create_app", stubs.create_app)
-        hello = {"problem_id": args.problem, "no_llm": args.no_llm}
-        server = QuietServer(create_app(bus, hello), args.host, args.port)
+        server = QuietServer(create_app(bus, build_hello(args)), args.host, args.port)
 
     tasks = [asyncio.create_task(bus_log.run(), name="bus-log")]
     tasks.append(asyncio.create_task(brain.run(states), name="brain"))

@@ -53,6 +53,11 @@ class LatestFrame:
     def stop(self) -> None:
         self._stop.set()
 
+    def describe(self) -> dict:
+        if isinstance(self.source, int):
+            return {"kind": "camera", "index": self.source}
+        return {"kind": "file", "name": Path(self.source).name}
+
     def get(self) -> tuple[int, bytes | None]:
         with self._lock:
             return self.seq, self.jpeg
@@ -115,7 +120,8 @@ def build_app(frames: LatestFrame, use_base64: bool, ws_video: bool) -> FastAPI:
     async def ws(sock: WebSocket) -> None:
         await sock.accept()
         log.info("ws client connected")
-        await sock.send_text(json.dumps({"topic": "hello", "data": {"problem_id": "stream-test"}}))
+        hello = {"problem_id": "stream-test", "mode": "video_test", "source": frames.describe()}
+        await sock.send_text(json.dumps({"topic": "hello", "data": hello}))
         last = 0
         sent, t0 = 0, time.monotonic()
         try:

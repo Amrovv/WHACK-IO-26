@@ -212,3 +212,18 @@ def test_websocket_sends_hello_then_bus_items():
     assert hello["topic"] == "hello" and hello["payload"] == {"problem_id": "demo"}
     assert msg["topic"] == "event" and msg["payload"]["kind"] == "stalling"
     assert isinstance(msg["t"], float)
+
+
+async def test_close_ends_dashboards_and_video_streams():
+    hub = Hub(Bus(), clock=FakeClock())
+    client = hub.connect()
+    for i in range(CLIENT_BACKLOG):
+        client.offer("event", f"e{i}")  # a full backlog must not block the end marker
+    frames = hub.frames()
+    waiting = asyncio.ensure_future(anext(frames))
+    await asyncio.sleep(0)
+    hub.close()
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(waiting, 1)
+    items = [client.queue.get_nowait() for _ in range(client.queue.qsize())]
+    assert items[-1] is None

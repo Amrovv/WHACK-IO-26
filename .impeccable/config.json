@@ -38,6 +38,15 @@
         ],
         "createdAt": "2026-11-07T13:32:50.189Z",
         "reason": "Claude: unchosen decision-round sketch, not shipped UI"
+      },
+      {
+        "rule": "design-system-color",
+        "value": "rgb(0, 0, 0)",
+        "files": [
+          "web/index.html"
+        ],
+        "createdAt": "2026-11-07T15:45:43.858Z",
+        "reason": "Claude: .dot borders use currentColor (graphite/ink/red via CSS vars); the static checker resolves it to black"
       }
     ]
   }

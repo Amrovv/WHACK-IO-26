@@ -20,7 +20,13 @@
     debrief_text  str  (or {"text": str})
   Extra, optional (not bus topics, for the server to send if it can):
     mood          "neutral" | "impressed" | "exasperated"  (or {"mood": ...})
-    hello         {"no_llm": bool, "persona": str, "mood": str, "problem_id": str}
+    hello         {"no_llm": bool, "persona": str, "mood": str, "problem_id": str,
+                   "mode": "live" | "offline" | "video_test" | "session_replay",
+                   "source": {"kind": "camera", "index": int}
+                           | {"kind": "file", "name": str, "frames": int, "fps": float}
+                           | {"kind": "poses" | "bus_log", "name": str}}
+                  mode drives the head flag and layout: video_test shows the video only,
+                  offline shows clip progress (from each state's frame_idx and source.frames).
   Any payload with a "mood" field also updates the mood shown beside the caption.
 
   URL params: ?demo=1 fake data, no server needed.  ?offline=1 force the offline flag.
@@ -108,9 +114,15 @@
     display: inline-flex; align-items: center; gap: 0.45em; }
   .flag.boxed { border: 2px solid var(--ink); color: var(--ink); padding: 0.1em 0.5em; }
   .dot { width: 0.7em; height: 0.7em; border-radius: 50%; border: 2px solid currentColor; flex: none; }
-  #conn.live { color: var(--red); }
-  #conn.live .dot { background: var(--red); border-color: var(--red); animation: live-blink 1.4s ease-in-out infinite; }
+  /* Mode: red flashing for a live camera only; real-time analysis of a clip stays ink. */
+  #mode.live { color: var(--red); }
+  #mode.live .dot { background: var(--red); border-color: var(--red); animation: live-blink 1.4s ease-in-out infinite; }
   @keyframes live-blink { 50% { opacity: 0.2; } }
+  #mode.realtime { color: var(--ink); }
+  #mode.realtime .dot { background: var(--ink); }
+  #mode.boxed .dot { display: none; }
+  #conn.down { color: var(--ink); }
+  #stream-stats { color: var(--graphite); }
 
   /* ---- Video ---- */
   #stage { grid-area: stage; position: relative; min-height: 0; min-width: 0;
@@ -122,6 +134,21 @@
   #video:not([src]) { visibility: hidden; }
   #novideo { position: absolute; left: 0.8em; bottom: 0.6em; color: #c9ced3; font-size: var(--s); font-weight: 600; }
   #novideo small { font-weight: 400; color: #9aa1a7; margin-left: 0.4em; }
+
+  /* Clip progress (offline demo): a thin bar along the bottom of the video and its label. */
+  #clip { position: absolute; left: 0; right: 0; bottom: 0; pointer-events: none; }
+  #clip-label { position: absolute; left: 0.8em; bottom: calc(5px + 0.6em); font-size: var(--s); font-weight: 600;
+    color: var(--ink); background: rgba(11, 12, 13, 0.72); padding: 0.1em 0.45em; white-space: nowrap; }
+  #clip-label .sep { color: var(--pencil); margin: 0 0.3em; font-weight: 400; }
+  #clip-bar { height: 5px; background: rgba(238, 240, 234, 0.18); }
+  #clip-bar span { display: block; height: 100%; width: 0; background: var(--ink); }
+
+  /* Video test: there's no coach data, so the video gets the whole screen. */
+  body[data-mode="video_test"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--head-h) minmax(0, 1fr);
+    grid-template-areas: "head" "stage"; }
+  body[data-mode="video_test"] #ladder, body[data-mode="video_test"] #side,
+  body[data-mode="video_test"] #caption { display: none; }
+  body[data-mode="video_test"] #stage { padding-right: calc(var(--gap) * 1.4); }
 
   /* ---- Hold ladder: the problem, top hold at the top; each attempt ticked at its highpoint ---- */
   #ladder { grid-area: ladder; min-width: 0; display: grid; grid-template-rows: repeat(var(--n, 1), minmax(0, 1fr));
@@ -222,7 +249,7 @@
   @keyframes arrive { from { opacity: 0.35; transform: translateY(0.18em); } }
 
   @media (prefers-reduced-motion: reduce) {
-    #cap-text.arrive, .mark.fresh path, #conn.live .dot { animation: none; stroke-dashoffset: 0; }
+    #cap-text.arrive, .mark.fresh path, #mode.live .dot { animation: none; stroke-dashoffset: 0; }
   }
 
   /* Narrow screens: stack everything and scroll; the ladder runs left (1) to right (top). */
@@ -252,7 +279,9 @@
     <span id="problem" class="flag" hidden></span>
     <span id="holds-mode" class="flag boxed" hidden>Colour-only holds</span>
     <span id="offline" class="flag boxed" hidden>Offline: no LLM</span>
-    <span id="conn" class="flag"><span class="dot"></span><span class="label">Disconnected</span></span>
+    <span id="stream-stats" class="flag num" hidden></span>
+    <span id="mode" class="flag" hidden><span class="dot"></span><span class="label"></span></span>
+    <span id="conn" class="flag down"><span class="dot"></span><span class="label">Disconnected</span></span>
   </div>
 </header>
 
@@ -261,6 +290,7 @@
     <div id="novideo">No video<small>waiting for the camera stream</small></div>
     <img id="video" alt="Live camera view of the climber">
     <canvas id="overlay"></canvas>
+    <div id="clip" hidden><div id="clip-label"></div><div id="clip-bar"><span></span></div></div>
   </div>
 </section>
 
@@ -304,6 +334,7 @@ const LATENCY_WINDOW = 50;          // cues used for the median
 const LATENCY_HIST = 24;            // bars in the latency history
 const LATENCY_WARN_MS = 800;        // target from CLAUDE.md
 const RECONNECT_MAX_MS = 5000;
+const STREAM_WINDOW = 30;           // frames averaged for the video-test fps and size
 const DEBRIEF_LONG_CHARS = 240;    // longer debriefs step down a size
 const HEAD_PAINT_MS = 250;          // running head refresh
 const ATTEMPT_CELLS = 2;            // newest attempts shown as cells; all of them are on the ladder
@@ -347,6 +378,9 @@ const MIN_VISIBILITY = 0.4;
 
 // ---- State ------------------------------------------------------------------
 const S = {
+  mode: null,            // "live" | "offline" | "video_test" | "session_replay" | "demo", from hello
+  source: null,          // hello.source
+  stream: { arrivals: [], bytes: [] },  // video test: recent frame arrival times and sizes
   holdmap: null,
   state: null,
   latencies: [],
@@ -396,6 +430,68 @@ function handle(msg) {
 function onHello(d) {
   if (d.no_llm || d.offline) $("offline").hidden = false;
   if (d.problem_id) showProblem(d.problem_id);
+  if (d.mode) setMode(d.mode, d.source || null);
+}
+
+const MODE_FLAGS = {
+  live: (src) => ["live", src?.index != null ? `Live · camera ${src.index}` : "Live"],
+  offline: () => ["realtime", "Analysing in real time"],
+  video_test: () => ["boxed", "Video test"],
+  session_replay: (src) => ["boxed", src?.name ? `Session replay · ${src.name}` : "Session replay"],
+  demo: () => ["boxed", "Demo data"],
+};
+
+function setMode(mode, source) {
+  S.mode = mode;
+  S.source = source;
+  document.body.dataset.mode = mode;
+  const flag = $("mode"), make = MODE_FLAGS[mode];
+  flag.hidden = !make;
+  if (make) {
+    const [cls, label] = make(source);
+    flag.className = `flag ${cls}`;
+    flag.querySelector(".label").textContent = label;
+  }
+  $("clip").hidden = !(mode === "offline" && source?.kind === "file" && source.frames > 0);
+  $("stream-stats").hidden = mode !== "video_test";
+  if (mode === "video_test" || mode === "session_replay") $("problem").hidden = true;
+  $("novideo").querySelector("small").textContent = NO_VIDEO_NOTES[mode] || NO_VIDEO_NOTES.live;
+  if (mode === "offline" && source?.name) $("clip-label").textContent = source.name;
+  S.headDirty = true;
+  S.overlayDirty = true;
+}
+
+const NO_VIDEO_NOTES = {
+  live: "waiting for the camera stream",
+  offline: "waiting for the video",
+  video_test: "waiting for frames",
+  session_replay: "session replays carry coaching data only",
+  demo: "demo data has no camera",
+};
+
+// Offline demo: where we are in the clip, from the frame index of the state being analysed.
+function renderClip(frameIdx) {
+  const src = S.source;
+  if ($("clip").hidden || !Number.isFinite(frameIdx)) return;
+  const pos = frameIdx % src.frames, loop = Math.floor(frameIdx / src.frames) + 1;
+  const fps = src.fps || 30, sep = `<span class="sep">·</span>`;
+  $("clip-bar").firstElementChild.style.width = `${(100 * pos) / src.frames}%`;
+  $("clip-label").innerHTML = `${esc(src.name)}${sep}<span class="num">${fmtTime(pos / fps)} / ${fmtTime(src.frames / fps)}</span>` +
+    (loop > 1 ? `${sep}loop <span class="num">${loop}</span>` : "");
+}
+
+// Video test: frames per second and size, measured from what actually arrives.
+function renderStreamStats() {
+  if (S.mode !== "video_test") return;
+  const { arrivals, bytes } = S.stream;
+  const span = (arrivals.at(-1) - arrivals[0]) / 1000;
+  const fps = arrivals.length > 1 && span > 0 ? ((arrivals.length - 1) / span).toFixed(1) : null;
+  const kb = bytes.length ? Math.round(bytes.reduce((a, b) => a + b, 0) / bytes.length / 1024) : null;
+  const size = video.naturalWidth ? `${video.naturalWidth}×${video.naturalHeight}` : "";
+  const parts = wsVideo
+    ? [fps && `${fps} fps`, kb != null && `${kb} KB/frame`, size, "WebSocket"]
+    : [size, "MJPEG"];
+  $("stream-stats").textContent = parts.filter(Boolean).join(" · ") || "Waiting for frames";
 }
 
 function onHoldmap(hm) {
@@ -425,6 +521,7 @@ function luminance(hex) {
 function onState(st) {
   S.state = st;
   S.overlayDirty = true;
+  renderClip(st?.frame_idx);
   const ids = Object.values(normLimbs(st?.contacts)).filter((id) => id != null);
   const live = st?.person_found !== false && ids.length ? Math.max(...ids) : null;
   if (live !== S.liveHold) { S.liveHold = live; renderLadderMarks(); }
@@ -534,7 +631,9 @@ function renderHead() {
   const n = holdCount();
   const of = n ? ` of ${n}` : "";
   let html;
-  if (S.attemptNo == null) {
+  if (S.mode === "video_test") {
+    html = "Video stream test";
+  } else if (S.attemptNo == null) {
     html = "Waiting for the first attempt";
   } else if (S.attemptLive) {
     const hold = S.liveHold ?? S.highHold;
@@ -682,9 +781,11 @@ function renderLatencyHistory() {
 
 function renderCurrent() { renderAttempts(); }
 
+// Only shown when something is wrong; while connected, the mode flag says what's running.
 function setConn(kind, label) {
   const el = $("conn");
   el.className = `flag ${kind}`;
+  el.hidden = kind === "ok";
   el.querySelector(".label").textContent = label;
 }
 
@@ -861,6 +962,10 @@ function loadVideo() {
 
 function showFrame(blob) {
   wsVideo = true;
+  const st = S.stream;
+  st.arrivals.push(performance.now());
+  st.bytes.push(blob.size);
+  if (st.arrivals.length > STREAM_WINDOW) { st.arrivals.shift(); st.bytes.shift(); }
   const old = frameUrl;
   frameUrl = URL.createObjectURL(blob);
   video.src = frameUrl;
@@ -884,7 +989,7 @@ function connect() {
   ws.binaryType = "blob";
   ws.onopen = () => {
     backoff = 500;
-    setConn("live", "Live");
+    setConn("ok", "Connected");
     loadVideo();
   };
   ws.onmessage = (e) => {
@@ -901,7 +1006,8 @@ function retry() { setTimeout(connect, backoff); backoff = Math.min(backoff * 2,
 
 // ---- Demo mode (?demo=1): fake bus traffic, no server ------------------------
 function runDemo() {
-  setConn("demo", "Demo data");
+  setConn("ok", "Demo data");
+  setMode("demo", null);
   const holds = [];
   const path = [[0.45, 0.88], [0.55, 0.86], [0.5, 0.74], [0.42, 0.63], [0.56, 0.55],
                 [0.47, 0.44], [0.58, 0.34], [0.5, 0.24], [0.44, 0.14], [0.52, 0.06]];
@@ -978,6 +1084,7 @@ if (params.has("offline")) $("offline").hidden = false;
 renderCurrent();
 renderLadder();
 requestAnimationFrame(frame);
+setInterval(renderStreamStats, 1000);
 if (DEMO) runDemo(); else connect();
 </script>
 </body>

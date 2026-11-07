@@ -133,7 +133,9 @@ A near-monochrome graphite logbook with two inks reserved for meaning, plus one 
 - **Yellow Ink** (yellow-ink): dark olive-brown ink used only on yellow: the caption text, the boxed "Coach" speaker tag, the latency in the band. Idle and waiting captions fade it to 62–70% alpha rather than switching colour.
 
 ### Secondary
-- **Red Pen** (red-pen): marks a send (top) only: the red tick on the ladder, the "Top" outcome in the attempts list, the topped line in the timeline. Never used for errors or warnings. One exception, at the user's request: the "Live" connection flag in the running head is red with a slowly flashing dot (steady under reduced motion).
+- **Red Pen** (red-pen): marks a send (top) only: the red tick on the ladder, the "Top" outcome in the attempts list, the topped line in the timeline. Never used for errors or warnings. One exception, at the user's request: the "Live · camera N" mode flag (live webcam demo only) is red with a slowly flashing dot (steady under reduced motion).
+
+**Mode flag.** The running head says what is running, from the server's hello: "Live · camera N" (red, flashing) for a webcam; "Analysing in real time" (ink, steady dot) for a pre-recorded clip analysed live, with a clip-progress strip (name, time, loop) along the bottom of the video; "Video test" (boxed) for `web/stream_test.py`, where the layout drops to the video alone with stream stats; "Session replay · <log>" (boxed) for a bus-log replay. Never call a clip "Recorded": the analysis is real time. The connection flag appears only when something is wrong ("Reconnecting…").
 
 ### Tertiary
 - **Live Hold** (runtime, defaults to Pencil Ink): the problem's own hold colour, set from the hold map, fills the live rung number and the hold chip in the running head. Problem colours that would read as Red Pen or Field-Book Yellow (pink, red, orange, yellow) fall back to the Pencil Ink block. Its ink flips to Graphite Page or white by luminance.

@@ -279,9 +279,9 @@ class VideoPerception(_Worker):
                 ok, img = False, None
                 for _ in range(skip):
                     ok, img = cap.read()
-                    frame_idx += 1
                     if not ok:
                         break
+                    frame_idx += 1
                 if not ok:
                     if not is_file:
                         log.warning("camera read failed, retrying")

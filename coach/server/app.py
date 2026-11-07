@@ -69,7 +69,7 @@ class Client:
     """One dashboard connection: a bounded backlog plus its own state throttle."""
 
     def __init__(self, clock: Clock) -> None:
-        self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=CLIENT_BACKLOG)
+        self.queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=CLIENT_BACKLOG)
         self.clock = clock
         self.last_state = -float("inf")
         self.dropped = 0
@@ -84,6 +84,12 @@ class Client:
             self.queue.get_nowait()
             self.dropped += 1
         self.queue.put_nowait(msg)
+
+    def close(self) -> None:
+        """Queue the end-of-stream marker (None), even if the backlog is full."""
+        if self.queue.full():
+            self.queue.get_nowait()
+        self.queue.put_nowait(None)
 
 
 class Hub:
@@ -103,6 +109,7 @@ class Hub:
         self._frame_cond = asyncio.Condition()
         self._sources = [(topic, bus.subscribe(topic)) for topic in TOPICS]
         self._tasks: list[asyncio.Task] = []
+        self.closed = False
 
     def start(self) -> None:
         self._tasks = [asyncio.create_task(self._pump(t, q)) for t, q in self._sources]
@@ -111,6 +118,17 @@ class Hub:
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+
+    def close(self) -> None:
+        """Ask every open /ws and /video connection to finish, so shutdown doesn't hang on them."""
+        self.closed = True
+        for client in self.clients:
+            client.close()
+        asyncio.get_running_loop().create_task(self._wake_frames())
+
+    async def _wake_frames(self) -> None:
+        async with self._frame_cond:
+            self._frame_cond.notify_all()
 
     def connect(self) -> Client:
         client = Client(self.clock)
@@ -147,7 +165,11 @@ class Hub:
         seen, last = self.frame_seq, -float("inf")
         while True:
             async with self._frame_cond:
-                await self._frame_cond.wait_for(lambda seen=seen: self.frame_seq != seen)
+                await self._frame_cond.wait_for(
+                    lambda seen=seen: self.closed or self.frame_seq != seen
+                )
+                if self.closed:
+                    return
                 seen, jpeg = self.frame_seq, self.frame
             now = self.clock()
             if now - last < 1.0 / FRAME_FPS:
@@ -180,8 +202,9 @@ def create_app(bus: Bus, hello: dict | None = None, clock: Clock = time.monotoni
         client = hub.connect()
         log.info("dashboard connected (%d open)", len(hub.clients))
         try:
-            while True:
-                await sock.send_text(await client.queue.get())
+            while (msg := await client.queue.get()) is not None:
+                await sock.send_text(msg)
+            await sock.close()
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:
@@ -209,8 +232,9 @@ class _Server(uvicorn.Server):
 
 async def serve(bus: Bus, host: str = "127.0.0.1", port: int = 8000, hello: dict | None = None):
     """Run the dashboard server in the current loop until cancelled, then shut down cleanly."""
+    app = create_app(bus, hello)
     config = uvicorn.Config(
-        create_app(bus, hello),
+        app,
         host=host,
         port=port,
         log_level="warning",
@@ -222,6 +246,7 @@ async def serve(bus: Bus, host: str = "127.0.0.1", port: int = 8000, hello: dict
     try:
         await asyncio.shield(task)
     except asyncio.CancelledError:
+        app.state.hub.close()
         server.should_exit = True
         await task
         raise
@@ -272,7 +297,9 @@ async def _replay_main(args: argparse.Namespace) -> None:
     if records:
         span = records[-1][0] - records[0][0]
         log.info("replaying %d items (%.1f s) from %s", len(records), span, args.replay)
-    hello = {"problem_id": f"replay:{args.replay.stem}" if args.replay else "none"}
+    hello = {"problem_id": "none"}
+    if args.replay:
+        hello = {"mode": "session_replay", "source": {"kind": "bus_log", "name": args.replay.name}}
     server = asyncio.create_task(serve(bus, args.host, args.port, hello))
     await asyncio.sleep(0)  # let the hub subscribe before the first publish
     try:
