@@ -5,13 +5,44 @@
 perception:
   pose_model: models/pose_landmarker_full.task
   max_width: 640            # downscale before pose
-  contact_margin: 0.15      # x arm length, around each hold box
+  contact_margin: 0.2       # x arm length, around each hold box
   contact_settle_ms: 150
+  contact_release_ratio: 1.6   # release box = margin x this (hysteresis)
+  contact_dip_frames: 3        # keep a contact through a visibility dip this short
+  contact_still_speed: 0.4     # limb is 'still' below this speed (normalised units per second)
+  min_visibility: 0.4          # landmarks below this give no contact and freeze the limb point
+  resume_visibility: 0.7       # a frozen limb follows the pose again only above this...
+  resume_frames: 3             # ...for this many frames in a row (one bad frame must not unfreeze it)
+  hold_lookback_frames: 8      # a freezing limb returns to its position this many frames earlier
+  lost_memory_frames: 45       # a brief person-lost gap (<= this many frames) keeps limb and contact memory
+  arm_length_frames: 60        # frames of history for the median arm length
+  arm_length_default: 0.25     # arm length (normalised) until real samples exist
+  # Added by A for pose (B owns this structure: confirm in PR).
+  num_poses: 2              # detect up to 2 people, keep the largest
+  lr_swap_frames: 5         # frames a new left/right order must hold before relabelling
+  lr_min_x_gap: 0.03        # below this x gap between sides, x order is noise: keep labels
+  one_euro:                 # limb-point smoothing
+    min_cutoff: 1.0
+    beta: 0.05
+    d_cutoff: 1.0
 
 holds:
-  detector_model: detect-climbing-hold/1  # Roboflow model id; pick the best in experiment 2
+  detector_model: hold-detector-rnvkl/1  # Roboflow model id (Climb AI hold detector; picked in experiment 2)
   hue_tolerance: 12         # OpenCV hue units, 0-179
   min_saturation: 60
+  white_min_value: 210       # white holds must be bright enough to separate from the beige/grey wall
+  white_max_saturation: 55   # and nearly neutral; excludes red/teal holds
+  white_min_fraction: 0.15   # share of a detection's pixels that must be white (real white holds 0.18-0.66, others <= 0.10)
+  # Added by A for the hold map (B owns this structure: confirm in PR).
+  api_url: https://serverless.roboflow.com
+  polygon_epsilon: 0.02     # detector outlines are simplified to this fraction of their perimeter (fewer, editable corners)
+  patch_radius_px: 12       # half-size; wider patch avoids a hand/shadow dominating a hold click
+  morph_kernel_px: 5        # open/close kernel for colour-only mode
+  min_area: 0.0003          # colour-only blob area limits, fraction of the image area
+  max_area: 0.02
+  split_peak_ratio: 0.75    # watershed seeds for splitting touching holds: fraction of the blob's max thickness
+  drag_min_px: 6            # editor: a mouse move shorter than this is a click, longer draws a box
+  start_count: 2            # lowest N holds are marked start
 
 brain:
   debounce_ms: 400

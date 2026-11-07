@@ -1,6 +1,7 @@
 import asyncio
 import json
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -304,3 +305,25 @@ async def test_pose_threads_read_the_browser_camera_and_stop_cleanly():
     assert perception.spec == "browser" and not perception.is_file
     assert state.frame_idx == 0
     assert tracker.closed
+
+
+async def test_a_switch_during_startup_waits_for_it(tmp_path, monkeypatch):
+    _, parts = fake_parts(n_frames=3)
+    session, _ = make_session(tmp_path, monkeypatch, parts)
+    build = run.build_perception
+
+    def slow_for_files(args, *rest):  # like loading the pose model for the first source
+        if isinstance(args.source, str):
+            time.sleep(0.2)
+        return build(args, *rest)
+
+    monkeypatch.setattr(run, "build_perception", slow_for_files)
+    starting = asyncio.create_task(session.start(session.initial))
+    await asyncio.sleep(0)  # startup is now off the loop, building perception
+    hello = await session.switch("browser")
+    await starting
+
+    assert hello["session"] == 2 and session.hello is hello
+    assert isinstance(session.args.source, run.BrowserCamera)  # startup didn't overwrite it
+    assert [w.custom for w in session.workers] == [session.camera]
+    await session.stop()

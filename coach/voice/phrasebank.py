@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+import random
 import re
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Callable, Hashable, Iterable
 
 from coach.contracts import Limb
 
@@ -13,6 +14,7 @@ log = logging.getLogger(__name__)
 
 MIN_LINES = 5  # every (kind, level, mood) needs this many approved lines
 MAX_HOLD = 25
+NEUTRAL = "neutral"
 UNKNOWN_COLOUR = "unknown"  # HoldMap.colour when no hold was clicked; must never be spoken
 SLOT_RE = re.compile(r"\{(\w*)\}")
 SLOT_WORDS = {"dir": 3, "colour": 1, "hold": 2, "limb": 2}  # longest spoken form of each slot
@@ -151,6 +153,59 @@ def stitch(line: str, values: dict[str, str]) -> tuple[list[str], str]:
     for i, part in enumerate(SLOT_RE.split(line)):  # odd entries are the slot names
         clips.extend([values[part]] if i % 2 else line_pieces(part))
     return clips, SLOT_RE.sub(lambda match: values[match[1]], line)
+
+
+def fallback_keys(kind: str, level: int, mood: str) -> list[tuple[str, int, str]]:
+    """Keys to try in order: this mood down through the levels, then neutral the same way."""
+    moods = [mood] if mood == NEUTRAL else [mood, NEUTRAL]
+    return [(kind, lvl, m) for m in moods for lvl in range(level, -1, -1)]
+
+
+def prefer_direction(lines: list[str], values: dict[str, str]) -> list[str]:
+    """Lines to choose from: with a direction known, never one that speaks a hold number.
+
+    Team decision: cues name a relative direction ("up and left"), not a hold ("hold seven").
+    Lines that say {dir} come first; then any other line without {hold}; then all `lines`.
+    """
+    if "dir" not in values:
+        return lines
+    no_hold = [line for line in lines if "{hold}" not in line]
+    by_direction = [line for line in no_hold if "{dir}" in line]
+    return by_direction or no_hold or lines
+
+
+class LinePicker:
+    """Draws persona lines from the bank, shuffled without replacement per (kind, level, mood)."""
+
+    def __init__(self, bank: dict, rng: random.Random | None = None) -> None:
+        self.bank = bank
+        self.rng = rng or random.Random()
+        self.decks: dict[Hashable, list[str]] = {}
+        self._last: dict[Hashable, str] = {}
+
+    def pick(self, kind: str, level: int, mood: str, values: dict[str, str]) -> str | None:
+        """The next line from the first key with one whose slots the event can fill."""
+        for key in fallback_keys(kind, level, mood):
+            _, lvl, m = key
+            lines = self.bank.get(kind, {}).get(str(lvl), {}).get(m, [])
+            fillable = [line for line in lines if set(SLOT_RE.findall(line)) <= values.keys()]
+            if fillable:
+                usable = set(prefer_direction(fillable, values))
+                return self.draw(key, lines, usable.__contains__)
+        return None
+
+    def draw(self, key: Hashable, lines: list[str], usable: Callable[[str], bool]) -> str:
+        """Shuffle without replacement; a fresh deck never opens with the line just used."""
+        deck = self.decks.setdefault(key, [])
+        options = [line for line in deck if usable(line)]
+        if not options:
+            deck[:] = self.rng.sample(lines, len(lines))
+            options = [line for line in deck if usable(line)]
+        last = self._last.get(key)
+        line = next((option for option in options if option != last), options[0])
+        deck.remove(line)
+        self._last[key] = line
+        return line
 
 
 def fragments(colours: Iterable[str], fillers: Iterable[str]) -> list[str]:

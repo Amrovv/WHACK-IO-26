@@ -208,7 +208,6 @@ def a_parts() -> SimpleNamespace:
     """A's perception building blocks. Raises ImportError when A's code isn't on this branch."""
     from coach.perception.holds import load_holdmap_with_shapes
     from coach.perception.pose import PoseTracker, load_perception_config
-
     from coach.sources import LatestQueue, parse_source
 
     cfg = load_perception_config()
@@ -424,7 +423,17 @@ class Session:
         problem = problem_for(Path(path), self.initial.problem)
         return argparse.Namespace(**{**base, "source": str(ROOT / path), "problem": problem})
 
+    # start, stop and switch share one lock: a switch the dashboard asks for while the first
+    # source is still starting (or while shutting down) waits instead of running alongside it.
     async def start(self, args: argparse.Namespace) -> None:
+        async with self._lock:
+            await self._start(args)
+
+    async def stop(self) -> None:
+        async with self._lock:
+            await self._stop()
+
+    async def _start(self, args: argparse.Namespace) -> None:
         self.args = args
         self.number += 1
         self.camera = args.source if isinstance(args.source, BrowserCamera) else None
@@ -445,7 +454,7 @@ class Session:
             w.start()
         log.info("analysing %s (problem %s)", self.hello["spec"], args.problem)
 
-    async def stop(self) -> None:
+    async def _stop(self) -> None:
         self.camera = None  # webcam frames that arrive from now on are ignored
         workers, self.workers = self.workers, []
         for w in workers:
@@ -461,9 +470,9 @@ class Session:
             args = self.args_for(spec)
             if spec == self.hello.get("spec"):
                 return self.hello
-            await self.stop()
+            await self._stop()
             await asyncio.sleep(SWITCH_SETTLE_S)
-            await self.start(args)
+            await self._start(args)
             return self.hello
 
     def feed_camera(self, jpeg: bytes) -> bool:

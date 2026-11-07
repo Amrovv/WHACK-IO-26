@@ -251,3 +251,31 @@ def test_render_fills_gaps_without_touching_the_bank(cache_tts, tmp_path, monkey
 def test_check_never_synthesises(cache_tts) -> None:
     cache_tts.engine.raw = lambda _text: pytest.fail("the check must not render")
     assert check_clips(CHECK_BANK, CHECK_PERSONA, cache_tts) == 1
+
+
+def test_prefer_direction_drops_hold_lines_when_a_direction_is_known() -> None:
+    from coach.voice.phrasebank import prefer_direction
+
+    lines = ["Grab the {hold}.", "Reach {dir}.", "Stop patting."]
+    assert prefer_direction(lines, {"dir": "up", "hold": "hold six"}) == ["Reach {dir}."]
+    assert prefer_direction(lines, {"hold": "hold six"}) == lines
+    assert prefer_direction(["Grab the {hold}.", "Stop."], {"dir": "up"}) == ["Stop."]
+    assert prefer_direction(["Grab the {hold}."], {"dir": "up"}) == ["Grab the {hold}."]
+
+
+def test_hand_searching_level_two_asks_for_direction_not_hold() -> None:
+    from scripts.build_phrasebank import level_slot
+
+    persona = yaml.safe_load(open("config/personas/coach.yaml", encoding="utf-8"))
+    prompt = build_prompt(persona, "hand_searching", 2, "neutral")
+    assert "never use the {hold} slot" in prompt
+    assert level_slot("hand_searching", 2) == "dir"
+    assert level_slot("feet_low", 2) == "hold"
+
+
+def test_direction_keys_reject_hard_coded_directions() -> None:
+    from scripts.build_phrasebank import drop_fixed_directions
+
+    lines = ["Straight up.", "Reach {dir}.", "Stop hunting. Up and left.", "Grab it."]
+    assert drop_fixed_directions("hand_searching", 2, lines) == ["Reach {dir}.", "Grab it."]
+    assert drop_fixed_directions("feet_low", 2, ["Feet up."]) == ["Feet up."]

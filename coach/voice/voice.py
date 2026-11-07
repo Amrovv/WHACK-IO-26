@@ -17,7 +17,7 @@ import logging
 import random
 import threading
 import time
-from collections.abc import Callable, Hashable, Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import Executor, ThreadPoolExecutor
 from pathlib import Path
 
@@ -34,23 +34,22 @@ from coach.voice.debrief import (
     stream_debrief,
     template_sentences,
 )
-from coach.voice.phrasebank import SLOT_RE, slot_values, stitch
+from coach.voice.phrasebank import (  # noqa: F401  fallback_keys is re-exported for tests
+    NEUTRAL,
+    LinePicker,
+    fallback_keys,
+    slot_values,
+    stitch,
+)
 from coach.voice.speaker import Speaker, concat
 from coach.voice.tts import CONFIG_PATH, TTS, make_tts
 
 log = logging.getLogger(__name__)
 
 BANK_PATH = Path("data/phrasebank.json")
-NEUTRAL = "neutral"
 DEMO_DEADLINE_S = 5.0
 SPEAKER_POLL_S = 0.02  # how often a queued debrief sentence checks the speaker has gone quiet
 NO_DEADLINE = float("inf")
-
-
-def fallback_keys(kind: str, level: int, mood: str) -> list[tuple[str, int, str]]:
-    """Keys to try in order: this mood down through the levels, then neutral the same way."""
-    moods = [mood] if mood == NEUTRAL else [mood, NEUTRAL]
-    return [(kind, lvl, m) for m in moods for lvl in range(level, -1, -1)]
 
 
 class Voice:
@@ -66,17 +65,15 @@ class Voice:
         pool: Executor | None = None,
         debrief_llm: DebriefLLM | None = None,
     ) -> None:
-        self._bank = bank
         self._tts = tts
         self._speaker = speaker
         self._bus = bus
         self._fillers = list(fillers)
         self._clock = clock
-        self._rng = rng or random.Random()
         # One worker: the TTS engine isn't thread-safe, and late jobs bail out quickly.
         self._pool = pool or ThreadPoolExecutor(max_workers=1, thread_name_prefix="voice-tts")
-        self._decks: dict[Hashable, list[str]] = {}
-        self._last: dict[Hashable, str] = {}
+        self._lines = LinePicker(bank, rng)
+        self._decks = self._lines.decks
         self._holdmaps: asyncio.Queue[HoldMap] = bus.subscribe("holdmap")
         self._route_colour: str | None = None
         self._lock = threading.Lock()  # makes "still current?" and starting playback one step
@@ -90,7 +87,7 @@ class Voice:
         while not self._holdmaps.empty():
             self._route_colour = self._holdmaps.get_nowait().colour
         values = slot_values(req.event.data, self._route_colour)
-        line = self._pick(req, values)
+        line = self._lines.pick(req.event.kind, req.level, req.mood, values)
         if line is None:
             log.warning("no usable line for %s L%d %s", req.event.kind, req.level, req.mood)
             return False
@@ -150,32 +147,6 @@ class Voice:
         except Exception:  # cached lines still work without the engine
             log.exception("TTS warm-up failed")
 
-    def _pick(self, req: SpeakRequest, values: dict[str, str]) -> str | None:
-        """The next line from the first key with one whose slots the event can fill."""
-
-        def fillable(line: str) -> bool:
-            return set(SLOT_RE.findall(line)) <= values.keys()
-
-        for key in fallback_keys(req.event.kind, req.level, req.mood):
-            kind, level, mood = key
-            lines = self._bank.get(kind, {}).get(str(level), {}).get(mood, [])
-            if any(fillable(line) for line in lines):
-                return self._draw(key, lines, fillable)
-        return None
-
-    def _draw(self, key: Hashable, lines: list[str], usable: Callable[[str], bool]) -> str:
-        """Shuffle without replacement; a fresh deck never opens with the line just used."""
-        deck = self._decks.setdefault(key, [])
-        options = [line for line in deck if usable(line)]
-        if not options:
-            deck[:] = self._rng.sample(lines, len(lines))
-            options = [line for line in deck if usable(line)]
-        last = self._last.get(key)
-        line = next((option for option in options if option != last), options[0])
-        deck.remove(line)
-        self._last[key] = line
-        return line
-
     def _supersede(self) -> int:
         with self._lock:
             return self._next_generation()
@@ -195,9 +166,10 @@ class Voice:
     async def _run_debrief(self, payload: dict, generation: int) -> None:
         speech: asyncio.Queue[str | None] = asyncio.Queue()
         if self._fillers:
-            speech.put_nowait(self._draw(("filler",), self._fillers, lambda _line: True))
+            speech.put_nowait(self._lines.draw(("filler",), self._fillers, lambda _line: True))
         async with asyncio.TaskGroup() as group:
             group.create_task(self._speak_queue(speech, generation))
+            await asyncio.sleep(0)  # let the filler start before the LLM call can race a cut
             if not await self._stream_llm(payload, speech):
                 for sentence in template_sentences(payload):
                     speech.put_nowait(sentence)
