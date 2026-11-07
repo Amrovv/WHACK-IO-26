@@ -25,9 +25,7 @@ Detectors and trackers hold state across frames — build them **once per run**,
 1. `features = ft.update(state)`
 2. `events = list(at.update(state, features))`  — attempt_start / high_point / top / fall. If
    an `attempt_start` event came back, call `ft.reset_highest_hold()` right after — otherwise
-   `highest_hold_id` keeps growing across attempts and `high_point`/`told_you_so` go stale.. If
-   this returns an `attempt_start` event, call `ft.reset_highest_hold()` so highest-hold
-   tracking starts from zero for the new attempt.
+   `highest_hold_id` keeps growing across attempts and `high_point`/`told_you_so` go stale.
 3. **Drain finished attempts into memory** (do this before querying memory):
    ```python
    while seen < len(at.finished_attempts):
