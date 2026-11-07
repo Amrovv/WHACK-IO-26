@@ -12,13 +12,13 @@ that touches the brain.
 | [#4](https://github.com/Amrovv/WHACK-IO-26/pull/4) | A/Platon's review fixes: `Hold(**hold)` crash on hold maps with extra fields; `docs/INTEGRATION-contract.md` tracked (was gitignored); `replay_brain.py` rewritten to run the full pipeline with `--voice print`; 3 real bugs (`highest_hold_id` never reset between attempts, `hip_speed` vertical-only causing false cues on sideways traverses, `AttemptSummary.stalls/cues_given/cues_followed` always empty); config-reading consolidated to one `cfg()` helper. |
 | [#5](https://github.com/Amrovv/WHACK-IO-26/pull/5) | C's requirements: `coach.brain.Brain(config, bus, voice)` orchestrator class with `async run(states)` — wraps the full pipeline, subscribes to `holdmap`/`spoken` bus topics, publishes `event`/`attempt`. `hold_id`/`limb` added to `stalling`/`fall`/`feet_low`/`feet_cut`/`weight_shift`/`told_you_so` event payloads (phrasebank specificity). Debrief habits payload now includes `mood`. Debrief asyncio task kept referenced (was GC-able mid-stream). |
 | [#6](https://github.com/Amrovv/WHACK-IO-26/pull/6) | Trivial: removed a duplicate sentence in `docs/INTEGRATION-contract.md` (merge artifact from #5). |
-| [#7](https://github.com/Amrovv/WHACK-IO-26/pull/7) | P0 keypoint-visibility gate: `_keypoint()` now requires visibility `>= 0.5`, not `> 0` — kills occlusion-driven false cues. Plus 11 edge-case tests from `ACTION-ITEMS.md`. **Found a real bug while testing**: `FeetLow`'s "95% release band" is described in a code comment but not implemented (`_condition()` returns the same value for trigger and release) — marked `xfail`, fix tracked as the next PR. |
+| [#7](https://github.com/Amrovv/WHACK-IO-26/pull/7) | P0 keypoint-visibility gate: `_keypoint()` now requires visibility `>= 0.5`, not `> 0` — kills occlusion-driven false cues. Plus 11 edge-case tests from `ACTION-ITEMS.md`. **Found a real bug while testing**: `FeetLow`'s "95% release band" is described in a code comment but not implemented (`_condition()` returns the same value for trigger and release) — marked `xfail`, fixed in #8. |
+| [#8](https://github.com/Amrovv/WHACK-IO-26/pull/8) | Fixed the `FeetLow` bug found in #7: `_condition()` now computes trigger and release separately (release at `0.95 * feet_low_ratio`), mirroring `ArmsBent`/`WeightShift`. The `xfail` test from #7 is a real passing test now. Also added this file. |
 
 ## In progress
 
-- **FeetLow hysteresis fix** (branch `b/feetlow-hysteresis`) — implementing the missing release
-  band found in #7, mirroring the pattern `ArmsBent`/`WeightShift` already use. Delegated to
-  codex, in review.
+Nothing right now — #8 merged, no open PRs. Next work is blocked (see below) or deferred
+pending team review.
 
 ## Deferred (2026-11-07 team decision)
 
@@ -43,7 +43,7 @@ judgment calls.
 - **`run.py` / `LatestQueue` crash** — A's queue takes no constructor args and uses thread
   locks; D's `run.py` expects `LatestQueue(loop)` with thread-safe `put()` and `async get()`.
   A and D need to agree on one interface before both branches merge. Not B's folder.
-- **PR review** — someone needs to review/merge `b/feetlow-hysteresis` once it's pushed.
+- **PR review** — none open right now.
 
 ## Resolved, just documented (not code changes)
 
