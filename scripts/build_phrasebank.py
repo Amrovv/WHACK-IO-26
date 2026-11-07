@@ -16,6 +16,7 @@ import argparse
 import json
 import logging
 import os
+import re
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from dotenv import load_dotenv
 from coach.contracts import EVENT_KINDS
 from coach.voice.phrasebank import (
     MIN_LINES,
+    SLOT_RE,
     blocked_phrases,
     persona_instruction,
     reject_reason,
@@ -71,6 +73,37 @@ LEVEL_RULES = {
     "earlier attempts in general terms.",
 }
 LEVEL_SLOTS = {1: "limb", 2: "hold"}
+# Team decision: hand_searching names a relative direction, never a hold number.
+DIRECTION_KINDS = {"hand_searching"}
+DIRECTION_RULE = (
+    "Point the climber to the next hold with the {dir} slot; at least half the lines must use "
+    "it, written literally as {dir}. Never write a direction word such as up, down or straight "
+    "yourself, and never use the {hold} slot. Refer to earlier attempts in general terms."
+)
+# A direction outside the slot could be false, e.g. "Straight up" when the next hold is left.
+_FIXED_DIRECTION_RE = re.compile(r"\b(up|down|straight|above|below|higher|lower)\b", re.I)
+
+
+def level_rule(kind: str, level: int) -> str:
+    return DIRECTION_RULE if level == 2 and kind in DIRECTION_KINDS else LEVEL_RULES[level]
+
+
+def level_slot(kind: str, level: int) -> str | None:
+    return "dir" if level == 2 and kind in DIRECTION_KINDS else LEVEL_SLOTS.get(level)
+
+
+def drop_fixed_directions(kind: str, level: int, candidates: list) -> list:
+    """For direction keys, drop lines that state a direction instead of using {dir}."""
+    if level_slot(kind, level) != "dir":
+        return candidates
+    kept = []
+    for line in candidates:
+        if isinstance(line, str) and _FIXED_DIRECTION_RE.search(SLOT_RE.sub(" ", line)):
+            log.info("rejected (hard-coded direction): %r", line)
+        else:
+            kept.append(line)
+    return kept
+
 
 Ask = Callable[[str], list]
 
@@ -89,7 +122,7 @@ def build_prompt(persona: dict, kind: str, level: int, mood: str) -> str:
     return "\n".join(
         (
             f"Event: {kind}: {KIND_MEANINGS[kind]}.",
-            f"Specificity: {LEVEL_RULES[level]}",
+            f"Specificity: {level_rule(kind, level)}",
             f"Mood: {mood}: {persona['moods'][mood]}",
             "These examples only show the voice; do not reuse them: " + " | ".join(examples),
             f"Write {CANDIDATES} different lines to say aloud, at most {max_words} words each; "
@@ -117,12 +150,13 @@ def build_bank(ask: Ask, persona: dict, kinds: tuple[str, ...], previous: dict) 
             for mood in MOODS:
                 try:
                     candidates = ask(build_prompt(persona, kind, level, mood))
+                    candidates = drop_fixed_directions(kind, level, candidates)
                     lines = select_lines(
                         candidates,
                         max_words,
                         blocked_phrases(persona),
                         KEEP,
-                        LEVEL_SLOTS.get(level),
+                        level_slot(kind, level),
                     )
                     if len(lines) < MIN_LINES:
                         log.warning("%s L%d %s: only %d lines", kind, level, mood, len(lines))
