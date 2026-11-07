@@ -138,19 +138,6 @@ def test_feet_low_release_band_suppresses_refiring():
     # After FeetLow fires, hovering the ratio just below the trigger threshold
     # but above the 95% release band should NOT re-arm the detector.
     # feet_low_ratio = 0.9; theoretical release = 0.9 * 0.95 = 0.855.
-    #
-    # NOTE: The current _condition() implementation returns the same boolean
-    # for both the trigger and the release, so there is no actual 95% hysteresis
-    # band: once the condition becomes False (foot rises above 0.9 * leg_length),
-    # _active is immediately cleared and the detector re-arms.  This test
-    # documents the INTENDED behaviour; it is marked xfail because the band is
-    # not yet implemented.
-    pytest.xfail(
-        "FeetLow._condition() returns the same value for trigger and release - "
-        "the 95% hysteresis band described in the comment is not implemented"
-    )
-
-    # --- code below documents the intended behaviour once the band is added ---
     kp_high_hands = {
         "left_shoulder": (0.4, 0.4, 1),
         "right_shoulder": (0.6, 0.4, 1),
