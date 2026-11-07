@@ -1,0 +1,422 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-07T13:32:19+00:00",
+  "title": "Design System: Climbing Coach",
+  "extensions": {
+    "colorMeta": {
+      "graphite-page": {
+        "role": "neutral",
+        "displayName": "Graphite Page",
+        "cssVar": "--page",
+        "tonalRamp": [
+          "oklch(15% 0.003 258)",
+          "oklch(26% 0.004 258)",
+          "oklch(38% 0.005 258)",
+          "oklch(49% 0.006 258)",
+          "oklch(61% 0.007 258)",
+          "oklch(72% 0.006 258)",
+          "oklch(84% 0.005 258)",
+          "oklch(95% 0.004 258)"
+        ]
+      },
+      "pencil-ink": {
+        "role": "neutral",
+        "displayName": "Pencil Ink",
+        "cssVar": "--ink",
+        "tonalRamp": [
+          "oklch(15% 0.004 122)",
+          "oklch(26% 0.005 122)",
+          "oklch(38% 0.006 122)",
+          "oklch(49% 0.007 122)",
+          "oklch(61% 0.008 122)",
+          "oklch(72% 0.007 122)",
+          "oklch(84% 0.006 122)",
+          "oklch(95% 0.005 122)"
+        ]
+      },
+      "graphite": {
+        "role": "neutral",
+        "displayName": "Graphite",
+        "cssVar": "--graphite",
+        "tonalRamp": [
+          "oklch(15% 0.006 252)",
+          "oklch(26% 0.007 252)",
+          "oklch(38% 0.009 252)",
+          "oklch(49% 0.010 252)",
+          "oklch(61% 0.012 252)",
+          "oklch(72% 0.010 252)",
+          "oklch(84% 0.009 252)",
+          "oklch(95% 0.007 252)"
+        ]
+      },
+      "pencil": {
+        "role": "neutral",
+        "displayName": "Pencil",
+        "cssVar": "--pencil",
+        "tonalRamp": [
+          "oklch(15% 0.006 248)",
+          "oklch(26% 0.008 248)",
+          "oklch(38% 0.010 248)",
+          "oklch(49% 0.012 248)",
+          "oklch(61% 0.013 248)",
+          "oklch(72% 0.011 248)",
+          "oklch(84% 0.010 248)",
+          "oklch(95% 0.008 248)"
+        ]
+      },
+      "faint-rule": {
+        "role": "neutral",
+        "displayName": "Faint Rule",
+        "cssVar": "--rule",
+        "tonalRamp": [
+          "oklch(15% 0.006 253)",
+          "oklch(26% 0.008 253)",
+          "oklch(38% 0.009 253)",
+          "oklch(49% 0.011 253)",
+          "oklch(61% 0.012 253)",
+          "oklch(72% 0.011 253)",
+          "oklch(84% 0.009 253)",
+          "oklch(95% 0.007 253)"
+        ]
+      },
+      "strong-rule": {
+        "role": "neutral",
+        "displayName": "Strong Rule",
+        "cssVar": "--rule-strong",
+        "tonalRamp": [
+          "oklch(15% 0.006 252)",
+          "oklch(26% 0.008 252)",
+          "oklch(38% 0.010 252)",
+          "oklch(49% 0.012 252)",
+          "oklch(61% 0.013 252)",
+          "oklch(72% 0.012 252)",
+          "oklch(84% 0.010 252)",
+          "oklch(95% 0.008 252)"
+        ]
+      },
+      "field-book-yellow": {
+        "role": "primary",
+        "displayName": "Field-Book Yellow",
+        "cssVar": "--cover",
+        "tonalRamp": [
+          "oklch(15% 0.075 89)",
+          "oklch(26% 0.096 89)",
+          "oklch(38% 0.118 89)",
+          "oklch(49% 0.139 89)",
+          "oklch(61% 0.157 89)",
+          "oklch(72% 0.136 89)",
+          "oklch(84% 0.115 89)",
+          "oklch(95% 0.094 89)"
+        ]
+      },
+      "yellow-ink": {
+        "role": "primary",
+        "displayName": "Yellow Ink",
+        "cssVar": "--cover-ink",
+        "tonalRamp": [
+          "oklch(15% 0.022 96)",
+          "oklch(26% 0.028 96)",
+          "oklch(38% 0.034 96)",
+          "oklch(49% 0.040 96)",
+          "oklch(61% 0.045 96)",
+          "oklch(72% 0.039 96)",
+          "oklch(84% 0.033 96)",
+          "oklch(95% 0.027 96)"
+        ]
+      },
+      "red-pen": {
+        "role": "secondary",
+        "displayName": "Red Pen",
+        "cssVar": "--red",
+        "tonalRamp": [
+          "oklch(15% 0.095 17)",
+          "oklch(26% 0.121 17)",
+          "oklch(38% 0.148 17)",
+          "oklch(49% 0.175 17)",
+          "oklch(61% 0.198 17)",
+          "oklch(72% 0.171 17)",
+          "oklch(84% 0.145 17)",
+          "oklch(95% 0.118 17)"
+        ]
+      },
+      "video-frame": {
+        "role": "neutral",
+        "displayName": "Video Frame",
+        "cssVar": "--frame",
+        "tonalRamp": [
+          "oklch(15% 0.001 248)",
+          "oklch(26% 0.002 248)",
+          "oklch(38% 0.002 248)",
+          "oklch(49% 0.002 248)",
+          "oklch(61% 0.003 248)",
+          "oklch(72% 0.002 248)",
+          "oklch(84% 0.002 248)",
+          "oklch(95% 0.002 248)"
+        ]
+      },
+      "limb-left-hand": {
+        "role": "tertiary",
+        "displayName": "Left Hand",
+        "cssVar": "--lh",
+        "tonalRamp": [
+          "oklch(15% 0.060 231)",
+          "oklch(26% 0.077 231)",
+          "oklch(38% 0.094 231)",
+          "oklch(49% 0.111 231)",
+          "oklch(61% 0.126 231)",
+          "oklch(72% 0.109 231)",
+          "oklch(84% 0.092 231)",
+          "oklch(95% 0.075 231)"
+        ]
+      },
+      "limb-right-hand": {
+        "role": "tertiary",
+        "displayName": "Right Hand",
+        "cssVar": "--rh",
+        "tonalRamp": [
+          "oklch(15% 0.081 299)",
+          "oklch(26% 0.104 299)",
+          "oklch(38% 0.127 299)",
+          "oklch(49% 0.150 299)",
+          "oklch(61% 0.170 299)",
+          "oklch(72% 0.147 299)",
+          "oklch(84% 0.124 299)",
+          "oklch(95% 0.101 299)"
+        ]
+      },
+      "limb-left-foot": {
+        "role": "tertiary",
+        "displayName": "Left Foot",
+        "cssVar": "--lf",
+        "tonalRamp": [
+          "oklch(15% 0.068 130)",
+          "oklch(26% 0.087 130)",
+          "oklch(38% 0.106 130)",
+          "oklch(49% 0.125 130)",
+          "oklch(61% 0.141 130)",
+          "oklch(72% 0.122 130)",
+          "oklch(84% 0.103 130)",
+          "oklch(95% 0.084 130)"
+        ]
+      },
+      "limb-right-foot": {
+        "role": "tertiary",
+        "displayName": "Right Foot",
+        "cssVar": "--rf",
+        "tonalRamp": [
+          "oklch(15% 0.000 90)",
+          "oklch(26% 0.000 90)",
+          "oklch(38% 0.000 90)",
+          "oklch(49% 0.000 90)",
+          "oklch(61% 0.000 90)",
+          "oklch(72% 0.000 90)",
+          "oklch(84% 0.000 90)",
+          "oklch(95% 0.000 90)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "The coach's line in the caption band."
+      },
+      "figure": {
+        "displayName": "Figure",
+        "purpose": "Latest cue latency, mono tabular."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Running head; debrief caption at 600."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Attempt outcome words; rung numbers in mono."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Timeline entries, attempt details, latency summary."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Section headings, sentence case; flags at 600."
+      },
+      "meta": {
+        "displayName": "Meta",
+        "purpose": "Timeline right-hand meta in mono."
+      }
+    },
+    "shadows": [
+      {
+        "name": "highpoint-ring",
+        "value": "inset 0 0 0 3px var(--ink)",
+        "purpose": "Drawn outline round the highpoint rung number. Not elevation; the system has no drop shadows."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-out",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "The only easing."
+      },
+      {
+        "name": "caption-arrive",
+        "value": "0.45s ease-out; from opacity 0.35, translateY(0.18em)",
+        "purpose": "A new caption line arriving, once per line."
+      },
+      {
+        "name": "pencil-tick",
+        "value": "0.7s ease-out, 0.15s delay; stroke-dashoffset 40 to 0",
+        "purpose": "The tick drawn onto a finished attempt's highpoint rung."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "prefers-reduced-motion: reduce",
+        "purpose": "Both animations off."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "stack",
+        "value": "900px",
+        "purpose": "Below: single column, scrolling, horizontal ladder, size steps fixed at 16/24/36px."
+      }
+    ],
+    "sizeRamp": [
+      {
+        "name": "s",
+        "value": "clamp(16px, min(1.45vw, 2.35vh), 24px)"
+      },
+      {
+        "name": "m",
+        "value": "clamp(24px, min(2.6vw, 4.2vh), 44px)"
+      },
+      {
+        "name": "l",
+        "value": "clamp(72px, min(5.6vw, 9vh), 96px)"
+      }
+    ],
+    "knownGaps": [
+      "The last timeline row can be sliced by the caption band, and suppressed entries can wrap to two lines.",
+      "Overlay hold labels can collide with limb dots, other labels or the \"No video\" note, especially at phone width."
+    ]
+  },
+  "components": [
+    {
+      "name": "Caption Band",
+      "kind": "custom",
+      "refersTo": "caption-band",
+      "description": "The coach's voice: full-width yellow band with speaker tag, the spoken line and its latency.",
+      "html": "<section class=\"ds-caption\"><div class=\"ds-cap-who\"><span class=\"ds-cap-tag\">Coach</span><span>Impressed</span></div><div class=\"ds-cap-text\">Commit. Go now.</div><div class=\"ds-cap-ms\">614 ms</div></section>",
+      "css": ".ds-caption{background:var(--cover,#f2c230);color:var(--cover-ink,#2a2306);display:flex;align-items:center;gap:24px;padding:24px 32px;font-family:'Atkinson Hyperlegible Next',system-ui,sans-serif;border-radius:0}.ds-cap-who{display:flex;flex-direction:column;gap:0.3em;font-size:18px;font-weight:600}.ds-cap-tag{font-weight:800;text-transform:uppercase;letter-spacing:0.1em;border:3px solid var(--cover-ink,#2a2306);padding:0.15em 0.5em}.ds-cap-text{flex:1;font-size:72px;font-weight:800;line-height:1.05;letter-spacing:-0.015em;animation:ds-arrive 0.45s cubic-bezier(0.16,1,0.3,1)}.ds-cap-ms{font-family:'Atkinson Hyperlegible Mono',ui-monospace,monospace;font-variant-numeric:tabular-nums;font-size:32px;font-weight:700}@keyframes ds-arrive{from{opacity:0.35;transform:translateY(0.18em)}}@media (prefers-reduced-motion:reduce){.ds-cap-text{animation:none}}"
+    },
+    {
+      "name": "Running Head",
+      "kind": "nav",
+      "refersTo": "live-hold-chip",
+      "description": "Guide words for the climb, with the live hold inverted on the problem's colour.",
+      "html": "<header class=\"ds-head\"><div class=\"ds-where\">Attempt 2<span class=\"ds-sep\">·</span>hold <span class=\"ds-hold\">6</span> of 10<span class=\"ds-sep\">·</span><span class=\"ds-num\">0:16</span></div></header>",
+      "css": ".ds-head{background:var(--page,#16181b);color:var(--ink,#eef0ea);padding:16px 24px;border-bottom:3px solid var(--rule-strong,#565c63);font-family:'Atkinson Hyperlegible Next',system-ui,sans-serif}.ds-where{font-size:40px;font-weight:800;letter-spacing:-0.01em;white-space:nowrap}.ds-sep{color:var(--pencil,#8c939a);font-weight:400;margin:0 0.3em}.ds-hold,.ds-num{font-family:'Atkinson Hyperlegible Mono',ui-monospace,monospace;font-variant-numeric:tabular-nums}.ds-hold{display:inline-block;min-width:1.5em;padding:0 0.2em;text-align:center;background:var(--hold,#eef0ea);color:var(--hold-ink,#16181b)}"
+    },
+    {
+      "name": "Mode Flags",
+      "kind": "chip",
+      "refersTo": "flag-boxed",
+      "description": "Plain-word fallback labels boxed in ink, plus the connection dot.",
+      "html": "<div class=\"ds-flags\"><span class=\"ds-flag\">Problem demo-pink</span><span class=\"ds-flag ds-boxed\">Colour-only holds</span><span class=\"ds-flag ds-boxed\">Offline: no LLM</span><span class=\"ds-flag ds-live\"><span class=\"ds-dot\"></span>Connected</span></div>",
+      "css": ".ds-flags{display:flex;gap:14px;align-items:center;background:var(--page,#16181b);padding:16px;font-family:'Atkinson Hyperlegible Next',system-ui,sans-serif}.ds-flag{font-size:20px;font-weight:600;color:var(--graphite,#b4bac1);display:inline-flex;align-items:center;gap:0.45em}.ds-boxed{border:2px solid var(--ink,#eef0ea);color:var(--ink,#eef0ea);padding:0.1em 0.5em;border-radius:0}.ds-dot{width:0.7em;height:0.7em;border-radius:50%;border:2px solid currentColor}.ds-live{color:var(--ink,#eef0ea)}.ds-live .ds-dot{background:var(--ink,#eef0ea)}"
+    },
+    {
+      "name": "Hold Ladder",
+      "kind": "custom",
+      "refersTo": "rung-number-now",
+      "description": "Rungs top hold first; highpoint ringed, live hold inverted, each attempt a pencil mark.",
+      "html": "<div class=\"ds-ladder\"><div class=\"ds-rung\"><span class=\"ds-n ds-high\">10</span><span class=\"ds-mark ds-top\"><svg viewBox=\"0 0 24 24\"><path d=\"M3 13 L9 20 L21 4\"/></svg><span class=\"ds-a\">1</span></span></div><div class=\"ds-rung\"><span class=\"ds-n\">9</span></div><div class=\"ds-rung\"><span class=\"ds-n ds-now\">8</span><span class=\"ds-mark\"><svg viewBox=\"0 0 16 24\"><path d=\"M4 21 L12 3\"/></svg><span class=\"ds-a\">2</span></span></div><div class=\"ds-rung\"><span class=\"ds-n\">7</span></div></div>",
+      "css": ".ds-ladder{background:var(--page,#16181b);padding:16px;width:200px;font-size:36px}.ds-rung{display:flex;align-items:center;gap:0.35em;border-top:2px solid var(--rule,#33383e);padding:4px 0}.ds-rung:last-child{border-bottom:2px solid var(--rule,#33383e)}.ds-n{width:1.65em;text-align:center;font-family:'Atkinson Hyperlegible Mono',ui-monospace,monospace;font-weight:700;color:var(--pencil,#8c939a);line-height:1.15}.ds-high{color:var(--ink,#eef0ea);box-shadow:inset 0 0 0 3px var(--ink,#eef0ea)}.ds-now{color:var(--hold-ink,#16181b);background:var(--hold,#eef0ea)}.ds-mark{display:inline-flex;align-items:center;height:0.95em}.ds-mark svg{height:100%;width:auto;overflow:visible}.ds-mark path{fill:none;stroke:var(--graphite,#b4bac1);stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:40;stroke-dashoffset:40;animation:ds-pencil 0.7s cubic-bezier(0.16,1,0.3,1) 0.15s forwards}.ds-top path{stroke:var(--red,#ff5a6e);stroke-width:3.6}.ds-a{font-family:'Atkinson Hyperlegible Mono',ui-monospace,monospace;font-size:0.7em;font-weight:700;color:var(--graphite,#b4bac1);margin-left:0.1em}.ds-top .ds-a{color:var(--red,#ff5a6e)}@keyframes ds-pencil{to{stroke-dashoffset:0}}@media (prefers-reduced-motion:reduce){.ds-mark path{animation:none;stroke-dashoffset:0}}"
+    },
+    {
+      "name": "Latency Readout",
+      "kind": "custom",
+      "refersTo": "latency-figure",
+      "description": "Large mono latency figure; inverts to a light block when over target.",
+      "html": "<div class=\"ds-sect\"><h2 class=\"ds-h2\">Cue latency <span class=\"ds-aside\">target 800 ms</span></h2><div class=\"ds-lat\">614<small>ms</small></div> <div class=\"ds-lat ds-late\">912<small>ms</small></div><div class=\"ds-sub\">median <b>625</b> ms</div></div>",
+      "css": ".ds-sect{background:var(--page,#16181b);color:var(--ink,#eef0ea);padding:16px 24px;border-left:3px solid var(--rule-strong,#565c63);font-family:'Atkinson Hyperlegible Next',system-ui,sans-serif}.ds-h2{margin:0 0 0.35em;font-size:20px;font-weight:700;color:var(--graphite,#b4bac1);display:flex;gap:0.5em}.ds-aside{margin-left:auto;font-weight:400;color:var(--pencil,#8c939a)}.ds-lat{display:inline-block;font-family:'Atkinson Hyperlegible Mono',ui-monospace,monospace;font-variant-numeric:tabular-nums;font-size:80px;font-weight:700;line-height:0.95}.ds-lat small{font-size:20px;font-weight:500;color:var(--graphite,#b4bac1);margin-left:0.2em}.ds-late{background:var(--ink,#eef0ea);color:var(--page,#16181b);padding:0 0.12em}.ds-late small{color:var(--page,#16181b)}.ds-sub{font-size:20px;color:var(--graphite,#b4bac1);margin-top:0.35em}.ds-sub b{color:var(--ink,#eef0ea);font-family:'Atkinson Hyperlegible Mono',ui-monospace,monospace}"
+    },
+    {
+      "name": "Attempt Entry",
+      "kind": "card",
+      "refersTo": "attempt-top",
+      "description": "Whole-row logbook entry: pencil mark, outcome word, details; divided by a 1px rule, never carded.",
+      "html": "<div class=\"ds-atts\"><div class=\"ds-att\"><div class=\"ds-row\"><span class=\"ds-o\">2 Climbing</span></div><div class=\"ds-d\"><b>7</b> events · <b>2</b> spoken</div></div><div class=\"ds-att ds-att-top\"><div class=\"ds-row\"><span class=\"ds-o\">1 Top</span></div><div class=\"ds-d\">hold <b>10/10</b> · 28.4 s · 2 stalls</div></div></div>",
+      "css": ".ds-atts{background:var(--page,#16181b);color:var(--ink,#eef0ea);padding:16px 24px;font-family:'Atkinson Hyperlegible Next',system-ui,sans-serif;font-size:20px}.ds-att{padding:0.25em 0;border-top:1px solid var(--rule,#33383e)}.ds-att:first-child{border-top:0}.ds-o{font-size:36px;font-weight:800;line-height:1.1}.ds-att-top .ds-o{color:var(--red,#ff5a6e)}.ds-d{color:var(--graphite,#b4bac1)}.ds-d b{color:var(--ink,#eef0ea);font-family:'Atkinson Hyperlegible Mono',ui-monospace,monospace}"
+    },
+    {
+      "name": "Timeline",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "One line per entry with mono meta; spoken bold, suppressed struck through, plus the hide toggle.",
+      "html": "<div class=\"ds-tl\"><h2 class=\"ds-tl-h\">Timeline <label class=\"ds-toggle\"><input type=\"checkbox\"> Hide suppressed</label></h2><ul><li class=\"ds-spoken\"><span class=\"ds-txt\">Commit. Go now.</span><span class=\"ds-meta\">614 ms</span></li><li class=\"ds-supp\"><span class=\"ds-txt\">feet_low (LH, hold 6)</span><span class=\"ds-meta\">cooldown</span></li><li class=\"ds-att-line\"><span class=\"ds-txt\">Attempt 1: top, high hold 10</span><span class=\"ds-meta\"></span></li></ul></div>",
+      "css": ".ds-tl{background:var(--page,#16181b);color:var(--ink,#eef0ea);padding:16px 24px;font-family:'Atkinson Hyperlegible Next',system-ui,sans-serif;font-size:20px}.ds-tl-h{margin:0 0 0.35em;font-size:20px;font-weight:700;color:var(--graphite,#b4bac1);display:flex}.ds-toggle{margin-left:auto;font-weight:400;display:inline-flex;gap:0.35em;align-items:center;cursor:pointer}.ds-toggle input{width:1em;height:1em;margin:0;accent-color:var(--ink,#eef0ea)}.ds-toggle input:focus-visible{outline:3px solid var(--ink,#eef0ea);outline-offset:2px}.ds-tl ul{list-style:none;margin:0;padding:0}.ds-tl li{padding:0.25em 0;border-bottom:1px solid var(--rule,#33383e);line-height:1.2;display:flex;gap:0.6em;align-items:baseline}.ds-txt{flex:1}.ds-meta{font-size:0.8em;color:var(--pencil,#8c939a);font-family:'Atkinson Hyperlegible Mono',ui-monospace,monospace}.ds-spoken .ds-txt{font-weight:700}.ds-supp{color:var(--pencil,#8c939a)}.ds-supp .ds-txt{text-decoration:line-through;text-decoration-thickness:1.5px}.ds-att-line .ds-txt{font-weight:700;color:var(--red,#ff5a6e)}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Tick List",
+    "overview": "The screen is a climber's logbook kept live by the coach, after dark. A graphite page carries light pencil ink; ruled lines, not cards, divide it. The coach's spoken line is the one field-book-yellow thing on screen, a full-width band at the bottom, and a red pen marks sends. Everything is sized to be read from 3 m away on a laptop or projector, using one three-step size ramp and nothing in between.\n\nDensity is low and deliberate: few elements, each large. Figures are set in a monospaced face with tabular numerals so latency, holds and times read like entries in a book. Motion is rationed so that one thing moves at a time: a new caption line slides in, and when an attempt ends a pencil tick is drawn onto its highpoint rung. Nothing else animates.\n\nThe system rejects the dark ops dashboard: rounded stat cards, neon accent glow, colour used as decoration. Fallback modes are labelled in plain words inside a ruled box, never hidden.",
+    "keyCharacteristics": [
+      "Graphite page, pencil ink, ruled lines instead of cards.",
+      "One colour, one meaning: yellow is the coach's voice, red is a send, the problem's hold colour is the climber's live position.",
+      "One fixed three-step size ramp (small, medium, large), tuned for 3 m.",
+      "Words in Atkinson Hyperlegible Next, figures in Atkinson Hyperlegible Mono.",
+      "Square corners; only dots are round.",
+      "One motion at a time: the arriving caption and the drawn tick."
+    ],
+    "rules": [
+      {
+        "name": "The One Colour, One Meaning Rule",
+        "body": "Yellow is the coach speaking, red is a send, the hold colour is where the climber is now. No colour is used for a second purpose, and no decorative colour is added.",
+        "section": "colors"
+      },
+      {
+        "name": "The Inversion Rule",
+        "body": "Emphasis and alarm are shown by inverting to a light Pencil Ink block with Graphite Page ink (the live hold, a late latency figure), not by adding a warning colour.",
+        "section": "colors"
+      },
+      {
+        "name": "The Three Steps Rule",
+        "body": "Every size is one of three steps: small (clamp 16–24px), medium (clamp 24–44px), large (clamp 72–96px). Below 900px wide they fix to 16 / 24 / 36px. Do not add a fourth step.",
+        "section": "typography"
+      },
+      {
+        "name": "The Mono Figures Rule",
+        "body": "Any number a viewer reads as data (ms, hold ids, times, counts, attempt numbers) is set in Atkinson Hyperlegible Mono with tabular numerals.",
+        "section": "typography"
+      },
+      {
+        "name": "The Ruled, Not Carded Rule",
+        "body": "Regions are separated by rules: 3px Strong Rule for structure, 2px Faint Rule between rungs and sections, 1px Faint Rule between entries. Never wrap content in a filled or bordered card.",
+        "section": "layout"
+      },
+      {
+        "name": "The Flat Page Rule",
+        "body": "Nothing floats. Hierarchy comes from size, weight, rules and inversion, never from shadow.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** reserve Field-Book Yellow for the coach's spoken or debrief line and Red Pen for sends.",
+      "**Do** use only the three size steps (small, medium, large) and their fixed values below 900px.",
+      "**Do** set every data figure in Atkinson Hyperlegible Mono with tabular numerals.",
+      "**Do** separate regions with 3px, 2px and 1px rules, and keep corners square.",
+      "**Do** show emphasis and lateness by inverting to a Pencil Ink block.",
+      "**Do** label fallback modes in plain words in a 2px boxed flag.",
+      "**Do** keep motion to the arriving caption and the drawn tick, and honour reduced motion."
+    ],
+    "donts": [
+      "**Don't** build rounded stat cards, filled panels or a neon accent; this is the dashboard the system refuses.",
+      "**Don't** add drop shadows or glows.",
+      "**Don't** use yellow or red for warnings, errors or decoration.",
+      "**Don't** let the problem's hold colour appear anywhere except the climber's live position.",
+      "**Don't** use the limb colours outside the video overlay.",
+      "**Don't** animate anything other than the caption arrival and the pencil tick."
+    ]
+  }
+}
