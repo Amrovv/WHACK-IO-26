@@ -6,9 +6,9 @@ import logging
 import random
 import re
 import unicodedata
-from collections.abc import Callable, Hashable, Iterable
+from collections.abc import Callable, Hashable, Iterable, Sequence
 
-from coach.contracts import Limb
+from coach.contracts import HoldMap, Limb
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +50,30 @@ def hold_phrase(hold_id: int) -> str:
         return f"hold {_ONES[hold_id - 1]}"
     tens, ones = divmod(hold_id, 10)
     return f"hold {_TENS[tens]}" + (f"-{_ONES[ones - 1]}" if ones else "")
+
+
+def hold_places(holdmap: HoldMap, bands: Iterable[Sequence]) -> dict[int, str]:
+    """Each hold's spoken name from its height on the route, e.g. {7: "high hold"}.
+
+    `bands` are (max fraction of the route's height, name) pairs from the persona, lowest first;
+    the lowest hold is at 0 and the highest at 1. Team decision: holds are named by where they
+    are, never by number.
+    """
+    bands = sorted((float(top), str(name)) for top, name in bands)
+    if not holdmap.holds or not bands:
+        return {}
+    ys = [hold.center[1] for hold in holdmap.holds]
+    bottom, top = max(ys), min(ys)  # y grows downwards
+    span = bottom - top
+    places = {}
+    for hold in holdmap.holds:
+        height = (bottom - hold.center[1]) / span if span > 0 else 0.0
+        places[hold.id] = next((name for limit, name in bands if height <= limit), bands[-1][1])
+    return places
+
+
+def place_names(bands: Iterable[Sequence]) -> list[str]:
+    return [str(name) for _, name in bands]
 
 
 def word_count(line: str) -> int:
@@ -123,17 +147,25 @@ def limb_phrase(limb: str) -> str:
     return member.value.replace("_", " ")
 
 
-def slot_values(data: dict, route_colour: str | None = None) -> dict[str, str]:
+def slot_values(
+    data: dict, route_colour: str | None = None, places: dict[int, str] | None = None
+) -> dict[str, str]:
     """Spoken slot values from an event's data; missing or unspeakable values are left out.
 
     A problem's holds all share one colour, so `route_colour` fills {colour} unless the event
-    names its own.
+    names its own. With `places` (from hold_places) {hold} is spoken by position ("high hold");
+    without a hold map it falls back to the number.
     """
+    places = places or {}
+
+    def spoken_hold(hold_id: int) -> str:
+        return places.get(hold_id) or hold_phrase(hold_id)
+
     data = {"colour": route_colour, "limb": data.get("foot"), **data}  # weight_shift sends "foot"
     sources = {
         "dir": ("dir", str),
         "colour": ("colour", str),
-        "hold": ("hold_id", hold_phrase),
+        "hold": ("hold_id", spoken_hold),
         "limb": ("limb", limb_phrase),
     }
     values: dict[str, str] = {}
@@ -208,15 +240,19 @@ class LinePicker:
         return line
 
 
-def fragments(colours: Iterable[str], fillers: Iterable[str]) -> list[str]:
+def fragments(
+    colours: Iterable[str], fillers: Iterable[str], places: Iterable[str] = ()
+) -> list[str]:
     """Every fixed clip that slots and debriefs stitch together."""
     holds = (hold_phrase(i) for i in range(1, MAX_HOLD + 1))
-    return [*DIRECTIONS, *colours, *LIMBS, *holds, *fillers]
+    return [*DIRECTIONS, *colours, *LIMBS, *holds, *places, *fillers]
 
 
-def render_texts(bank: dict, colours: Iterable[str], fillers: Iterable[str]) -> list[str]:
+def render_texts(
+    bank: dict, colours: Iterable[str], fillers: Iterable[str], places: Iterable[str] = ()
+) -> list[str]:
     """All text to pre-render: whole lines, the fixed pieces of slot lines, and fragments."""
-    texts = set(fragments(colours, fillers))
+    texts = set(fragments(colours, fillers, places))
     for levels in bank.values():
         for moods in levels.values():
             for lines in moods.values():

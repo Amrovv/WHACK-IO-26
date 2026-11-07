@@ -49,6 +49,14 @@ examples:
     - "Feet. Up. Same as last time."
     - "Bent arms again. Lock them out."
     - "Left foot, not right. Third time."
+# How holds are spoken, by height on the route (0 = lowest hold, 1 = highest). Team decision:
+# holds are named by position ("grab the high hold"), never by number. Names fill {hold}, so
+# keep them to two words.
+hold_places:
+  - [0.25, low hold]
+  - [0.6, middle hold]
+  - [0.85, high hold]
+  - [1.0, top hold]
 # Placeholder until A's hold maps settle the spoken names (HoldMap.colour).
 colours: [pink, red, orange, yellow, green, teal, blue, purple, black, white, grey]
 fillers:
