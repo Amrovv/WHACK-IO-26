@@ -29,6 +29,15 @@
         ],
         "createdAt": "2026-11-07T13:23:51.754Z",
         "reason": "Claude: spent decision-round sketch, not shipped UI; the live dashboard is web/index.html"
+      },
+      {
+        "rule": "design-system-font",
+        "value": "*",
+        "files": [
+          ".impeccable/mocks/decision/model-pick.html"
+        ],
+        "createdAt": "2026-11-07T13:32:50.189Z",
+        "reason": "Claude: unchosen decision-round sketch, not shipped UI"
       }
     ]
   }
