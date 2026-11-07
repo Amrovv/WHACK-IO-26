@@ -29,6 +29,7 @@ from coach.voice.phrasebank import (
     SLOT_RE,
     blocked_phrases,
     persona_instruction,
+    place_names,
     reject_reason,
     render_texts,
     select_lines,
@@ -129,7 +130,7 @@ def build_prompt(persona: dict, kind: str, level: int, mood: str) -> str:
             "fewer is better. Every line must be about this event and fit what the climber is "
             "doing right now. Tell them what to do, unless the event is pure praise.",
             "Slots, used only where relevant: {dir} is a direction such as 'up and left', "
-            "{colour} is a hold colour, {hold} says 'hold six', {limb} says 'left hand'. "
+            "{colour} is a hold colour, {hold} says 'high hold', {limb} says 'left hand'. "
             "A slot counts as its full spoken length.",
             "You don't know the side, hold number, colour or how many times something happened, "
             "so never state them: no left or right, no numbers, no colour names, no counts. Use "
@@ -230,7 +231,9 @@ def check_clips(bank: dict, persona: dict, tts: TTS) -> int:
     if not bank:
         log.error("%s is missing or empty", BANK_PATH)
         return 1
-    texts = render_texts(bank, persona["colours"], persona["fillers"])
+    texts = render_texts(
+        bank, persona["colours"], persona["fillers"], place_names(persona.get("hold_places", ()))
+    )
     missing = missing_clips(texts, tts)
     for text in missing:
         print(f"missing: {text!r}")
@@ -265,7 +268,9 @@ def main() -> None:
         kinds = (args.only,) if args.only else EVENT_KINDS
         bank = build_bank(ask, persona, kinds, bank)
 
-    texts = render_texts(bank, persona["colours"], persona["fillers"])
+    texts = render_texts(
+        bank, persona["colours"], persona["fillers"], place_names(persona.get("hold_places", ()))
+    )
     if args.dry_run:
         print(json.dumps(bank, indent=2, ensure_ascii=False))
     else:

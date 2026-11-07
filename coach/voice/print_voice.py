@@ -13,13 +13,15 @@ import json
 import logging
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
+
+import yaml
 
 from coach.bus import Bus
 from coach.contracts import AttemptSummary, CoachEvent, HoldMap, SpeakRequest, SpokenLine
 from coach.voice.debrief import debrief_payload, template_sentences
-from coach.voice.phrasebank import LinePicker, slot_values, stitch
+from coach.voice.phrasebank import LinePicker, hold_places, slot_values, stitch
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +37,7 @@ class PrintVoice:
         bus: Bus | None = None,
         bank: dict | None = None,
         rng: random.Random | None = None,
+        hold_bands: Sequence[Sequence] = (),
     ) -> None:
         self._clock = clock
         self._spw = seconds_per_word
@@ -43,11 +46,13 @@ class PrintVoice:
         self._lines = LinePicker(bank, rng) if bank else None
         self._holdmaps: asyncio.Queue[HoldMap] | None = bus.subscribe("holdmap") if bus else None
         self._route_colour: str | None = None
+        self._hold_bands = hold_bands
+        self._places: dict[int, str] = {}
 
     def _text(self, req: SpeakRequest) -> str:
         event = req.event
         if self._lines is not None:
-            values = slot_values(event.data, self._route_colour)
+            values = slot_values(event.data, self._route_colour, self._places)
             line = self._lines.pick(event.kind, req.level, req.mood, values)
             if line is not None:
                 return stitch(line, values)[1]
@@ -58,14 +63,19 @@ class PrintVoice:
         now = self._clock()
         if now > req.deadline:
             return False
-        while self._holdmaps is not None and not self._holdmaps.empty():
-            self._route_colour = self._holdmaps.get_nowait().colour
+        self._read_holdmaps()
         text = self._text(req)
         print(f"[SPEAK] {req.event.kind} L{req.level} {req.mood}: {text}", flush=True)
         self._busy_until = now + len(text.split()) * self._spw
         if self._bus is not None:
             self._bus.publish("spoken", SpokenLine(req.event.t, now, req.event.kind, text))
         return True
+
+    def _read_holdmaps(self) -> None:
+        while self._holdmaps is not None and not self._holdmaps.empty():
+            holdmap = self._holdmaps.get_nowait()
+            self._route_colour = holdmap.colour
+            self._places = hold_places(holdmap, self._hold_bands)
 
     def is_speaking(self) -> bool:
         return self._clock() < self._busy_until
@@ -80,7 +90,9 @@ class PrintVoice:
         self, history: list[AttemptSummary], habits: dict, crux_hold: int | None
     ) -> None:
         """Print the template debrief (no LLM), one sentence at a time."""
-        sentences = template_sentences(debrief_payload(history, habits, crux_hold))
+        self._read_holdmaps()
+        payload = debrief_payload(history, habits, crux_hold, self._places)
+        sentences = template_sentences(payload)
         for sentence in sentences:
             print(f"[DEBRIEF] {sentence}", flush=True)
             if self._bus is not None:
@@ -97,7 +109,8 @@ def make_print_voice(cfg: dict, bus: Bus, no_llm: bool = True) -> PrintVoice:
     bank = json.loads(BANK_PATH.read_text(encoding="utf-8")) if BANK_PATH.exists() else None
     if bank is None:
         log.warning("%s not found; printing event names instead of persona lines", BANK_PATH)
-    return PrintVoice(bus=bus, bank=bank)
+    persona = yaml.safe_load(Path(cfg["voice"]["persona"]).read_text(encoding="utf-8"))
+    return PrintVoice(bus=bus, bank=bank, hold_bands=persona.get("hold_places", ()))
 
 
 def main() -> None:

@@ -472,3 +472,17 @@ def test_make_voice_matches_what_run_py_calls(monkeypatch: pytest.MonkeyPatch) -
     voice = built(cfg, Bus(), no_llm=True, bank={})
     assert warmed == [voice]
     voice.close()
+
+
+def test_holds_are_spoken_by_position_once_the_hold_map_arrives() -> None:
+    from coach.contracts import Hold
+
+    bank = bank_of(["Grab the {hold}."])
+    rig = Rig(bank, rendered=["Grab the", "high hold", "hold six"])
+    rig.voice._hold_bands = [[0.5, "low hold"], [1.0, "high hold"]]
+    holds = [Hold(1, (0.5, 0.9), (0, 0, 1, 1)), Hold(6, (0.5, 0.1), (0, 0, 1, 1))]
+    rig.voice.say(rig.request(data={"hold_id": 6}))
+    rig.clock.t += 5
+    rig.bus.publish("holdmap", HoldMap("p1", "pink", holds, (640, 480), "manual"))
+    rig.voice.say(rig.request(data={"hold_id": 6}))
+    assert rig.texts() == ["Grab the hold six.", "Grab the high hold."]

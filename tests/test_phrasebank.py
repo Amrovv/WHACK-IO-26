@@ -279,3 +279,20 @@ def test_direction_keys_reject_hard_coded_directions() -> None:
     lines = ["Straight up.", "Reach {dir}.", "Stop hunting. Up and left.", "Grab it."]
     assert drop_fixed_directions("hand_searching", 2, lines) == ["Reach {dir}.", "Grab it."]
     assert drop_fixed_directions("feet_low", 2, ["Feet up."]) == ["Feet up."]
+
+
+def test_hold_places_name_holds_by_height_on_the_route() -> None:
+    from coach.contracts import Hold, HoldMap
+    from coach.voice.phrasebank import hold_places, slot_values
+
+    def hold(i: int, y: float) -> Hold:
+        return Hold(i, (0.5, y), (0.4, y - 0.05, 0.6, y + 0.05))
+
+    holdmap = HoldMap(
+        "p", "pink", [hold(1, 0.9), hold(2, 0.7), hold(3, 0.4), hold(4, 0.1)], (640, 480), "manual"
+    )
+    bands = [[0.25, "low hold"], [0.6, "middle hold"], [0.85, "high hold"], [1.0, "top hold"]]
+    places = hold_places(holdmap, bands)
+    assert places == {1: "low hold", 2: "middle hold", 3: "high hold", 4: "top hold"}
+    assert slot_values({"hold_id": 3}, None, places) == {"hold": "high hold"}
+    assert slot_values({"hold_id": 3}) == {"hold": "hold three"}  # no hold map yet
