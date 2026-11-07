@@ -21,7 +21,7 @@ def _distance(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 def _keypoint(state: ClimberState, name: str) -> tuple[float, float] | None:
     value = state.keypoints.get(name)
-    if value is None or len(value) < 3 or value[2] <= 0:
+    if value is None or len(value) < 3 or value[2] < 0.5:
         return None
     return value[0], value[1]
 

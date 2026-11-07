@@ -42,6 +42,14 @@ def test_speeds_angles_hip_and_static():
     assert first.highest_hold_id is None
 
 
+def test_low_visibility_keypoint_is_excluded_from_elbow_angle():
+    tracker = FeatureTracker(0.02)
+
+    features = tracker.update(state(keypoints={"left_elbow": (0.2, 0.3, 0.3)}))
+
+    assert features.elbow_angle["left"] is None
+
+
 def test_calibration_highest_hold_and_hand_search():
     tracker = FeatureTracker(0.02)
     a = tracker.update(state())
@@ -73,3 +81,61 @@ def test_sideways_hip_motion_is_not_static():
 
     assert moved.hip_speed > 0
     assert moved.hip_static_s == 0
+
+
+def test_duplicate_timestamps_no_zero_division():
+    # Two frames at the same t (dt == 0) must not raise ZeroDivisionError.
+    tracker = FeatureTracker(0.02)
+    s0 = state(1.0)
+    tracker.update(s0)
+    # Second call with the same t: dt == 0 → all speed paths guarded by dt > 0.
+    s1 = state(1.0, x=0.5)
+    result = tracker.update(s1)
+    # Speeds must be 0.0 (no division), and no exception must be raised.
+    assert result.limb_speed[Limb.LH] == 0.0
+    assert result.hip_speed == 0.0
+
+
+def test_calibration_suppressed_when_keypoint_low_visibility():
+    # A chain_length calculation during add_calibration_sample must be skipped
+    # (not raise) when one of the three keypoints in the chain has low visibility.
+    tracker = FeatureTracker(0.02)
+    # Build a state where the left elbow has visibility < 0.5 so the left-arm
+    # chain fails; the right-arm chain should succeed as a fallback, and the
+    # leg chain (all visible) should also succeed.
+    low_vis_state = state(
+        0.0,
+        keypoints={
+            "left_shoulder": (0.2, 0.2, 1.0),
+            "left_elbow": (0.2, 0.3, 0.1),  # low visibility
+            "left_wrist": (0.2, 0.4, 1.0),
+        },
+    )
+    features = tracker.update(low_vis_state)
+    # add_calibration_sample must not raise even with the broken left-arm chain.
+    features.add_calibration_sample(low_vis_state)
+    # The fallback right-arm chain is fully visible in the default state fixture,
+    # so arm_length must be a positive number after the sample.
+    assert tracker._arm_samples  # at least one sample recorded via the right chain
+    assert all(v > 0 for v in tracker._arm_samples)
+
+
+def test_missing_limb_yields_zero_speed():
+    # A state.limbs dict that is missing a Limb entry entirely must produce
+    # 0.0 speed for that limb in FeatureTracker.update(), not raise.
+    tracker = FeatureTracker(0.02)
+    # First frame: all four limbs present so the tracker records positions.
+    tracker.update(state(0.0))
+    # Second frame: RF is absent from the limbs dict.
+    partial_limbs = {Limb.LH: (0.3, 0.4), Limb.RH: (0.4, 0.4), Limb.LF: (0.25, 0.9)}
+    s_partial = ClimberState(
+        1.0,
+        10,
+        True,
+        state(0.0).keypoints,
+        partial_limbs,
+        {limb: None for limb in Limb},
+        (0.3, 0.6),
+    )
+    result = tracker.update(s_partial)
+    assert result.limb_speed[Limb.RF] == 0.0
