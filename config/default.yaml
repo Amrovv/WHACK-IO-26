@@ -35,6 +35,10 @@ brain:
   cue_mute_hip_speed: 0.6           # suppress cue detectors while hip speed exceeds this
   next_hold_distance_penalty: 0.5   # weight on distance when scoring HandSearching's next hold
 
+  # Good-tier detectors (B6)
+  quiet_feet_window_s: 1.0          # foot leaves and re-touches the same hold within this = fidgety
+  feet_cut_ms: 300                  # both feet off while both hands on, longer than this = feet cut
+
   # Memory + compliance (B5)
   compliance_window_s: 3.0          # watch this long after a cue for the expected change
   compliance_progress_s: 5.0        # a followed cue + new higher hold within this = told_you_so

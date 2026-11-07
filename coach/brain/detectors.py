@@ -20,6 +20,7 @@ class DetectorContext:
     holdmap: HoldMap | None
     on_wall: bool
     last_fall_t: float | None
+    crux_hold: int | None = None  # memory.crux_hold(); used by CruxWarning
 
 
 def _brain(ctx: DetectorContext, name: str) -> Any:
@@ -36,6 +37,10 @@ class Detector:
     prevents threshold chatter from producing repeated cues.
     """
 
+    # Most detectors are live only while ON_WALL. GROUND-only detectors (e.g.
+    # RoutePreview, spoken before the climb starts) set this False.
+    requires_on_wall: bool = True
+
     def __init__(self) -> None:
         self._pending_since: float | None = None
         self._active = False
@@ -50,7 +55,7 @@ class Detector:
         return self._update(features, state, ctx)
 
     def _allowed(self, features: Features, state: ClimberState, ctx: DetectorContext) -> bool:
-        if not ctx.on_wall:
+        if self.requires_on_wall != ctx.on_wall:
             return False
         mute_after = float(_brain(ctx, "cue_mute_after_fall_s"))
         if ctx.last_fall_t is not None and state.t - ctx.last_fall_t < mute_after:
@@ -288,7 +293,269 @@ def mvp_detectors(config: Any) -> list[Detector]:
     return [Stalling(), ArmsBent(), FeetLow(), HandSearching()]
 
 
+class CruxWarning(Detector):
+    requires_on_wall: bool = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._warned = False
+
+    def _update(
+        self, features: Features, state: ClimberState, ctx: DetectorContext
+    ) -> list[CoachEvent]:
+        if ctx.crux_hold is None:
+            return []
+
+        target = ctx.crux_hold - 1
+        current_contacts = [hold_id for hold_id in state.contacts.values() if hold_id is not None]
+        highest_contact = max(current_contacts) if current_contacts else None
+
+        if highest_contact is not None and highest_contact >= target:
+            if not self._warned:
+                self._warned = True
+                self._last_valid = True
+                return [
+                    make_event(
+                        "crux_warning",
+                        state.t,
+                        {"hold_id": ctx.crux_hold, "crux_hold": ctx.crux_hold},
+                        ctx.config,
+                    )
+                ]
+        elif highest_contact is None or highest_contact < target:
+            self._warned = False
+            self._last_valid = False
+
+        return []
+
+    def still_valid(self, event: CoachEvent, state: ClimberState) -> bool:
+        current_contacts = [hold_id for hold_id in state.contacts.values() if hold_id is not None]
+        highest_contact = max(current_contacts) if current_contacts else None
+        crux_hold = event.data.get("crux_hold") or event.data.get("hold_id")
+        if crux_hold is None:
+            return self._last_valid
+        return highest_contact is not None and highest_contact >= crux_hold - 1
+
+
+class RoutePreview(Detector):
+    requires_on_wall: bool = False
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._fired = False
+
+    def update(
+        self, features: Features, state: ClimberState, ctx: DetectorContext
+    ) -> list[CoachEvent]:
+        if ctx.on_wall:
+            self._fired = False
+        return super().update(features, state, ctx)
+
+    def _update(
+        self, features: Features, state: ClimberState, ctx: DetectorContext
+    ) -> list[CoachEvent]:
+        if self._fired:
+            return []
+        if ctx.holdmap is None or len(ctx.holdmap.holds) < 2:
+            return []
+        if features.arm_length <= 0:
+            return []
+
+        ratio = float(_brain(ctx, "route_preview_ratio"))
+        threshold = ratio * features.arm_length
+        sorted_holds = sorted(ctx.holdmap.holds, key=lambda h: h.id)
+
+        max_gap = -1.0
+        far_hold_id: int | None = None
+        for h1, h2 in zip(sorted_holds, sorted_holds[1:], strict=False):
+            gap = hypot(h2.center[0] - h1.center[0], h2.center[1] - h1.center[1])
+            if gap > max_gap:
+                max_gap = gap
+                far_hold_id = h2.id
+
+        if max_gap > threshold and far_hold_id is not None:
+            self._fired = True
+            self._last_valid = True
+            return [
+                make_event(
+                    "route_preview",
+                    state.t,
+                    {"hold_id": far_hold_id, "gap": max_gap},
+                    ctx.config,
+                )
+            ]
+        return []
+
+
+class QuietFeet(Detector):
+    requires_on_wall: bool = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._last_hold: dict[Limb, int | None] = {Limb.LF: None, Limb.RF: None}
+        self._left_t: dict[Limb, float | None] = {Limb.LF: None, Limb.RF: None}
+        self._prev_contacts: dict[Limb, int | None] = {}
+
+    def _update(
+        self, features: Features, state: ClimberState, ctx: DetectorContext
+    ) -> list[CoachEvent]:
+        window_s = float(_brain(ctx, "quiet_feet_window_s"))
+        events: list[CoachEvent] = []
+
+        for foot in (Limb.LF, Limb.RF):
+            current = state.contacts.get(foot)
+            prev = self._prev_contacts.get(foot)
+
+            if prev is not None and current != prev:
+                self._last_hold[foot] = prev
+                self._left_t[foot] = state.t
+
+            if current is not None and current != prev:
+                left_t = self._left_t[foot]
+                if (
+                    self._last_hold[foot] == current
+                    and left_t is not None
+                    and (state.t - left_t) <= window_s
+                ):
+                    events.append(
+                        make_event(
+                            "quiet_feet",
+                            state.t,
+                            {"limb": foot.value, "hold_id": current},
+                            ctx.config,
+                        )
+                    )
+                self._last_hold[foot] = None
+                self._left_t[foot] = None
+
+            self._prev_contacts[foot] = current
+
+        self._last_valid = len(events) > 0
+        return events
+
+    def still_valid(self, event: CoachEvent, state: ClimberState) -> bool:
+        limb_val = event.data.get("limb")
+        hold_id = event.data.get("hold_id")
+        if not limb_val:
+            return False
+        return state.contacts.get(Limb(limb_val)) == hold_id
+
+
+class FeetCut(Detector):
+    requires_on_wall: bool = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._cut_since: float | None = None
+        self._fired = False
+
+    def _update(
+        self, features: Features, state: ClimberState, ctx: DetectorContext
+    ) -> list[CoachEvent]:
+        feet_off = state.contacts.get(Limb.LF) is None and state.contacts.get(Limb.RF) is None
+        hands_on = (
+            state.contacts.get(Limb.LH) is not None and state.contacts.get(Limb.RH) is not None
+        )
+
+        if not feet_off:
+            self._cut_since = None
+            self._fired = False
+            self._last_valid = False
+            return []
+
+        if hands_on:
+            if self._cut_since is None:
+                self._cut_since = state.t
+            feet_cut_s = float(_brain(ctx, "feet_cut_ms")) / 1000.0
+            if (state.t - self._cut_since + 1e-9) >= feet_cut_s and not self._fired:
+                self._fired = True
+                self._last_valid = True
+                return [make_event("feet_cut", state.t, {}, ctx.config)]
+        else:
+            self._cut_since = None
+
+        self._last_valid = self._fired and feet_off
+        return []
+
+    def still_valid(self, event: CoachEvent, state: ClimberState) -> bool:
+        return state.contacts.get(Limb.LF) is None and state.contacts.get(Limb.RF) is None
+
+
+class WeightShift(Detector):
+    requires_on_wall: bool = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._active_foot: Limb | None = None
+
+    def _update(
+        self, features: Features, state: ClimberState, ctx: DetectorContext
+    ) -> list[CoachEvent]:
+        eps = float(_brain(ctx, "move_speed_eps"))
+        static = features.hip_speed <= eps
+        if not static or features.leg_length <= 0:
+            self._one_shot(False, False, state.t, 0)
+            self._active_foot = None
+            self._last_valid = False
+            return []
+
+        lf_on = state.contacts.get(Limb.LF) is not None
+        rf_on = state.contacts.get(Limb.RF) is not None
+        if lf_on == rf_on:
+            self._one_shot(False, False, state.t, 0)
+            self._active_foot = None
+            self._last_valid = False
+            return []
+
+        supporting_foot = Limb.LF if lf_on else Limb.RF
+        foot_point = state.limbs.get(supporting_foot)
+        if foot_point is None:
+            self._one_shot(False, False, state.t, 0)
+            self._active_foot = None
+            self._last_valid = False
+            return []
+
+        if self._active_foot != supporting_foot:
+            self._active = False
+            self._pending_since = None
+            self._active_foot = supporting_foot
+
+        dx = abs(state.hip[0] - foot_point[0])
+        ratio = float(_brain(ctx, "weight_shift_ratio"))
+        threshold = ratio * features.leg_length
+
+        condition = dx > threshold
+        release = dx > (threshold * 0.9)
+
+        debounce = float(_brain(ctx, "debounce_ms")) / 1000.0
+        self._last_valid = condition and static
+        fired = self._one_shot(condition and static, release and static, state.t, debounce)
+        if fired:
+            return [
+                make_event(
+                    "weight_shift",
+                    state.t,
+                    {"foot": supporting_foot.value},
+                    ctx.config,
+                )
+            ]
+        return []
+
+    def still_valid(self, event: CoachEvent, state: ClimberState) -> bool:
+        foot_str = event.data.get("foot")
+        if not foot_str:
+            return False
+        return state.contacts.get(Limb(foot_str)) is not None
+
+
+def good_tier_detectors(config: Any) -> list[Detector]:
+    """Return the good-tier detector set."""
+    return [CruxWarning(), RoutePreview(), QuietFeet(), FeetCut(), WeightShift()]
+
+
 if __name__ == "__main__":
     logger.info(
-        "MVP detector set ready: %s", [type(detector).__name__ for detector in mvp_detectors({})]
+        "detectors ready: mvp=%s good=%s",
+        [type(d).__name__ for d in mvp_detectors({})],
+        [type(d).__name__ for d in good_tier_detectors({})],
     )
