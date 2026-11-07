@@ -1,0 +1,3 @@
+# Local test videos for offline use; the folder is kept, its contents are not.
+videos/*
+!videos/.gitkeep

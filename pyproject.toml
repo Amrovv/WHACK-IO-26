@@ -1,0 +1,47 @@
+[project]
+name = "climb-coach"
+version = "0.1.0"
+description = "Real-time AI bouldering coach: live cues mid-climb, persona debriefs between attempts."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.162.0",
+    "google-genai>=3.0.0",
+    "inference-sdk>=1.8.4",
+    "kokoro>=0.9.4",
+    "mediapipe>=1.2.2",
+    "numpy>=2.3.5",
+    "opencv-contrib-python>=5.0.0.93",
+    "python-dotenv>=1.2.4",
+    "pyyaml>=6.0.3",
+    "sounddevice>=0.5.6",
+    "soundfile>=0.14.0",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1.post1",
+    "ruff>=0.17.4",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# E/F: pycodestyle + pyflakes, I: import sorting, B: bugbear, UP: pyupgrade
+select = ["E", "F", "I", "B", "UP"]
+# UP042: contracts.py uses `str, Enum` per contracts v1.1; keep it.
+ignore = ["UP042"]
+
+[tool.uv]
+# mediapipe needs opencv-contrib-python; inference-sdk pulls opencv-python. Both ship the
+# same `cv2` module and overwrite each other, so drop opencv-python (contrib is a superset).
+override-dependencies = ["opencv-python; sys_platform == 'never'"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

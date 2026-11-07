@@ -1,0 +1,664 @@
+<!doctype html>
+<!--
+  Climbing Coach live dashboard. Plain HTML/CSS/JS, no build step.
+
+  Video: <img src="/video"> (MJPEG or any image stream), or JPEG frames over the WebSocket:
+         binary messages, or {"topic": "frame", "data": "<base64 jpeg>"}. The first WebSocket
+         frame switches the page to WebSocket video. ?video=ws skips /video entirely.
+         Test with: python web/stream_test.py --source <clip.mp4 | 0 for webcam>
+  Data:  WebSocket ws://<host>/ws, one JSON message per bus item:
+           {"topic": "<topic>", "data": <payload>}
+         Also accepted: {"type": ..., "payload": ...} and mixes of those keys.
+  Topics (payloads = dataclasses in coach/contracts.py, via dataclasses.asdict):
+    holdmap       HoldMap
+    state         ClimberState
+    event         CoachEvent
+    suppressed    Suppressed
+    attempt       AttemptSummary
+    spoken        SpokenLine
+    debrief_text  str  (or {"text": str})
+  Extra, optional (not bus topics, for the server to send if it can):
+    mood          "neutral" | "impressed" | "exasperated"  (or {"mood": ...})
+    hello         {"no_llm": bool, "persona": str, "mood": str, "problem_id": str}
+  Any payload with a "mood" field also updates the mood badge.
+
+  URL params: ?demo=1 fake data, no server needed.  ?offline=1 force the offline badge.
+              ?ws=<url> override the WebSocket url.   ?video=<url> override the video url.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Climbing Coach</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #151920;
+    --panel-2: #1d222b;
+    --line: #2a313c;
+    --text: #eef1f5;
+    --muted: #8a94a3;
+    --dim: #5b6472;
+    --accent: #4fd1c5;
+    --good: #48bb78;
+    --warn: #f6ad55;
+    --bad: #fc5c65;
+    --gold: #f6c945;
+    --lh: #4fc3f7;
+    --rh: #f06292;
+    --lf: #aed581;
+    --rf: #ffb74d;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; padding: 16px; overflow: hidden; }
+
+  /* Left: video + caption */
+  #left { display: flex; flex-direction: column; gap: 16px; min-height: 0; min-width: 0; }
+  /* #stage takes the free space; #frame is sized by JS to the video's aspect ratio and centred,
+     so the rounded corners belong to the picture itself (no letterbox, nothing clipped). */
+  #stage { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+  #frame { position: relative; width: 100%; height: 100%; background: #000; border-radius: 12px; overflow: hidden; }
+  #video, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #video { object-fit: fill; }
+  #video:not([src]) { visibility: hidden; }
+  #novideo { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--dim); font-size: 28px; }
+  #status { position: absolute; top: 12px; left: 12px; display: flex; gap: 8px; }
+  #caption { min-height: 150px; max-height: 32vh; overflow: hidden; background: var(--panel); border-radius: 12px;
+    padding: 20px 28px; font-size: 48px; font-weight: 700; line-height: 1.2;
+    display: flex; align-items: center; transition: opacity 0.8s ease; }
+  #caption.faded { opacity: 0.15; }
+  #caption.debrief { font-size: 34px; font-weight: 500; align-items: flex-end; }
+  #caption .who { color: var(--accent); margin-right: 14px; }
+
+  /* Right: panels */
+  #right { display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; }
+  .panel { background: var(--panel); border-radius: 12px; padding: 14px 16px; }
+  .panel h2 { margin: 0 0 10px; font-size: 16px; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .panel h2 .spacer { flex: 1; }
+  .badges { display: flex; gap: 8px; flex-wrap: wrap; }
+  .badge { font-size: 20px; font-weight: 700; padding: 6px 14px; border-radius: 999px;
+    background: var(--panel-2); border: 2px solid var(--line); white-space: nowrap; }
+  .badge.small { font-size: 14px; padding: 3px 10px; }
+  .badge.live { background: var(--bad); border-color: var(--bad); color: #fff; }
+  .badge.live::before { content: "● "; animation: blink 1.6s ease-in-out infinite; }
+  @keyframes blink { 50% { opacity: 0.25; } }
+  .badge.down { border-color: var(--muted); color: var(--muted); }
+  .badge.offline { border-color: var(--warn); color: var(--warn); }
+  .mood-neutral { border-color: var(--muted); }
+  .mood-impressed { border-color: var(--good); color: var(--good); }
+  .mood-exasperated { border-color: var(--bad); color: var(--bad); }
+
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stat { background: var(--panel-2); border-radius: 10px; padding: 10px 12px; }
+  .stat .label { font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .stat .value { font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .stat .value small { font-size: 18px; font-weight: 600; color: var(--muted); margin-left: 4px; }
+  .lat-good { color: var(--good); } .lat-warn { color: var(--warn); } .lat-bad { color: var(--bad); }
+
+  #attempts { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
+  #attempts:empty::after { content: "No attempts yet"; color: var(--dim); font-size: 18px; }
+  .card { flex: 0 0 auto; min-width: 150px; background: var(--panel-2); border-radius: 10px; padding: 10px 12px;
+    border-left: 6px solid var(--line); }
+  .card.top { border-left-color: var(--good); }
+  .card.fall { border-left-color: var(--bad); }
+  .card.downclimb { border-left-color: var(--warn); }
+  .card .n { font-size: 14px; color: var(--muted); text-transform: uppercase; }
+  .card .o { font-size: 26px; font-weight: 800; text-transform: capitalize; }
+  .card .d { font-size: 17px; color: var(--muted); margin-top: 2px; }
+
+  #timeline-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  #timeline { flex: 1; min-height: 0; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+  #timeline li { padding: 8px 4px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; align-items: baseline; }
+  #timeline .txt { flex: 1; font-size: 22px; }
+  #timeline .meta { font-size: 15px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  #timeline li.spoken .txt { font-weight: 700; }
+  #timeline li.suppressed { color: var(--dim); }
+  #timeline li.suppressed .txt { font-size: 18px; }
+  #timeline li.suppressed .meta { color: var(--dim); }
+  #timeline li.attempt .txt { color: var(--accent); font-weight: 600; }
+  #timeline.hide-suppressed li.suppressed { display: none; }
+  #timeline:empty::after { content: "Waiting for the coach…"; color: var(--dim); font-size: 18px; }
+  label.toggle { font-size: 14px; text-transform: none; letter-spacing: 0; color: var(--muted);
+    display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  label.toggle input { width: 18px; height: 18px; }
+
+  @media (max-width: 900px) {
+    body { grid-template-columns: 1fr; overflow: auto; }
+    #stage { min-height: 50vh; }
+    #caption { font-size: 32px; }
+  }
+</style>
+</head>
+<body>
+<section id="left">
+  <div id="stage"><div id="frame">
+    <div id="novideo">No video</div>
+    <img id="video" alt="">
+    <canvas id="overlay"></canvas>
+    <div id="status" class="badges">
+      <span id="conn" class="badge small down">disconnected</span>
+    </div>
+  </div>
+  </div>
+  <div id="caption" class="faded"></div>
+</section>
+
+<aside id="right">
+  <div class="panel">
+    <div class="badges">
+      <span id="mood" class="badge mood-neutral">Mood: neutral</span>
+      <span id="offline" class="badge offline" hidden>Offline mode</span>
+      <span id="problem" class="badge" hidden></span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Cue latency</h2>
+    <div class="stats">
+      <div class="stat"><div class="label">Last</div><div class="value" id="lat-last">–</div></div>
+      <div class="stat"><div class="label">Median</div><div class="value" id="lat-median">–</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Current attempt <span class="spacer"></span><span id="cur-no" class="badge small">–</span></h2>
+    <div class="stats">
+      <div class="stat"><div class="label">Events detected</div><div class="value" id="cur-events">0</div></div>
+      <div class="stat"><div class="label">Lines spoken</div><div class="value" id="cur-spoken">0</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Attempts</h2>
+    <div id="attempts"></div>
+  </div>
+
+  <div class="panel" id="timeline-panel">
+    <h2>Timeline <span class="spacer"></span>
+      <label class="toggle"><input type="checkbox" id="hide-supp"> hide suppressed</label>
+    </h2>
+    <ul id="timeline"></ul>
+  </div>
+</aside>
+
+<script>
+"use strict";
+
+// ---- Settings ---------------------------------------------------------------
+const CAPTION_FADE_MS = 4000;
+const TIMELINE_MAX = 200;
+const LATENCY_WINDOW = 50;          // cues used for the median
+const LATENCY_WARN_MS = 800;        // target from CLAUDE.md
+const LATENCY_GOOD_MS = 500;
+const RECONNECT_MAX_MS = 5000;
+
+const params = new URLSearchParams(location.search);
+const WS_URL = params.get("ws") ||
+  `${location.protocol === "https:" ? "wss" : "ws"}://${location.host || "localhost:8000"}/ws`;
+const VIDEO_URL = params.get("video") || "/video";
+const DEMO = params.has("demo");
+
+// Limb keys may arrive as enum values ("left_hand") or names ("LH").
+const LIMB_ALIASES = { left_hand: "LH", right_hand: "RH", left_foot: "LF", right_foot: "RF",
+                       LH: "LH", RH: "RH", LF: "LF", RF: "RF" };
+const LIMB_COLOURS = { LH: css("--lh"), RH: css("--rh"), LF: css("--lf"), RF: css("--rf") };
+
+// MediaPipe pose landmark names, in index order (keypoints may be keyed by index).
+const MP_NAMES = ["nose", "left_eye_inner", "left_eye", "left_eye_outer", "right_eye_inner", "right_eye",
+  "right_eye_outer", "left_ear", "right_ear", "mouth_left", "mouth_right", "left_shoulder", "right_shoulder",
+  "left_elbow", "right_elbow", "left_wrist", "right_wrist", "left_pinky", "right_pinky", "left_index",
+  "right_index", "left_thumb", "right_thumb", "left_hip", "right_hip", "left_knee", "right_knee",
+  "left_ankle", "right_ankle", "left_heel", "right_heel", "left_foot_index", "right_foot_index"];
+const BONES = [
+  ["left_shoulder", "right_shoulder"], ["left_hip", "right_hip"],
+  ["left_shoulder", "left_hip"], ["right_shoulder", "right_hip"],
+  ["left_shoulder", "left_elbow"], ["left_elbow", "left_wrist"],
+  ["right_shoulder", "right_elbow"], ["right_elbow", "right_wrist"],
+  ["left_hip", "left_knee"], ["left_knee", "left_ankle"], ["left_ankle", "left_heel"],
+  ["left_heel", "left_foot_index"], ["left_ankle", "left_foot_index"],
+  ["right_hip", "right_knee"], ["right_knee", "right_ankle"], ["right_ankle", "right_heel"],
+  ["right_heel", "right_foot_index"], ["right_ankle", "right_foot_index"],
+];
+const MIN_VISIBILITY = 0.4;
+
+// ---- State ------------------------------------------------------------------
+const S = {
+  holdmap: null,
+  state: null,
+  latencies: [],
+  attemptNo: null,
+  curEvents: 0,
+  curSpoken: 0,
+  debriefing: false,
+  captionTimer: null,
+  overlayDirty: true,
+};
+
+const $ = (id) => document.getElementById(id);
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function clock() { return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
+
+// ---- Message routing --------------------------------------------------------
+function handle(msg) {
+  const topic = msg.topic ?? msg.type;
+  const data = msg.data ?? msg.payload;
+  if (data && typeof data === "object" && typeof data.mood === "string") setMood(data.mood);
+  switch (topic) {
+    case "holdmap": S.holdmap = data; S.overlayDirty = true; showProblem(data?.problem_id); break;
+    case "state": S.state = data; S.overlayDirty = true; break;
+    case "frame": showBase64Frame(typeof data === "string" ? data : data?.jpeg); break;
+    case "event": onEvent(data); break;
+    case "suppressed": onSuppressed(data); break;
+    case "attempt": onAttempt(data); break;
+    case "spoken": onSpoken(data); break;
+    case "debrief_text": onDebrief(typeof data === "string" ? data : data?.text); break;
+    case "mood": setMood(typeof data === "string" ? data : data?.mood); break;
+    case "hello": case "config": onHello(data || {}); break;
+  }
+}
+
+function onHello(d) {
+  if (d.no_llm || d.offline) $("offline").hidden = false;
+  if (d.problem_id) showProblem(d.problem_id);
+}
+
+function showProblem(id) {
+  if (!id) return;
+  const colour = S.holdmap?.colour ? ` · ${S.holdmap.colour}` : "";
+  $("problem").textContent = `Problem ${id}${colour}`;
+  $("problem").hidden = false;
+}
+
+function setMood(m) {
+  if (!m) return;
+  const el = $("mood");
+  el.className = `badge mood-${m}`;
+  el.textContent = `Mood: ${m}`;
+}
+
+function onEvent(ev) {
+  if (!ev) return;
+  if (ev.kind === "attempt_start") {
+    S.attemptNo = (S.attemptNo ?? 0) + 1;
+    S.curEvents = 0;
+    S.curSpoken = 0;
+    S.debriefing = false;
+    addTimeline("attempt", `Attempt ${S.attemptNo} started`, clock());
+  }
+  S.curEvents++;
+  renderCurrent();
+}
+
+function onSuppressed(s) {
+  if (!s) return;
+  const ev = s.event || {};
+  const detail = describeEventData(ev.data);
+  addTimeline("suppressed", `${ev.kind || "event"}${detail}`, `${s.reason || "?"} · ${clock()}`);
+}
+
+function describeEventData(d) {
+  if (!d) return "";
+  const parts = [];
+  if (d.limb) parts.push(d.limb);
+  if (d.hold_id != null) parts.push(`hold ${d.hold_id}`);
+  if (d.dir) parts.push(d.dir);
+  return parts.length ? ` (${parts.join(", ")})` : "";
+}
+
+function onSpoken(line) {
+  if (!line) return;
+  const ms = Math.round((line.t_audio_start - line.t_event) * 1000);
+  const hasLat = Number.isFinite(ms);
+  if (hasLat) {
+    S.latencies.push(ms);
+    if (S.latencies.length > LATENCY_WINDOW) S.latencies.shift();
+  }
+  S.curSpoken++;
+  addTimeline("spoken", line.text, `${hasLat ? ms + " ms · " : ""}${line.kind || ""} · ${clock()}`);
+  S.debriefing = false;
+  setCaption(`<span class="who">Coach</span>${esc(line.text)}`, false);
+  renderLatency();
+  renderCurrent();
+}
+
+function onDebrief(text) {
+  if (!text) return;
+  const cap = $("caption");
+  if (!S.debriefing) {
+    S.debriefing = true;
+    cap.innerHTML = `<span><span class="who">Debrief</span><span id="debrief-body"></span></span>`;
+  }
+  const body = $("debrief-body");
+  body.textContent += (body.textContent ? " " : "") + text.trim();
+  setCaption(null, true);
+  addTimeline("debrief", text.trim(), `debrief · ${clock()}`);
+}
+
+function onAttempt(a) {
+  if (!a) return;
+  if (a.attempt_no != null) S.attemptNo = a.attempt_no;
+  const stalls = (a.stalls || []).map(([id, sec]) => `#${id} ${Number(sec).toFixed(1)}s`).join(", ");
+  const card = document.createElement("div");
+  card.className = `card ${a.outcome || ""}`;
+  card.innerHTML = `
+    <div class="n">Attempt ${esc(a.attempt_no ?? "?")}</div>
+    <div class="o">${esc(a.outcome || "?")}</div>
+    <div class="d">High hold: <b>${a.high_hold_id ?? "–"}</b>${S.holdmap ? ` / ${S.holdmap.holds.length}` : ""}</div>
+    <div class="d">${a.duration_s != null ? Number(a.duration_s).toFixed(1) + " s" : ""}</div>
+    <div class="d">Stalls: ${stalls || "none"}</div>`;
+  $("attempts").prepend(card);
+  addTimeline("attempt", `Attempt ${a.attempt_no ?? "?"}: ${a.outcome || "?"}, high hold ${a.high_hold_id ?? "–"}`, clock());
+  renderCurrent();
+}
+
+// ---- Rendering: panels ------------------------------------------------------
+function setCaption(html, debrief) {
+  const cap = $("caption");
+  if (html !== null) cap.innerHTML = html;
+  cap.classList.toggle("debrief", debrief);
+  cap.classList.remove("faded");
+  clearTimeout(S.captionTimer);
+  S.captionTimer = setTimeout(() => cap.classList.add("faded"), CAPTION_FADE_MS);
+}
+
+function addTimeline(cls, text, meta) {
+  const li = document.createElement("li");
+  li.className = cls;
+  li.innerHTML = `<span class="txt">${esc(text)}</span><span class="meta">${esc(meta)}</span>`;
+  const ul = $("timeline");
+  ul.prepend(li);
+  while (ul.children.length > TIMELINE_MAX) ul.lastChild.remove();
+}
+
+function latClass(ms) { return ms <= LATENCY_GOOD_MS ? "lat-good" : ms <= LATENCY_WARN_MS ? "lat-warn" : "lat-bad"; }
+
+function renderLatency() {
+  const l = S.latencies;
+  if (!l.length) return;
+  const last = l[l.length - 1];
+  const sorted = [...l].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  const median = Math.round(sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2);
+  $("lat-last").innerHTML = `<span class="${latClass(last)}">${last}</span><small>ms</small>`;
+  $("lat-median").innerHTML = `<span class="${latClass(median)}">${median}</span><small>ms (n=${l.length})</small>`;
+}
+
+function renderCurrent() {
+  $("cur-no").textContent = S.attemptNo != null ? `#${S.attemptNo}` : "–";
+  $("cur-events").textContent = S.curEvents;
+  $("cur-spoken").textContent = S.curSpoken;
+}
+
+// ---- Rendering: overlay -----------------------------------------------------
+const canvas = $("overlay");
+const ctx = canvas.getContext("2d");
+const video = $("video");
+
+// #frame is fitted to the video's aspect ratio, so the image fills the canvas exactly.
+function contentRect() {
+  return { x: 0, y: 0, w: canvas.width, h: canvas.height };
+}
+
+// Largest box with the video's aspect ratio that fits in #stage.
+function fitFrame() {
+  const stage = $("stage"), frameEl = $("frame");
+  let iw = video.naturalWidth, ih = video.naturalHeight;
+  if (!iw || !ih) [iw, ih] = S.holdmap?.image_size || [16, 9];
+  const sw = stage.clientWidth, sh = stage.clientHeight;
+  if (!sw || !sh) return;
+  const scale = Math.min(sw / iw, sh / ih);
+  const w = `${Math.floor(iw * scale)}px`, h = `${Math.floor(ih * scale)}px`;
+  if (frameEl.style.width !== w || frameEl.style.height !== h) {
+    frameEl.style.width = w;
+    frameEl.style.height = h;
+    S.overlayDirty = true;
+  }
+}
+
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const r = canvas.getBoundingClientRect();
+  const w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; S.overlayDirty = true; }
+}
+
+function normLimbs(obj) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj || {})) if (LIMB_ALIASES[k]) out[LIMB_ALIASES[k]] = v;
+  return out;
+}
+
+function drawOverlay() {
+  resizeCanvas();
+  const dpr = window.devicePixelRatio || 1;
+  const R = contentRect();
+  const P = ([x, y]) => [R.x + x * R.w, R.y + y * R.h];
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const st = S.state && S.state.person_found !== false ? S.state : null;
+  const contacts = normLimbs(st?.contacts);
+  const limbs = normLimbs(st?.limbs);
+  const heldBy = {};  // hold id -> [limb]
+  for (const [limb, id] of Object.entries(contacts)) if (id != null) (heldBy[id] ||= []).push(limb);
+
+  // Holds
+  const holds = S.holdmap?.holds || [];
+  const byId = {};
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+  for (const h of holds) {
+    byId[h.id] = h;
+    const [x0, y0] = P([h.bbox[0], h.bbox[1]]);
+    const [x1, y1] = P([h.bbox[2], h.bbox[3]]);
+    const users = heldBy[h.id];
+    const roleColour = h.role === "start" ? css("--good") : h.role === "top" ? css("--gold") : "rgba(255,255,255,0.75)";
+    if (users) {
+      ctx.fillStyle = LIMB_COLOURS[users[0]] + "55";
+      ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    }
+    ctx.lineWidth = (users ? 4 : h.role === "mid" ? 2 : 3) * dpr;
+    ctx.strokeStyle = users ? LIMB_COLOURS[users[0]] : roleColour;
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+
+    const label = h.role === "start" ? `${h.id} S` : h.role === "top" ? `${h.id} TOP` : `${h.id}`;
+    ctx.font = `700 ${16 * dpr}px system-ui, sans-serif`;
+    const tw = ctx.measureText(label).width + 10 * dpr, th = 22 * dpr;
+    const lx = (x0 + x1) / 2, ly = y0 - th / 2 - 2 * dpr;
+    ctx.fillStyle = h.role === "mid" ? "rgba(0,0,0,0.7)" : roleColour;
+    ctx.fillRect(lx - tw / 2, ly - th / 2, tw, th);
+    ctx.fillStyle = h.role === "mid" ? "#fff" : "#000";
+    ctx.fillText(label, lx, ly);
+  }
+
+  if (!st) return;
+
+  // Skeleton
+  const kp = {};
+  for (const [k, v] of Object.entries(st.keypoints || {})) kp[/^\d+$/.test(k) ? MP_NAMES[+k] : k] = v;
+  const vis = (p) => p && (p[2] == null || p[2] >= MIN_VISIBILITY);
+  ctx.lineCap = "round";
+  ctx.lineWidth = 4 * dpr;
+  ctx.strokeStyle = "rgba(255,255,255,0.85)";
+  for (const [a, b] of BONES) {
+    if (!vis(kp[a]) || !vis(kp[b])) continue;
+    const [ax, ay] = P(kp[a]), [bx, by] = P(kp[b]);
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+  }
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  for (const p of Object.values(kp)) {
+    if (!vis(p)) continue;
+    const [x, y] = P(p);
+    ctx.beginPath(); ctx.arc(x, y, 3 * dpr, 0, Math.PI * 2); ctx.fill();
+  }
+  if (st.hip) {
+    const [x, y] = P(st.hip);
+    ctx.strokeStyle = css("--accent"); ctx.lineWidth = 3 * dpr;
+    ctx.beginPath(); ctx.arc(x, y, 9 * dpr, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  // Limb points, with a line to the hold they're on
+  for (const [limb, pt] of Object.entries(limbs)) {
+    if (!pt) continue;
+    const [x, y] = P(pt);
+    const colour = LIMB_COLOURS[limb];
+    const hold = byId[contacts[limb]];
+    if (hold) {
+      const [hx, hy] = P(hold.center);
+      ctx.strokeStyle = colour; ctx.lineWidth = 2 * dpr; ctx.setLineDash([6 * dpr, 4 * dpr]);
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(hx, hy); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.fillStyle = colour; ctx.strokeStyle = "#000"; ctx.lineWidth = 2 * dpr;
+    ctx.beginPath(); ctx.arc(x, y, (hold ? 12 : 9) * dpr, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#000"; ctx.font = `800 ${11 * dpr}px system-ui, sans-serif`;
+    ctx.fillText(limb, x, y);
+  }
+}
+
+function frame() {
+  fitFrame();
+  if (S.overlayDirty) { S.overlayDirty = false; drawOverlay(); }
+  requestAnimationFrame(frame);
+}
+new ResizeObserver(() => { S.overlayDirty = true; }).observe(canvas);
+
+// ---- Video ------------------------------------------------------------------
+// Two ways in: an MJPEG stream at /video, or JPEG frames over the WebSocket (binary
+// messages, or {"topic": "frame", "data": "<base64 jpeg>"}). The first WebSocket frame
+// switches the page over to WebSocket video for the rest of the connection.
+let wsVideo = false;
+let frameUrl = null;
+
+function loadVideo() {
+  if (wsVideo || VIDEO_URL === "ws") return;
+  video.src = `${VIDEO_URL}${VIDEO_URL.includes("?") ? "&" : "?"}t=${Date.now()}`;
+}
+
+function showFrame(blob) {
+  wsVideo = true;
+  const old = frameUrl;
+  frameUrl = URL.createObjectURL(blob);
+  video.src = frameUrl;
+  if (old) URL.revokeObjectURL(old);
+}
+
+function showBase64Frame(b64) {
+  if (typeof b64 !== "string") return;
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  showFrame(new Blob([bytes], { type: "image/jpeg" }));
+}
+
+video.addEventListener("load", () => { $("novideo").hidden = true; S.overlayDirty = true; });
+video.addEventListener("error", () => { if (!wsVideo) $("novideo").hidden = false; });
+
+// ---- WebSocket --------------------------------------------------------------
+let backoff = 500;
+function connect() {
+  let ws;
+  try { ws = new WebSocket(WS_URL); } catch (e) { return retry(); }
+  ws.binaryType = "blob";
+  ws.onopen = () => {
+    backoff = 500;
+    $("conn").className = "badge small live";
+    $("conn").textContent = "LIVE";
+    loadVideo();
+  };
+  ws.onmessage = (e) => {
+    if (e.data instanceof Blob) return showFrame(e.data.type ? e.data : new Blob([e.data], { type: "image/jpeg" }));
+    try { handle(JSON.parse(e.data)); } catch (err) { console.warn("bad message", err, e.data); }
+  };
+  ws.onclose = () => {
+    wsVideo = false;
+    $("conn").className = "badge small down";
+    $("conn").textContent = "reconnecting…";
+    retry();
+  };
+}
+function retry() { setTimeout(connect, backoff); backoff = Math.min(backoff * 2, RECONNECT_MAX_MS); }
+
+// ---- Demo mode (?demo=1): fake bus traffic, no server ------------------------
+function runDemo() {
+  $("conn").className = "badge small offline";
+  $("conn").textContent = "demo";
+  const holds = [];
+  const path = [[0.45, 0.88], [0.55, 0.86], [0.5, 0.74], [0.42, 0.63], [0.56, 0.55],
+                [0.47, 0.44], [0.58, 0.34], [0.5, 0.24], [0.44, 0.14], [0.52, 0.06]];
+  path.forEach(([x, y], i) => holds.push({ id: i + 1, center: [x, y],
+    bbox: [x - 0.025, y - 0.02, x + 0.025, y + 0.02],
+    role: i < 2 ? "start" : i === path.length - 1 ? "top" : "mid" }));
+  handle({ topic: "hello", data: { no_llm: true, problem_id: "demo-pink" } });
+  handle({ topic: "holdmap", data: { problem_id: "demo-pink", colour: "pink", holds,
+    image_size: [1280, 720], mode: "colour" } });
+
+  let t = 0, attempt = 0;
+  const cues = [["feet_low", "Feet up, find hold 3."], ["hand_searching", "Left hand, up and left to hold 6."],
+                ["arms_bent", "Straighten those arms."], ["stalling", "Commit. Go now."],
+                ["quiet_feet", "Quiet feet, nice."]];
+  const reasons = ["cooldown", "busy", "stale", "budget", "lower_priority", "late"];
+  const startAttempt = () => {
+    attempt++;
+    handle({ topic: "event", data: { t, kind: "attempt_start", priority: 0, ttl_s: 1, data: {} } });
+  };
+  startAttempt();
+  setInterval(() => {   // state at 10 Hz
+    t += 0.1;
+    const phase = (t % 30) / 30;
+    const yoff = phase * 0.6;
+    const sway = Math.sin(t * 1.5) * 0.03;
+    const hipX = 0.5 + sway, hipY = 0.75 - yoff;
+    const kp = {
+      nose: [hipX, hipY - 0.27, 1],
+      left_shoulder: [hipX - 0.05, hipY - 0.2, 1], right_shoulder: [hipX + 0.05, hipY - 0.2, 1],
+      left_elbow: [hipX - 0.08, hipY - 0.27, 1], right_elbow: [hipX + 0.08, hipY - 0.24, 1],
+      left_wrist: [hipX - 0.07, hipY - 0.34, 1], right_wrist: [hipX + 0.07, hipY - 0.31, 1],
+      left_hip: [hipX - 0.03, hipY, 1], right_hip: [hipX + 0.03, hipY, 1],
+      left_knee: [hipX - 0.08, hipY + 0.06, 1], right_knee: [hipX + 0.07, hipY + 0.07, 1],
+      left_ankle: [hipX - 0.06, hipY + 0.13, 1], right_ankle: [hipX + 0.06, hipY + 0.12, 1],
+    };
+    const limbs = { left_hand: kp.left_wrist.slice(0, 2), right_hand: kp.right_wrist.slice(0, 2),
+                    left_foot: kp.left_ankle.slice(0, 2), right_foot: kp.right_ankle.slice(0, 2) };
+    const near = (p) => {
+      let best = null, bd = 0.06;
+      for (const h of holds) { const d = Math.hypot(h.center[0] - p[0], h.center[1] - p[1]); if (d < bd) { bd = d; best = h.id; } }
+      return best;
+    };
+    const contacts = Object.fromEntries(Object.entries(limbs).map(([k, p]) => [k, near(p)]));
+    handle({ topic: "state", data: { t, frame_idx: Math.round(t * 30), person_found: true,
+      keypoints: kp, limbs, contacts, hip: [hipX, hipY] } });
+  }, 100);
+  setInterval(() => {   // events, every 2.5 s
+    const [kind, text] = cues[Math.floor(Math.random() * cues.length)];
+    const ev = { t, kind, priority: 1, ttl_s: 1.5, data: { limb: "LH", hold_id: 6 } };
+    handle({ topic: "event", data: ev });
+    if (Math.random() < 0.55) {
+      handle({ topic: "spoken", data: { t_event: t, t_audio_start: t + 0.25 + Math.random() * 0.7, kind, text } });
+    } else {
+      handle({ topic: "suppressed", data: { event: ev, reason: reasons[Math.floor(Math.random() * reasons.length)] } });
+    }
+  }, 2500);
+  setInterval(() => {   // attempt end + debrief, every 30 s
+    const outcome = ["fall", "top", "downclimb"][attempt % 3];
+    handle({ topic: "attempt", data: { attempt_no: attempt, duration_s: 28.4, high_hold_id: outcome === "top" ? 10 : 6,
+      outcome, stalls: [[5, 3.2], [7, 1.8]], cues_given: [], cues_followed: [] } });
+    handle({ topic: "mood", data: outcome === "top" ? "impressed" : "exasperated" });
+    ["Right, attempt " + attempt + ".", "You hung on hold 5 for three seconds.",
+     "Feet higher before the reach to 6, and you'll stick it."]
+      .forEach((s, i) => setTimeout(() => handle({ topic: "debrief_text", data: s }), 600 + i * 1200));
+    setTimeout(startAttempt, 5000);
+  }, 30000);
+}
+
+// ---- Start ------------------------------------------------------------------
+$("hide-supp").addEventListener("change", (e) => $("timeline").classList.toggle("hide-suppressed", e.target.checked));
+if (params.has("offline")) $("offline").hidden = false;
+renderCurrent();
+requestAnimationFrame(frame);
+if (DEMO) runDemo(); else connect();
+</script>
+</body>
+</html>

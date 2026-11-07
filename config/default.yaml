@@ -1,0 +1,38 @@
+# All thresholds live here, never as magic numbers in code.
+# Starting values only; tune them on footage. Structure owned by B (change by PR + team chat).
+# Durations are seconds unless the key ends in _ms.
+
+perception:
+  pose_model: models/pose_landmarker_full.task
+  max_width: 640            # downscale before pose
+  contact_margin: 0.15      # x arm length, around each hold box
+  contact_settle_ms: 150
+
+holds:
+  detector_model: detect-climbing-hold/1  # Roboflow model id; pick the best in experiment 2
+  hue_tolerance: 12         # OpenCV hue units, 0-179
+  min_saturation: 60
+
+brain:
+  debounce_ms: 400
+  stall_s: [4, 7, 10]       # escalating stall cues
+  arms_bent_deg: 140
+  feet_low_ratio: 0.9       # hip-to-lowest-foot height / leg length
+  search_ms: 400
+  route_preview_ratio: 0.8  # hold gap / arm span
+  weight_shift_ratio: 0.25  # sideways hip-to-foot gap / leg length
+  on_wall_margin: 0.15      # hip rise above standing height / leg length
+
+arbiter:
+  global_gap_s: 3
+  cooldown_s: 15
+  budget_lines: 6
+  budget_window_s: 30
+  ttl_s: {p0: 2.0, p1: 1.2, p2: 4.0}
+
+voice:
+  persona: config/personas/coach.yaml
+  tts: kokoro
+  output_device: null       # set to the demo speaker's name
+  llm_model: CURRENT-FLASH-LITE-MODEL  # check AI Studio at kickoff
+  debrief_first_sentence_timeout_s: 4
