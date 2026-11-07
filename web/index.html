@@ -72,6 +72,7 @@
     --cover: #f2c230;
     --cover-ink: #2a2306;
     --red: #ff5a6e;
+    --signal: #7cc4ff;   /* "Analysing in real time": the coach is watching a clip. Used nowhere else. */
     --hold: #eef0ea;
     --hold-ink: #16181b;
     --frame: #0b0c0d;
@@ -90,7 +91,7 @@
     --gap: clamp(12px, 1.4vw, 24px);
     --head-h: clamp(56px, 8.8vh, 88px);
     --cap-h: clamp(165px, 21vh, 220px);
-    --ladder-w: clamp(130px, 12vw, 200px);
+    --ladder-w: clamp(150px, 13vw, 230px);
     --side-w: clamp(260px, 25vw, 420px);
 
     --sans: "Atkinson Hyperlegible Next", system-ui, sans-serif;
@@ -127,8 +128,8 @@
   #mode.live { color: var(--red); }
   #mode.live .dot { background: var(--red); border-color: var(--red); animation: live-blink 1.4s ease-in-out infinite; }
   @keyframes live-blink { 50% { opacity: 0.2; } }
-  #mode.realtime { color: var(--ink); }
-  #mode.realtime .dot { background: var(--ink); }
+  #mode.realtime { color: var(--signal); font-weight: 700; }
+  #mode.realtime .dot { background: var(--signal); border-color: var(--signal); }
   #mode.boxed .dot { display: none; }
   #conn.down { color: var(--ink); }
   #stream-stats { color: var(--graphite); }
@@ -199,7 +200,8 @@
   /* ---- Hold ladder: the problem, top hold at the top; each attempt ticked at its highpoint ---- */
   /* Its own ruled, titled column, separate from the picture in every layout. */
   #ladder-col { grid-area: ladder; min-width: 0; min-height: 0; display: flex; flex-direction: column;
-    border-left: var(--rule-w) solid var(--rule-strong); padding: calc(var(--gap) * 0.65) calc(var(--gap) * 1.2); }
+    border-left: var(--rule-w) solid var(--rule-strong);
+    padding: calc(var(--gap) * 0.65) calc(var(--gap) * 0.8) calc(var(--gap) * 0.65) calc(var(--gap) * 1.2); }
   #ladder { flex: 1; min-width: 0; display: grid; grid-template-rows: repeat(var(--n, 1), minmax(0, 1fr)); min-height: 0; }
   #ladder:empty::after { content: "No hold map yet"; align-self: center; color: var(--pencil);
     font-size: var(--s); text-align: center; }

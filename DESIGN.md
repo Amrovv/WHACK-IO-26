@@ -11,6 +11,7 @@ colors:
   field-book-yellow: "#f2c230"
   yellow-ink: "#2a2306"
   red-pen: "#ff5a6e"
+  signal-blue: "#7cc4ff"
   video-frame: "#0b0c0d"
   limb-left-hand: "#4fc3f7"
   limb-right-hand: "#b388ff"
@@ -137,6 +138,8 @@ A near-monochrome graphite logbook with two inks reserved for meaning, plus one 
 
 **Mode flag.** The running head says what is running, from the server's hello: "Live · camera N" (red, flashing) for a webcam; "Analysing in real time" (ink, steady dot) for a pre-recorded clip analysed live, with a clip-progress strip (name, time, loop) along the bottom of the video; "Video test" (boxed) for `web/stream_test.py`, where the layout drops to the video alone with stream stats; "Session replay · <log>" (boxed) for a bus-log replay. Never call a clip "Recorded": the analysis is real time. The connection flag appears only when something is wrong ("Reconnecting…").
 
+- **Signal Blue** (signal-blue): the "Analysing in real time" mode flag only (text at 700 and a filled dot, steady), so judges can see at a glance that the coach is watching a clip live. Not used for anything else.
+
 ### Tertiary
 - **Live Hold** (runtime, defaults to Pencil Ink): the problem's own hold colour, set from the hold map, fills the live rung number and the hold chip in the running head. Problem colours that would read as Red Pen or Field-Book Yellow (pink, red, orange, yellow) fall back to the Pencil Ink block. Its ink flips to Graphite Page or white by luminance.
 - **Limb colours** (limb-left-hand, limb-right-hand, limb-left-foot, limb-right-foot): sky blue, lilac, leaf green and pale grey. Used only on the video overlay to tie a limb dot to the hold it is on. They never appear in the page chrome.
@@ -178,7 +181,7 @@ A near-monochrome graphite logbook with two inks reserved for meaning, plus one 
 
 ## Layout
 
-A full-viewport, non-scrolling grid on wide screens: a running head across the top, then three columns (video stage taking the remaining width, the hold ladder at clamp 130–200px, the ruled side column at clamp 260–420px), then the full-width caption band at the bottom (clamp 165–220px tall, growing to clamp 165–340px during a debrief). The head is clamp 56–88px tall.
+A full-viewport, non-scrolling grid on wide screens: a running head across the top, then three columns (video stage taking the remaining width, the hold ladder at clamp 150–230px, the ruled side column at clamp 260–420px), then the full-width caption band at the bottom (clamp 165–220px tall, growing to clamp 165–340px during a debrief). The head is clamp 56–88px tall.
 
 The video frame is sized by script to the stream's aspect ratio. The hold ladder is its own column, separate from the picture: a 3px Strong Rule on its left, the section padding, and a "Holds" title with the hold count in Pencil, like the side column's sections. Rungs share the column's height equally, top hold at the top.
 

@@ -202,6 +202,7 @@ def test_index_serves_the_dashboard():
         r = client.get("/")
     assert r.status_code == 200
     assert "Climbing Coach" in r.text
+    assert r.headers["cache-control"] == "no-cache"  # a plain reload picks up changes
 
 
 def test_websocket_sends_hello_then_bus_items():

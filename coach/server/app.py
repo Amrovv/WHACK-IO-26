@@ -226,7 +226,8 @@ def create_app(
 
     @app.get("/")
     async def index() -> FileResponse:
-        return FileResponse(WEB_DIR / "index.html")
+        # no-cache: browsers check back each load, so a plain reload shows dashboard changes.
+        return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
     app.mount("/fonts", StaticFiles(directory=WEB_DIR / "fonts"), name="fonts")
 
