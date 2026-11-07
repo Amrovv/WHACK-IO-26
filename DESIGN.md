@@ -133,7 +133,7 @@ A near-monochrome graphite logbook with two inks reserved for meaning, plus one 
 - **Yellow Ink** (yellow-ink): dark olive-brown ink used only on yellow: the caption text, the boxed "Coach" speaker tag, the latency in the band. Idle and waiting captions fade it to 62–70% alpha rather than switching colour.
 
 ### Secondary
-- **Red Pen** (red-pen): marks a send (top) only: the red tick on the ladder, the "Top" outcome in the attempts list, the topped line in the timeline. Never used for errors or warnings.
+- **Red Pen** (red-pen): marks a send (top) only: the red tick on the ladder, the "Top" outcome in the attempts list, the topped line in the timeline. Never used for errors or warnings. One exception, at the user's request: the "Live" connection flag in the running head is red with a slowly flashing dot (steady under reduced motion).
 
 ### Tertiary
 - **Live Hold** (runtime, defaults to Pencil Ink): the problem's own hold colour, set from the hold map, fills the live rung number and the hold chip in the running head. Problem colours that would read as Red Pen or Field-Book Yellow (pink, red, orange, yellow) fall back to the Pencil Ink block. Its ink flips to Graphite Page or white by luminance.

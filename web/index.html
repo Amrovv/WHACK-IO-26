@@ -108,8 +108,9 @@
     display: inline-flex; align-items: center; gap: 0.45em; }
   .flag.boxed { border: 2px solid var(--ink); color: var(--ink); padding: 0.1em 0.5em; }
   .dot { width: 0.7em; height: 0.7em; border-radius: 50%; border: 2px solid currentColor; flex: none; }
-  #conn.live { color: var(--ink); }
-  #conn.live .dot { background: var(--ink); }
+  #conn.live { color: var(--red); }
+  #conn.live .dot { background: var(--red); border-color: var(--red); animation: live-blink 1.4s ease-in-out infinite; }
+  @keyframes live-blink { 50% { opacity: 0.2; } }
 
   /* ---- Video ---- */
   #stage { grid-area: stage; position: relative; min-height: 0; min-width: 0;
@@ -221,7 +222,7 @@
   @keyframes arrive { from { opacity: 0.35; transform: translateY(0.18em); } }
 
   @media (prefers-reduced-motion: reduce) {
-    #cap-text.arrive, .mark.fresh path { animation: none; stroke-dashoffset: 0; }
+    #cap-text.arrive, .mark.fresh path, #conn.live .dot { animation: none; stroke-dashoffset: 0; }
   }
 
   /* Narrow screens: stack everything and scroll; the ladder runs left (1) to right (top). */
