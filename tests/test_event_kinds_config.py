@@ -41,3 +41,11 @@ def test_priority_map_has_no_unknown_kinds():
     config = real_config()
     extra = [kind for kind in config["brain"]["priorities"] if kind not in EVENT_KINDS]
     assert extra == [], f"config priorities names non-EVENT_KINDS: {extra}"
+
+
+def test_attempt_start_is_priority_zero_so_it_cuts_a_running_debrief():
+    # Debriefs keep Voice.is_speaking() True for their whole run (team decision). Only
+    # priority 0 interrupts that (arbiter.py); attempt_start must stay priority 0 or every
+    # cue in a fast-restarted attempt gets busy-suppressed behind the previous debrief.
+    config = real_config()
+    assert config["brain"]["priorities"]["attempt_start"] == 0
