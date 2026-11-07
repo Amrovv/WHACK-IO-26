@@ -10,6 +10,11 @@ Owned by D.
                   on connect: "hello" (if given) and the latest "holdmap"
   GET /video    MJPEG (multipart/x-mixed-replace) of the latest "frame", ~FRAME_FPS
 
+With a SourceControl (run.py's Session), the dashboard can also change what's analysed:
+  GET  /api/sources   {"current": spec, "options": [{"spec", "name", "group"}]}
+  POST /api/source    {"spec": "..."} -> switches; every dashboard gets the new "hello"
+  WS   /camera        binary JPEG frames from a dashboard's webcam (one sender at a time)
+
 run.py awaits serve(bus, host, port). Replay a bus log with no pipeline running:
 
   uv run python -m coach.server.app --replay data/bus_logs/x.jsonl [--loop]
@@ -27,10 +32,10 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -46,8 +51,21 @@ STATE_HZ = 10.0  # max "state" messages per second per client
 FRAME_FPS = 10.0  # max MJPEG frames per second per /video client
 CLIENT_BACKLOG = 64  # messages queued per client; the oldest is dropped when full
 SHUTDOWN_GRACE_S = 1  # uvicorn waits this long for open streams on shutdown
+CAMERA_BUSY_CODE = 4409  # /camera close code when another dashboard is already sending
 
 Clock = Callable[[], float]
+
+
+class SourceControl(Protocol):
+    """What the server needs to let the dashboard pick the source (run.py's Session)."""
+
+    def listen(self, on_hello: Callable[[dict], None]) -> None: ...
+
+    def sources(self) -> dict: ...
+
+    async def switch(self, spec: str) -> dict: ...  # ValueError for a spec it doesn't offer
+
+    def feed_camera(self, jpeg: bytes) -> bool: ...  # False when the browser camera isn't on
 
 
 def encode(topic: str, t: float, payload: Any) -> str:
@@ -130,6 +148,14 @@ class Hub:
         async with self._frame_cond:
             self._frame_cond.notify_all()
 
+    def set_hello(self, hello: dict) -> None:
+        """A new source: tell every dashboard, and forget the old problem's hold map."""
+        self.hello = hello
+        self.holdmap_msg = None
+        msg = encode("hello", self.clock(), hello)
+        for client in self.clients:
+            client.offer("hello", msg)
+
     def connect(self) -> Client:
         client = Client(self.clock)
         if self.hello is not None:
@@ -178,8 +204,16 @@ class Hub:
             yield jpeg
 
 
-def create_app(bus: Bus, hello: dict | None = None, clock: Clock = time.monotonic) -> FastAPI:
+def create_app(
+    bus: Bus,
+    hello: dict | None = None,
+    clock: Clock = time.monotonic,
+    control: SourceControl | None = None,
+) -> FastAPI:
     hub = Hub(bus, hello, clock)
+    if control is not None:
+        control.listen(hub.set_hello)
+    camera_senders: set[WebSocket] = set()
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -218,6 +252,40 @@ def create_app(bus: Bus, hello: dict | None = None, clock: Clock = time.monotoni
                 yield mjpeg_part(jpeg)
 
         return StreamingResponse(parts(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+    def need_control() -> SourceControl:
+        if control is None:
+            raise HTTPException(404, "this server can't change its source")
+        return control
+
+    @app.get("/api/sources")
+    async def sources() -> dict:
+        return need_control().sources()
+
+    @app.post("/api/source")
+    async def set_source(spec: str = Body(embed=True)) -> dict:
+        ctl = need_control()
+        try:
+            return {"hello": await ctl.switch(spec)}
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.websocket("/camera")
+    async def camera(sock: WebSocket) -> None:
+        await sock.accept()
+        if control is None or camera_senders:
+            await sock.close(code=CAMERA_BUSY_CODE)
+            return
+        camera_senders.add(sock)
+        log.info("browser camera connected")
+        try:
+            while True:
+                control.feed_camera(await sock.receive_bytes())
+        except (WebSocketDisconnect, RuntimeError, KeyError):
+            pass  # KeyError: a text message, which a camera never sends
+        finally:
+            camera_senders.discard(sock)
+            log.info("browser camera disconnected")
 
     return app
 

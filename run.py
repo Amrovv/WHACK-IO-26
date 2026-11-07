@@ -11,6 +11,9 @@ docs/LAYER-INTERFACES.md.
 
 --source and --replay-pose together: poses come from the replay, video from the source.
 --fast (tests only): no real-time pacing, no server, exits when the source runs out.
+
+The dashboard can switch the source while this runs (Session): any clip under videos/, or the
+dashboard's own webcam, whose frames arrive over the server's /camera WebSocket.
 """
 
 from __future__ import annotations
@@ -19,7 +22,9 @@ import argparse
 import asyncio
 import contextlib
 import importlib
+import inspect
 import logging
+import re
 import signal
 import threading
 import time
@@ -30,11 +35,17 @@ import yaml
 
 from coach import stubs
 from coach.bus import Bus
+from coach.server.camera import BROWSER_SPEC, BrowserCamera
 
 log = logging.getLogger("run")
 
 ROOT = Path(__file__).resolve().parent
 LOG_DIR = ROOT / "data" / "logs"
+VIDEO_DIR = ROOT / "videos"
+HOLDMAP_DIR = ROOT / "data" / "holdmaps"
+# .mov is left out on purpose: the phone originals are HDR, and videos/mp4 has SDR copies.
+VIDEO_EXTS = {".mp4", ".m4v", ".mkv", ".webm", ".avi"}
+SWITCH_SETTLE_S = 0.05  # lets the old source's last frames reach the dashboard before "hello"
 SHUTDOWN_TIMEOUT_S = 3.0
 FRAME_POLL_S = 0.2  # pose thread re-checks for shutdown this often while waiting for a frame
 JOIN_TIMEOUT_S = 2.0
@@ -51,21 +62,28 @@ def load(module: str, name: str, fallback=None):
 
 
 def clip_info(path: str) -> dict:
-    """Frame count and fps of a video file, so the dashboard can show clip progress."""
+    """Frame count, fps and picture size of a video file, so the dashboard can show clip
+    progress and lay out a portrait clip before its first frame arrives."""
     import cv2
 
     cap = cv2.VideoCapture(path)
     try:
         frames, fps = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), float(cap.get(cv2.CAP_PROP_FPS))
+        ok, img = cap.read()  # the decoded frame's size is after any rotation metadata
     finally:
         cap.release()
-    return {"frames": frames, "fps": fps} if frames > 0 and fps > 0 else {}
+    info = {"frames": frames, "fps": fps} if frames > 0 and fps > 0 else {}
+    if ok:
+        info.update(width=int(img.shape[1]), height=int(img.shape[0]))
+    return info
 
 
 def build_hello(args: argparse.Namespace, probe=clip_info) -> dict:
     """What the dashboard is told on connect: live camera, or real-time analysis of a clip."""
     hello = {"problem_id": args.problem, "no_llm": args.no_llm}
-    if isinstance(args.source, int) and not args.replay_pose:
+    if isinstance(args.source, BrowserCamera):
+        hello.update(mode="live", source={"kind": "browser_camera"})
+    elif isinstance(args.source, int) and not args.replay_pose:
         hello.update(mode="live", source={"kind": "camera", "index": args.source})
     elif isinstance(args.source, str):
         hello.update(mode="offline", source={"kind": "file", "name": Path(args.source).name})
@@ -73,6 +91,53 @@ def build_hello(args: argparse.Namespace, probe=clip_info) -> dict:
     else:
         hello.update(mode="offline", source={"kind": "poses", "name": args.replay_pose.name})
     return hello
+
+
+def file_spec(path: str | Path) -> str:
+    """file:<path>, relative to the repo when it's inside it, so the same clip has one spec."""
+    full = Path(path).resolve()
+    return f"file:{full.relative_to(ROOT) if full.is_relative_to(ROOT) else full}"
+
+
+def spec_of(args: argparse.Namespace) -> str:
+    """The source spec the dashboard shows as selected."""
+    src = args.source
+    if isinstance(src, BrowserCamera):
+        return BROWSER_SPEC
+    if isinstance(src, int):
+        return f"cam:{src}"
+    if isinstance(src, str):
+        return file_spec(src)
+    return f"poses:{args.replay_pose}"
+
+
+def natural_key(path: Path) -> list:
+    """climb_2 before climb_10."""
+    return [int(p) if p.isdigit() else p.lower() for p in re.split(r"(\d+)", str(path))]
+
+
+def list_clips(video_dir: Path = VIDEO_DIR) -> list[Path]:
+    """Every video file under video_dir, in natural order."""
+    if not video_dir.is_dir():
+        return []
+    clips = [p for p in video_dir.rglob("*") if p.suffix.lower() in VIDEO_EXTS and p.is_file()]
+    return sorted(clips, key=natural_key)
+
+
+def problem_for(clip: Path, default: str, holdmap_dir: Path = HOLDMAP_DIR) -> str:
+    """The problem id for a clip named <problem>_<clip no>_<name> (TEST_CLIMBS.md).
+
+    "climb_2_05_hand_searching" -> "climb_2", or "climb2" if only that hold map exists.
+    Names that don't follow the pattern keep the default (the --problem flag).
+    """
+    m = re.match(r"(.+?)_\d{2}(?:-\d+)?_", clip.stem)
+    if not m:
+        return default
+    prefix = m.group(1)
+    for candidate in (prefix, prefix.replace("_", "").replace("-", "")):
+        if (holdmap_dir / f"{candidate}.json").exists():
+            return candidate
+    return prefix
 
 
 def source_spec(text: str) -> int | str:
@@ -167,8 +232,13 @@ class PoseThreads:
 
     def __init__(self, source, problem_id, cfg, bus, out, fast=False, parts=None) -> None:
         self.parts = parts or a_parts()
-        self.spec = f"cam:{source}" if isinstance(source, int) else f"file:{source}"
-        self.is_file = not isinstance(source, int)
+        # A frame source object (the browser camera) is read as it is, not opened by spec.
+        self.custom = None if isinstance(source, (int, str)) else source
+        if self.custom is not None:
+            self.spec = BROWSER_SPEC
+        else:
+            self.spec = f"cam:{source}" if isinstance(source, int) else f"file:{source}"
+        self.is_file = isinstance(source, str)
         self.bus, self.out, self.fast = bus, out, fast
         try:
             self.holdmap, shapes = self.parts.load_holdmap(problem_id)
@@ -195,6 +265,8 @@ class PoseThreads:
 
     def stop(self) -> None:
         self._stop.set()
+        if self.custom is not None:
+            self.custom.close()  # wakes the reader if it's waiting for the next frame
         self.frames.close()
         for t in self._threads:
             t.join(JOIN_TIMEOUT_S)
@@ -213,9 +285,12 @@ class PoseThreads:
         """(t, frame_idx, bgr) from the source; files restart at the end unless fast."""
         offset = 0
         while not self._stop.is_set():
-            source = self.parts.open_source(
-                self.spec, **({"fast": self.fast} if self.is_file else {})
-            )
+            if self.custom is not None:
+                source = self.custom
+            else:
+                source = self.parts.open_source(
+                    self.spec, **({"fast": self.fast} if self.is_file else {})
+                )
             last = -1
             try:
                 for t, idx, img in source:
@@ -289,6 +364,119 @@ def build_voice(args, cfg, bus):
     return stubs.PrintVoice(cfg, bus, no_llm=args.no_llm)
 
 
+class Session:
+    """What's being analysed right now: one source, its perception workers and a brain.
+
+    switch() swaps the source while the server, voice and bus log keep running. The brain
+    is rebuilt each time, so attempts and the hold map start fresh for the new problem.
+    (The bus can't unsubscribe, so each old brain leaves two idle queues behind; a few
+    switches in a demo make that negligible.) This is the server's SourceControl.
+    """
+
+    def __init__(
+        self, args, cfg, bus, voice, make_brain, parts=None, video_dir: Path = VIDEO_DIR
+    ) -> None:
+        self.initial = self.args = args
+        self.cfg, self.bus, self.voice, self.make_brain = cfg, bus, voice, make_brain
+        self.parts, self.video_dir = parts, video_dir
+        self.workers: list = []
+        self.brain_task: asyncio.Task | None = None
+        self.camera: BrowserCamera | None = None
+        self.hello: dict = {}
+        self.number = 0
+        self._listeners: list = []
+        self._lock = asyncio.Lock()
+
+    def listen(self, on_hello) -> None:
+        self._listeners.append(on_hello)
+
+    def options(self) -> list[dict]:
+        """Every source the dashboard may pick: the one we started with, the clips, the webcam."""
+        first = spec_of(self.initial)
+        opts = []
+        if not first.startswith("file:"):
+            src = self.initial.source
+            name = f"Camera {src} (server)" if isinstance(src, int) else f"Poses: {first[6:]}"
+            opts.append({"spec": first, "name": name, "group": "Started with"})
+        clips = list_clips(self.video_dir)
+        if first.startswith("file:") and all(file_spec(p) != first for p in clips):
+            clips.insert(0, ROOT / first[5:])
+        for clip in clips:
+            folder = clip.parent.resolve()
+            group = folder.relative_to(ROOT) if folder.is_relative_to(ROOT) else folder
+            opts.append({"spec": file_spec(clip), "name": clip.name, "group": str(group)})
+        opts.append({"spec": BROWSER_SPEC, "name": "This device's camera", "group": "Camera"})
+        return opts
+
+    def sources(self) -> dict:
+        return {"current": self.hello.get("spec"), "options": self.options()}
+
+    def args_for(self, spec: str) -> argparse.Namespace:
+        """Run arguments for an offered spec; ValueError for anything else."""
+        if spec not in {o["spec"] for o in self.options()}:
+            raise ValueError(f"not an offered source: {spec!r}")
+        if spec == spec_of(self.initial):
+            return self.initial
+        base = {**vars(self.initial), "replay_pose": None}
+        if spec == BROWSER_SPEC:
+            return argparse.Namespace(**{**base, "source": BrowserCamera()})
+        path = spec.removeprefix("file:")
+        problem = problem_for(Path(path), self.initial.problem)
+        return argparse.Namespace(**{**base, "source": str(ROOT / path), "problem": problem})
+
+    async def start(self, args: argparse.Namespace) -> None:
+        self.args = args
+        self.number += 1
+        self.camera = args.source if isinstance(args.source, BrowserCamera) else None
+        states = stubs.AsyncLatestQueue(asyncio.get_running_loop())
+        # Model loading and clip probing block, so they run off the loop.
+        workers = await asyncio.to_thread(
+            build_perception, args, self.cfg, self.bus, states, self.parts
+        )
+        hello = await asyncio.to_thread(build_hello, args) if not args.fast else {}
+        # The brain subscribes to "holdmap" when built, so build it before perception starts.
+        brain = self.make_brain(self.cfg, self.bus, self.voice)
+        self.brain_task = asyncio.create_task(brain.run(states), name="brain")
+        self.hello = {**hello, "session": self.number, "spec": spec_of(args)}
+        for on_hello in self._listeners:
+            on_hello(self.hello)
+        self.workers = workers
+        for w in workers:
+            w.start()
+        log.info("analysing %s (problem %s)", self.hello["spec"], args.problem)
+
+    async def stop(self) -> None:
+        self.camera = None  # webcam frames that arrive from now on are ignored
+        workers, self.workers = self.workers, []
+        for w in workers:
+            await asyncio.to_thread(w.stop)
+        if self.brain_task is not None:
+            self.brain_task.cancel()
+            await asyncio.gather(self.brain_task, return_exceptions=True)
+            self.brain_task = None
+        self.voice.stop()
+
+    async def switch(self, spec: str) -> dict:
+        async with self._lock:
+            args = self.args_for(spec)
+            if spec == self.hello.get("spec"):
+                return self.hello
+            await self.stop()
+            await asyncio.sleep(SWITCH_SETTLE_S)
+            await self.start(args)
+            return self.hello
+
+    def feed_camera(self, jpeg: bytes) -> bool:
+        if self.camera is None:
+            return False
+        self.camera.put(jpeg)
+        return True
+
+    def wait_done(self) -> None:
+        """Block until every worker of the current source has finished (finite sources)."""
+        _wait_all(self.workers)
+
+
 async def main(args: argparse.Namespace) -> int:
     cfg = yaml.safe_load(args.config.read_text())
     loop = asyncio.get_running_loop()
@@ -302,35 +490,36 @@ async def main(args: argparse.Namespace) -> int:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     bus_log = stubs.BusLog(bus, LOG_DIR / f"bus-{args.problem}-{stamp}.jsonl")
 
-    # Always D's async hand-off; A's coach.sources.LatestQueue is the thread -> thread queue
-    # inside perception (see docs/LAYER-INTERFACES.md).
-    states = stubs.AsyncLatestQueue(loop)
+    # The state hand-off inside Session is always D's AsyncLatestQueue; A's
+    # coach.sources.LatestQueue is the thread -> thread queue inside perception
+    # (see docs/LAYER-INTERFACES.md).
     voice = build_voice(args, cfg, bus)
-    brain = load("coach.brain", "Brain", stubs.StubBrain)(cfg, bus, voice)
+    make_brain = load("coach.brain", "Brain", stubs.StubBrain)
+    session = Session(args, cfg, bus, voice, make_brain)
 
     server = None
     if not args.fast:
         create_app = load("coach.server", "create_app", stubs.create_app)
-        server = QuietServer(create_app(bus, build_hello(args)), args.host, args.port)
+        if "control" in inspect.signature(create_app).parameters:
+            app = create_app(bus, None, control=session)
+        else:  # the older stub server can't switch sources
+            app = create_app(bus, build_hello(args))
+        server = QuietServer(app, args.host, args.port)
 
     tasks = [asyncio.create_task(bus_log.run(), name="bus-log")]
-    tasks.append(asyncio.create_task(brain.run(states), name="brain"))
     if server:
         tasks.append(asyncio.create_task(server.serve(), name="server"))
         log.info("dashboard at %s", server.url)
 
-    workers = build_perception(args, cfg, bus, states)
-    for w in workers:
-        w.start()
+    await session.start(args)
 
     waits = [asyncio.create_task(stop.wait())]
     if args.fast:  # finite sources: finish when they all run out
-        waits.append(asyncio.create_task(asyncio.to_thread(_wait_all, workers)))
+        waits.append(asyncio.create_task(asyncio.to_thread(session.wait_done)))
     await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
 
     log.info("shutting down")
-    for w in workers:
-        w.stop()
+    await session.stop()
     if server:
         server.stop()
     for t in waits:

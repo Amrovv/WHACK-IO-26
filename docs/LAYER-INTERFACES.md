@@ -79,7 +79,9 @@ bus and so never publishes `"spoken"`. **Ask for C:** give `PrintVoice` an optio
 |---|---|
 | `run.py` | Builds the bus, `AsyncLatestQueue`, voice, brain, server and bus log in that order, then starts perception. Ctrl+C stops perception, cancels tasks, closes `/ws` and `/video` connections, closes the voice, flushes the log. |
 | `PoseThreads` (`run.py`) | Real perception from A's parts. Falls back to `stubs.VideoPerception` (video, no pose) if A's code isn't on the branch or the pose model fails to load. |
-| `coach.server.create_app(bus, hello)`, `serve(bus, host, port)` | The dashboard: `/ws` sends every bus item as `{"topic", "t", "payload"}`; `/video` is MJPEG. |
+| `coach.server.create_app(bus, hello, control=)`, `serve(bus, host, port)` | The dashboard: `/ws` sends every bus item as `{"topic", "t", "payload"}`; `/video` is MJPEG. With a `control` (run.py's `Session`): `GET /api/sources`, `POST /api/source {"spec"}` to switch, and `WS /camera` for webcam JPEGs from a dashboard. |
+| `Session` (`run.py`) | The current source, its perception workers and a brain. `switch(spec)` swaps to any clip under `videos/` or the browser camera while the server, voice and bus log keep running. The brain is rebuilt, so attempts and the hold map start fresh. A clip named `<problem>_<NN>_<name>` gets that problem id. |
+| `BrowserCamera` (`coach/server/camera.py`) | A frame source fed by `/camera`: iterate it for `(t, frame_idx, bgr)` like A's camera. `t` is arrival time. `PoseThreads` and `VideoPerception` both accept it in place of a `cam:`/`file:` source. |
 | bus log | `data/logs/bus-<problem>-<stamp>.jsonl`, every topic except `"frame"`. |
 
 ## Shared rules

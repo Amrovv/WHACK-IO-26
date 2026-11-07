@@ -180,13 +180,17 @@ A near-monochrome graphite logbook with two inks reserved for meaning, plus one 
 
 A full-viewport, non-scrolling grid on wide screens: a running head across the top, then three columns (video stage taking the remaining width, the hold ladder at clamp 130–200px, the ruled side column at clamp 260–420px), then the full-width caption band at the bottom (clamp 165–220px tall, growing to clamp 165–340px during a debrief). The head is clamp 56–88px tall.
 
-The video frame is sized by script to the stream's aspect ratio, and the ladder's padding is aligned to the frame's top and bottom so rung 1 sits level with the bottom of the picture and the top hold with its top. Rungs share the height equally, top hold at the top.
+The video frame is sized by script to the stream's aspect ratio. The hold ladder is its own column, separate from the picture: a 3px Strong Rule on its left, the section padding, and a "Holds" title with the hold count in Pencil, like the side column's sections. Rungs share the column's height equally, top hold at the top.
 
 The side column stacks three ruled sections (latency, attempts, timeline); the timeline takes the remaining height, scrolls, and fades its last 1.6em when it overflows.
 
+A source bar sits in its own row under the picture: "Source", the clip picker (square, 2px Strong Rule, Pencil Ink on the raised page) and the clip time in Mono. It names what is being analysed and never sits on top of the picture; only the 5px progress bar does.
+
+**Portrait video** (a picture taller than it is wide, on a wide screen) gets its own grid. The picture runs the full height on the left, and its column is only as wide as the picture. To its right, top to bottom: the source bar across the full width; then the hold ladder column; then the side data split in two (latency above attempts, and the timeline beside them, divided by a 2px Faint Rule); then the caption band, which spans only this right-hand side. 3px Strong Rules divide the picture's column from the rest.
+
 Spacing comes from one fluid gap (clamp 12–24px), used at multiples of 0.6, 0.65, 1.2, 1.4 and 1.8 for section and band padding.
 
-Below 900px the page stacks and scrolls in this order: head, caption, video (56vw tall), ladder, side column. The ladder turns horizontal, running from hold 1 on the left to the top hold on the right, and the side column's left rule becomes a top rule.
+Below 900px the page stacks and scrolls in this order: head, caption, video (full width, at most 70% of the screen height), source bar, ladder, side column. The ladder turns horizontal, running from hold 1 on the left to the top hold on the right, and the ladder's and side column's left rules become top rules.
 
 ### Named Rules
 **The Ruled, Not Carded Rule.** Regions are separated by rules: 3px Strong Rule for structure, 2px Faint Rule between rungs and sections, 1px Faint Rule between entries. Never wrap content in a filled or bordered card.
@@ -209,7 +213,7 @@ Pencil marks are stroked SVG paths, not glyphs: a short slash for a fall or down
 ### Caption Band
 The coach's voice: a full-width Field-Book Yellow band at the bottom of the grid.
 - **Layout:** speaker column on the left (the "Coach" tag above the mood word), the line in the middle, the latency in ms on the right in Mono at the medium step.
-- **States:** cue (display type, two lines max); debrief (taller band, medium step at 600, five lines max, seven when long); waiting/idle (ink at 62–70% alpha).
+- **States:** cue (display type, two lines max; a cue that won't fit steps down once to 78% of the large step, three lines below 900px); debrief (taller band, medium step at 600, five lines max, seven when long); waiting/idle (ink at 62–70% alpha).
 - **Motion:** each new line arrives once, 0.45s with a 0.18em rise from 35% opacity on `cubic-bezier(0.16, 1, 0.3, 1)`. Disabled under reduced motion.
 - **Speaker tag:** 800 weight, uppercase, 0.1em tracking, boxed in a 3px Yellow Ink border. It names who is speaking; it is the one uppercase label in the chrome and is not a pattern for section headings.
 

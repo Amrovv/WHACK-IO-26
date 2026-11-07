@@ -23,10 +23,19 @@
     hello         {"no_llm": bool, "persona": str, "mood": str, "problem_id": str,
                    "mode": "live" | "offline" | "video_test" | "session_replay",
                    "source": {"kind": "camera", "index": int}
-                           | {"kind": "file", "name": str, "frames": int, "fps": float}
-                           | {"kind": "poses" | "bus_log", "name": str}}
+                           | {"kind": "browser_camera"}
+                           | {"kind": "file", "name": str, "frames": int, "fps": float,
+                              "width": int, "height": int}
+                           | {"kind": "poses" | "bus_log", "name": str},
+                   "session": int, "spec": str}
                   mode drives the head flag and layout: video_test shows the video only,
                   offline shows clip progress (from each state's frame_idx and source.frames).
+                  A new session number means the source changed: the page starts afresh.
+  Source picker: GET /api/sources lists what the server can analyse, POST /api/source
+         {"spec"} switches. Picking "This device's camera" sends webcam JPEGs to WS /camera;
+         the server analyses them and the page shows its frames like any other source.
+         Without those endpoints (replay server, stream_test.py) the picker stays hidden.
+  Portrait video: the stage shrinks to the picture's width and the side column takes the rest.
   Any payload with a "mood" field also updates the mood shown beside the caption.
 
   URL params: ?demo=1 fake data, no server needed.  ?offline=1 force the offline flag.
@@ -93,8 +102,8 @@
   body {
     display: grid; overflow: hidden;
     grid-template-columns: minmax(0, 1fr) var(--ladder-w) var(--side-w);
-    grid-template-rows: var(--head-h) minmax(0, 1fr) var(--cap-h);
-    grid-template-areas: "head head head" "stage ladder side" "cap cap cap";
+    grid-template-rows: var(--head-h) minmax(0, 1fr) auto var(--cap-h);
+    grid-template-areas: "head head head" "stage ladder side" "src ladder side" "cap cap cap";
   }
   ::selection { background: var(--cover); color: var(--cover-ink); }
   * { scrollbar-width: thin; scrollbar-color: var(--pencil) transparent; }
@@ -126,33 +135,72 @@
 
   /* ---- Video ---- */
   #stage { grid-area: stage; position: relative; min-height: 0; min-width: 0;
-    display: flex; align-items: center; justify-content: center; padding: var(--gap) 0 var(--gap) calc(var(--gap) * 1.4); }
+    display: flex; align-items: center; justify-content: flex-start;
+    padding: var(--gap) var(--gap) var(--gap) calc(var(--gap) * 1.4); }
   /* #frame is sized by JS to the video's aspect ratio, so the picture fills it with nothing clipped. */
-  #frame { position: relative; width: 100%; height: 100%; background: var(--frame); overflow: hidden; outline: 2px solid var(--rule); }
+  #frame { position: relative; flex: none; width: 100%; height: 100%; background: var(--frame); overflow: hidden; outline: 2px solid var(--rule); }
   #video, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   #video { object-fit: fill; }
   #video:not([src]) { visibility: hidden; }
-  #novideo { position: absolute; left: 0.8em; bottom: 0.6em; color: #c9ced3; font-size: var(--s); font-weight: 600; }
+  #novideo { position: absolute; left: 0.8em; right: 0.8em; bottom: 0.6em; color: #c9ced3; font-size: var(--s); font-weight: 600; }
   #novideo small { font-weight: 400; color: #9aa1a7; margin-left: 0.4em; }
 
-  /* Clip progress (offline demo): a thin bar along the bottom of the video and its label. */
-  #clip { position: absolute; left: 0; right: 0; bottom: 0; pointer-events: none; }
-  #clip-label { position: absolute; left: 0.8em; bottom: calc(5px + 0.6em); font-size: var(--s); font-weight: 600;
-    color: var(--ink); background: rgba(11, 12, 13, 0.72); padding: 0.1em 0.45em; white-space: nowrap; }
-  #clip-label .sep { color: var(--pencil); margin: 0 0.3em; font-weight: 400; }
-  #clip-bar { height: 5px; background: rgba(238, 240, 234, 0.18); }
+  /* Clip progress: a thin bar along the bottom of the video. Its words live in the source bar, outside the picture. */
+  #clip-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 5px; background: rgba(238, 240, 234, 0.18); pointer-events: none; }
   #clip-bar span { display: block; height: 100%; width: 0; background: var(--ink); }
 
+  /* Source bar: what's being analysed and the picker to change it. Its own grid row: under a landscape
+     picture, across the top of the data beside a portrait one. */
+  #srcbar { grid-area: src; display: flex; flex-wrap: wrap; align-items: center; gap: 0.35em var(--gap);
+    min-width: 0; font-size: var(--s); padding: 0 0 var(--gap) calc(var(--gap) * 1.4); }
+  #src-pick { display: inline-flex; align-items: center; gap: 0.55em; min-width: 0; max-width: 100%;
+    color: var(--graphite); font-weight: 600; }
+  .sel { position: relative; display: inline-flex; min-width: 0; max-width: 100%; }
+  .sel::after { content: ""; position: absolute; right: 0.75em; top: 50%; width: 0.42em; height: 0.42em;
+    border-right: 2px solid var(--ink); border-bottom: 2px solid var(--ink); transform: translateY(-70%) rotate(45deg);
+    pointer-events: none; }
+  #source { appearance: none; -webkit-appearance: none; font: inherit; font-weight: 700; color: var(--ink);
+    background: var(--page-2); border: 2px solid var(--rule-strong); border-radius: 0; padding: 0.2em 2.1em 0.2em 0.55em;
+    min-width: 0; max-width: min(34em, 100%); text-overflow: ellipsis; cursor: pointer; transition: border-color 0.15s; }
+  #source:hover { border-color: var(--ink); }
+  #source:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  #source:disabled { cursor: progress; color: var(--graphite); }
+  #source option, #source optgroup { background: var(--page-2); color: var(--ink); }
+  #clip-label { color: var(--graphite); font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  #clip-label .name { color: var(--ink); }
+  #clip-label .sep { color: var(--pencil); margin: 0 0.3em; font-weight: 400; }
+  #src-note { color: var(--ink); font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  #src-note.err { border: 2px solid var(--ink); padding: 0.1em 0.5em; }
+
+  /* Portrait video: the picture runs the full height on the left. To its right, top to bottom: the source
+     bar, then the hold ladder as its own column beside the coach data (latency and attempts, then the
+     timeline), then the caption band. */
+  body.portrait {
+    grid-template-columns: auto var(--ladder-w) minmax(0, 1fr);
+    grid-template-rows: var(--head-h) auto minmax(0, 1fr) var(--cap-h);
+    grid-template-areas: "head head head" "stage src src" "stage ladder side" "stage cap cap";
+  }
+  body.portrait #stage { justify-content: center; }
+  body.portrait #srcbar { padding: calc(var(--gap) * 0.65) calc(var(--gap) * 1.2);
+    border-left: var(--rule-w) solid var(--rule-strong); border-bottom: 2px solid var(--rule); }
+  body.portrait #side { min-width: calc(var(--side-w) * 1.5);
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); grid-template-rows: auto minmax(0, 1fr); }
+  body.portrait #side > .sect:nth-child(1) { grid-column: 1; grid-row: 1; }
+  body.portrait #side > .sect:nth-child(2) { grid-column: 1; grid-row: 2; border-bottom: 0; }
+  body.portrait #timeline-sect { grid-column: 2; grid-row: 1 / span 2; border-left: 2px solid var(--rule); }
+
   /* Video test: there's no coach data, so the video gets the whole screen. */
-  body[data-mode="video_test"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--head-h) minmax(0, 1fr);
-    grid-template-areas: "head" "stage"; }
-  body[data-mode="video_test"] #ladder, body[data-mode="video_test"] #side,
+  body[data-mode="video_test"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--head-h) minmax(0, 1fr) auto;
+    grid-template-areas: "head" "stage" "src"; }
+  body[data-mode="video_test"] #ladder-col, body[data-mode="video_test"] #side,
   body[data-mode="video_test"] #caption { display: none; }
   body[data-mode="video_test"] #stage { padding-right: calc(var(--gap) * 1.4); }
 
   /* ---- Hold ladder: the problem, top hold at the top; each attempt ticked at its highpoint ---- */
-  #ladder { grid-area: ladder; min-width: 0; display: grid; grid-template-rows: repeat(var(--n, 1), minmax(0, 1fr));
-    padding: var(--gap) 0 var(--gap) var(--gap); min-height: 0; }
+  /* Its own ruled, titled column, separate from the picture in every layout. */
+  #ladder-col { grid-area: ladder; min-width: 0; min-height: 0; display: flex; flex-direction: column;
+    border-left: var(--rule-w) solid var(--rule-strong); padding: calc(var(--gap) * 0.65) calc(var(--gap) * 1.2); }
+  #ladder { flex: 1; min-width: 0; display: grid; grid-template-rows: repeat(var(--n, 1), minmax(0, 1fr)); min-height: 0; }
   #ladder:empty::after { content: "No hold map yet"; align-self: center; color: var(--pencil);
     font-size: var(--s); text-align: center; }
   .rung { display: flex; align-items: center; gap: 0.35em; border-top: 2px solid var(--rule); min-height: 0; min-width: 0;
@@ -173,12 +221,12 @@
   @keyframes pencil { to { stroke-dashoffset: 0; } }
 
   /* ---- Side column: ruled, not carded ---- */
-  #side { grid-area: side; border-left: var(--rule-w) solid var(--rule-strong); margin-left: var(--gap);
+  #side { grid-area: side; border-left: var(--rule-w) solid var(--rule-strong);
     display: flex; flex-direction: column; min-height: 0; min-width: 0; }
   .sect { padding: calc(var(--gap) * 0.65) calc(var(--gap) * 1.2); border-bottom: 2px solid var(--rule); }
-  .sect h2 { margin: 0 0 0.35em; font-size: var(--s); font-weight: 700; color: var(--graphite);
+  .sect h2, #ladder-head { margin: 0 0 0.35em; font-size: var(--s); font-weight: 700; color: var(--graphite);
     display: flex; align-items: baseline; gap: 0.5em; }
-  .sect h2 .aside { margin-left: auto; font-weight: 400; color: var(--pencil); }
+  .sect h2 .aside, #ladder-head .aside { margin-left: auto; font-weight: 400; color: var(--pencil); }
 
   #lat-row { display: flex; align-items: flex-end; gap: var(--gap); }
   #lat-last { font-size: var(--l); font-weight: 700; line-height: 0.95; white-space: nowrap; }
@@ -255,12 +303,15 @@
   #caption.debrief #cap-text { font-size: var(--m); font-weight: 600; line-height: 1.2; letter-spacing: 0;
     -webkit-line-clamp: 5; text-wrap: pretty; }
   #caption.debrief.long #cap-text { font-size: calc(var(--m) * 0.8); -webkit-line-clamp: 7; }
+  /* A cue too long for two lines at full size (the band is narrower beside a portrait picture) steps down once. */
+  #caption.fit:not(.debrief) #cap-text { font-size: calc(var(--l) * 0.78); }
   #caption.idle #cap-text, #caption.idle #cap-ms { color: rgba(42, 35, 6, 0.62); }
   #caption.waiting #cap-text { font-size: var(--m); font-weight: 600; color: rgba(42, 35, 6, 0.7); }
   #cap-text.arrive { animation: arrive 0.45s var(--ease-out); }
   @keyframes arrive { from { opacity: 0.35; transform: translateY(0.18em); } }
 
   @media (prefers-reduced-motion: reduce) {
+    #source { transition: none; }
     #cap-text.arrive, .mark.fresh path, #mode.live .dot { animation: none; stroke-dashoffset: 0; }
     .box path, .box:has(input:checked) path { transition: none; }
   }
@@ -270,18 +321,21 @@
     :root { --s: 16px; --m: 24px; --l: 36px; }
     html, body { height: auto; }
     body { overflow: auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto;
-      grid-template-areas: "head" "cap" "stage" "ladder" "side"; }
+      grid-template-areas: "head" "cap" "stage" "src" "ladder" "side"; }
+    #srcbar { padding: 0 16px 12px; }
     #head { flex-wrap: wrap; padding: 12px 16px; }
     #flags { margin-left: 0; flex: 1 1 100%; flex-wrap: wrap; }
     #where { white-space: normal; }
-    #stage { height: 56vw; padding: 12px 16px; }
+    #stage { height: auto; padding: 12px 16px; }
     #ladder { grid-template-rows: auto; grid-template-columns: repeat(var(--n, 1), minmax(0, 1fr)); grid-auto-flow: column;
-      direction: rtl; padding: 0 16px 12px; }
+      direction: rtl; }
+    #ladder-col { border-left: 0; border-top: var(--rule-w) solid var(--rule-strong); padding: 12px 16px; }
     .rung { direction: ltr; flex-direction: column; border-top: 0; border-left: 2px solid var(--rule); --rung-fs: 22px; }
     .rung:last-child { border-bottom: 0; }
     #side { border-left: 0; border-top: var(--rule-w) solid var(--rule-strong); margin-left: 0; }
     #timeline { max-height: 60vh; }
     #caption { padding: 14px 16px; flex-wrap: wrap; gap: 10px 16px; }
+    #caption.fit:not(.debrief) #cap-text { -webkit-line-clamp: 3; }
   }
 </style>
 </head>
@@ -303,11 +357,20 @@
     <div id="novideo">No video<small>waiting for the camera stream</small></div>
     <img id="video" alt="Live camera view of the climber">
     <canvas id="overlay"></canvas>
-    <div id="clip" hidden><div id="clip-label"></div><div id="clip-bar"><span></span></div></div>
+    <div id="clip-bar" hidden><span></span></div>
   </div>
 </section>
 
-<section id="ladder" aria-label="Holds, top to bottom, with each attempt's highpoint"></section>
+<div id="srcbar" hidden>
+  <label id="src-pick" hidden><span>Source</span><span class="sel"><select id="source"></select></span></label>
+  <div id="clip-label" hidden></div>
+  <div id="src-note" hidden></div>
+</div>
+
+<section id="ladder-col" aria-label="Holds, top to bottom, with each attempt's highpoint">
+  <h2 id="ladder-head">Holds <span class="aside num" id="ladder-count"></span></h2>
+  <div id="ladder"></div>
+</section>
 
 <aside id="side">
   <div class="sect">
@@ -351,11 +414,22 @@ const STREAM_WINDOW = 30;           // frames averaged for the video-test fps an
 const DEBRIEF_LONG_CHARS = 240;    // longer debriefs step down a size
 const HEAD_PAINT_MS = 250;          // running head refresh
 const ATTEMPT_CELLS = 2;            // newest attempts shown as cells; all of them are on the ladder
+const NARROW_MAX_VH = 0.7;          // narrow screens: the picture is at most this much of the screen height
+const BROWSER_SPEC = "browser";     // the source spec for this device's camera (coach/server/camera.py)
+const CAMERA_FPS = 15;              // webcam frames sent to the server per second
+const CAMERA_MAX_SIDE = 960;        // longer side of a sent webcam frame, px
+const CAMERA_JPEG_QUALITY = 0.8;
+const CAMERA_MAX_BUFFER = 512 * 1024; // skip a frame while this much is still unsent
+const CAMERA_RETRY_MS = 1000;
+const CAMERA_BUSY_CODE = 4409;      // server: another dashboard is already sending
+const CAMERA_KEY = "coach-camera";  // sessionStorage: this tab was sending its camera
 
 const params = new URLSearchParams(location.search);
 const WS_URL = params.get("ws") ||
   `${location.protocol === "https:" ? "wss" : "ws"}://${location.host || "localhost:8000"}/ws`;
 const VIDEO_URL = params.get("video") || "/video";
+const HTTP_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws(\?.*)?$/, "");
+const CAMERA_URL = WS_URL.replace(/\/ws(\?.*)?$/, "/camera");
 const DEMO = params.has("demo");
 
 // Limb keys may arrive as enum values ("left_hand") or names ("LH").
@@ -392,6 +466,7 @@ const MIN_VISIBILITY = 0.4;
 // ---- State ------------------------------------------------------------------
 const S = {
   mode: null,            // "live" | "offline" | "video_test" | "session_replay" | "demo", from hello
+  session: null,         // hello.session; a new number means a new source
   source: null,          // hello.source
   stream: { arrivals: [], bytes: [] },  // video test: recent frame arrival times and sizes
   holdmap: null,
@@ -442,13 +517,47 @@ function handle(msg) {
 }
 
 function onHello(d) {
-  if (d.no_llm || d.offline) $("offline").hidden = false;
+  if (d.session != null && S.session != null && d.session !== S.session) resetSession();
+  if (d.session != null) S.session = d.session;
+  $("offline").hidden = !(d.no_llm || d.offline || params.has("offline"));
   if (d.problem_id) showProblem(d.problem_id);
   if (d.mode) setMode(d.mode, d.source || null);
+  if (d.spec) setCurrentSource(d.spec);
+  syncCamera(d);
+}
+
+// A new source: forget the old problem, its attempts and cues, and wait for the new picture.
+function resetSession() {
+  Object.assign(S, { state: null, latencies: [], attemptNo: null, attemptStartT: null, attemptLive: false,
+    liveHold: null, highHold: null, attempts: [], freshAttempt: null, lastOutcome: null, curEvents: 0,
+    curSpoken: 0, debriefing: false, stream: { arrivals: [], bytes: [] }, overlayDirty: true, headDirty: true });
+  S.spokenKeys.clear();
+  onHoldmap(null);
+  $("problem").hidden = true;
+  const ul = $("timeline");
+  ul.innerHTML = "";
+  ul.classList.remove("overflowing");
+  $("lat-last").textContent = "–";
+  $("lat-last").classList.remove("late");
+  $("lat-sub").textContent = "No cues spoken yet";
+  $("lat-hist").innerHTML = "";
+  setMood("neutral");
+  clearTimeout(S.captionTimer);
+  $("cap-text").textContent = "The coach will speak here.";
+  $("cap-who").querySelector(".who").textContent = "Coach";
+  $("cap-ms").textContent = "";
+  $("caption").className = "waiting";
+  document.body.classList.remove("debriefing");
+  renderAttempts();
+  // Drop the old picture so the layout follows the new one's shape from the first frame.
+  video.removeAttribute("src");
+  $("novideo").hidden = false;
+  if (!wsVideo) loadVideo();
 }
 
 const MODE_FLAGS = {
-  live: (src) => ["live", src?.index != null ? `Live · camera ${src.index}` : "Live"],
+  live: (src) => ["live", src?.kind === "browser_camera" ? "Live · browser camera"
+    : src?.index != null ? `Live · camera ${src.index}` : "Live"],
   offline: () => ["realtime", "Analysing in real time"],
   video_test: () => ["boxed", "Video test"],
   session_replay: (src) => ["boxed", src?.name ? `Session replay · ${src.name}` : "Session replay"],
@@ -466,13 +575,24 @@ function setMode(mode, source) {
     flag.className = `flag ${cls}`;
     flag.querySelector(".label").textContent = label;
   }
-  $("clip").hidden = !(mode === "offline" && source?.kind === "file" && source.frames > 0);
+  const clip = mode === "offline" && source?.kind === "file" && source.frames > 0;
+  $("clip-bar").hidden = !clip;
+  $("clip-label").hidden = !(mode === "offline" && source?.name);
+  if (!$("clip-label").hidden) $("clip-label").innerHTML = clipName();
   $("stream-stats").hidden = mode !== "video_test";
   if (mode === "video_test" || mode === "session_replay") $("problem").hidden = true;
-  $("novideo").querySelector("small").textContent = NO_VIDEO_NOTES[mode] || NO_VIDEO_NOTES.live;
-  if (mode === "offline" && source?.name) $("clip-label").textContent = source.name;
+  const note = source?.kind === "browser_camera" ? (CAM.stream ? "starting the camera" : "waiting for the browser camera")
+    : NO_VIDEO_NOTES[mode] || NO_VIDEO_NOTES.live;
+  $("novideo").querySelector("small").textContent = note;
+  renderSrcbar();
   S.headDirty = true;
   S.overlayDirty = true;
+}
+
+// The clip's name in the source bar, unless the picker already shows it.
+function clipName() {
+  const name = S.source?.name;
+  return name && $("src-pick").hidden ? `<span class="name">${esc(name)}</span>` : "";
 }
 
 const NO_VIDEO_NOTES = {
@@ -486,11 +606,11 @@ const NO_VIDEO_NOTES = {
 // Offline demo: where we are in the clip, from the frame index of the state being analysed.
 function renderClip(frameIdx) {
   const src = S.source;
-  if ($("clip").hidden || !Number.isFinite(frameIdx)) return;
+  if ($("clip-bar").hidden || !Number.isFinite(frameIdx)) return;
   const pos = frameIdx % src.frames, loop = Math.floor(frameIdx / src.frames) + 1;
-  const fps = src.fps || 30, sep = `<span class="sep">·</span>`;
+  const fps = src.fps || 30, sep = `<span class="sep">·</span>`, name = clipName();
   $("clip-bar").firstElementChild.style.width = `${(100 * pos) / src.frames}%`;
-  $("clip-label").innerHTML = `${esc(src.name)}${sep}<span class="num">${fmtTime(pos / fps)} / ${fmtTime(src.frames / fps)}</span>` +
+  $("clip-label").innerHTML = `${name}${name ? sep : ""}<span class="num">${fmtTime(pos / fps)} / ${fmtTime(src.frames / fps)}</span>` +
     (loop > 1 ? `${sep}loop <span class="num">${loop}</span>` : "");
 }
 
@@ -693,6 +813,7 @@ function renderLadder() {
   const el = $("ladder");
   const holds = [...(S.holdmap?.holds || [])].sort((a, b) => b.id - a.id);
   el.style.setProperty("--n", Math.max(holds.length, 1));
+  $("ladder-count").textContent = holds.length || "";
   el.innerHTML = holds.map((h) => {
     return `<div class="rung" data-id="${h.id}"><span class="n">${h.id}</span><span class="marks"></span></div>`;
   }).join("");
@@ -752,6 +873,8 @@ function setCaption(text, debrief, ms) {
   $("cap-ms").textContent = ms;
   cap.classList.toggle("debrief", debrief);
   cap.classList.toggle("long", debrief && txt.textContent.length > DEBRIEF_LONG_CHARS);
+  cap.classList.remove("fit");
+  if (!debrief && txt.scrollHeight > txt.clientHeight + 2) cap.classList.add("fit");
   const wasTall = document.body.classList.contains("debriefing");
   document.body.classList.remove("debriefing");
   const tall = debrief && txt.scrollHeight > txt.clientHeight + 2;
@@ -825,14 +948,41 @@ function contentRect() {
   return { x: 0, y: 0, w: canvas.width, h: canvas.height };
 }
 
-// Largest box with the video's aspect ratio that fits in #stage.
+// Size of the picture: the current frame, else what hello or the hold map says, else 16:9.
+function pictureSize() {
+  if (video.naturalWidth && video.naturalHeight) return [video.naturalWidth, video.naturalHeight];
+  if (S.source?.width && S.source?.height) return [S.source.width, S.source.height];
+  const [w, h] = S.holdmap?.image_size || [];
+  return w && h ? [w, h] : [16, 9];
+}
+
+// Largest box with the video's aspect ratio that fits in #stage. A portrait picture runs the full
+// height and the stage column is only as wide as the picture, so the rest goes to the data.
 function fitFrame() {
   const stage = $("stage"), frameEl = $("frame");
-  let iw = video.naturalWidth, ih = video.naturalHeight;
-  if (!iw || !ih) [iw, ih] = S.holdmap?.image_size || [16, 9];
+  const [iw, ih] = pictureSize();
+  const narrow = matchMedia("(max-width: 900px)").matches;
+  const portrait = ih > iw && !narrow && S.mode !== "video_test";
+  if (document.body.classList.contains("portrait") !== portrait) {
+    document.body.classList.toggle("portrait", portrait);
+    S.overlayDirty = true;
+  }
   const cs = getComputedStyle(stage);
-  const sw = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-  const sh = stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+  const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+  let sw, sh;
+  if (narrow) {
+    sw = stage.clientWidth - padX;
+    sh = window.innerHeight * NARROW_MAX_VH;
+  } else if (portrait) {
+    // As wide as the height allows, leaving the ladder and the side column their minimum widths.
+    const room = document.body.clientWidth - $("ladder-col").offsetWidth - parseFloat(getComputedStyle($("side")).minWidth);
+    sw = room - padX;
+    sh = stage.clientHeight - padY;
+  } else {
+    sw = stage.clientWidth - padX;
+    sh = stage.clientHeight - padY;
+  }
   if (sw <= 0 || sh <= 0) return;
   const scale = Math.min(sw / iw, sh / ih);
   const w = `${Math.floor(iw * scale)}px`, h = `${Math.floor(ih * scale)}px`;
@@ -844,14 +994,8 @@ function fitFrame() {
   }
 }
 
-function alignLadder() {
-  const ladder = $("ladder");
-  if (matchMedia("(max-width: 900px)").matches) { ladder.style.paddingTop = ladder.style.paddingBottom = ""; return; }
-  const f = $("frame").getBoundingClientRect(), l = ladder.getBoundingClientRect();
-  ladder.style.paddingTop = `${Math.max(0, f.top - l.top)}px`;
-  ladder.style.paddingBottom = `${Math.max(0, l.bottom - f.bottom)}px`;
-  fitLadder();
-}
+// The ladder fills its own column; only its numbers need resizing when the layout changes.
+function alignLadder() { fitLadder(); }
 
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
@@ -875,7 +1019,7 @@ function drawOverlay() {
   const P = ([x, y]) => [R.x + x * R.w, R.y + y * R.h];
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   // Labels scale with the picture so they stay readable at a distance.
-  const u = Math.max(0.65, Math.min(1.6, R.w / (900 * dpr))) * dpr;
+  const u = Math.max(0.65, Math.min(1.6, Math.max(R.w, R.h) / (900 * dpr))) * dpr;
 
   const st = S.state && S.state.person_found !== false ? S.state : null;
   const contacts = normLimbs(st?.contacts);
@@ -1007,6 +1151,165 @@ function showBase64Frame(b64) {
 video.addEventListener("load", () => { $("novideo").hidden = true; S.overlayDirty = true; });
 video.addEventListener("error", () => { if (!wsVideo) $("novideo").hidden = false; });
 
+// ---- Source picker ------------------------------------------------------------
+// Lists what the server can analyse; picking one asks the server to switch. The new "hello"
+// that follows (to every open dashboard) is what actually updates the page.
+const SRC = { current: null, switching: false };
+
+async function loadSources() {
+  try {
+    const r = await fetch(`${HTTP_BASE}/api/sources`);
+    if (!r.ok) throw new Error(r.statusText);
+    renderPicker(await r.json());
+  } catch {
+    $("src-pick").hidden = true;  // this server can't switch (replay, stream test)
+    renderSrcbar();
+  }
+}
+
+function renderPicker({ current, options }) {
+  const groups = new Map();
+  for (const o of options || []) {
+    if (!groups.has(o.group)) groups.set(o.group, []);
+    groups.get(o.group).push(o);
+  }
+  $("source").innerHTML = [...groups].map(([g, opts]) => `<optgroup label="${esc(g)}">` +
+    opts.map((o) => `<option value="${esc(o.spec)}" title="${esc(o.spec)}">${esc(o.name)}</option>`).join("") +
+    `</optgroup>`).join("");
+  $("src-pick").hidden = !(options || []).length;
+  setCurrentSource(current ?? SRC.current);
+  if (!$("clip-label").hidden && S.mode) setMode(S.mode, S.source);  // the name moves into the picker
+  renderSrcbar();
+}
+
+function setCurrentSource(spec) {
+  if (!spec) return;
+  SRC.current = spec;
+  if (!SRC.switching) $("source").value = spec;
+}
+
+function renderSrcbar() {
+  const bar = $("srcbar");
+  const hidden = $("src-pick").hidden && $("clip-label").hidden && $("src-note").hidden;
+  if (bar.hidden !== hidden) { bar.hidden = hidden; S.overlayDirty = true; }
+}
+
+function srcNote(text, isError = false) {
+  const el = $("src-note");
+  el.hidden = !text;
+  el.textContent = text || "";
+  el.classList.toggle("err", isError);
+  renderSrcbar();
+}
+
+async function pickSource(spec) {
+  const prev = SRC.current;
+  if (spec === BROWSER_SPEC && !(await startCamera())) { $("source").value = prev ?? ""; return; }
+  SRC.switching = true;
+  $("source").disabled = true;
+  srcNote("Switching…");
+  try {
+    const r = await fetch(`${HTTP_BASE}/api/source`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ spec }) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    const { hello } = await r.json();
+    srcNote(null);
+    if (hello) onHello(hello);  // normally the WebSocket brings it first; this covers a slow socket
+  } catch (err) {
+    srcNote(`Couldn't switch: ${err.message}`, true);
+    if (spec === BROWSER_SPEC) stopCamera();
+    $("source").value = prev ?? "";
+  } finally {
+    SRC.switching = false;
+    $("source").disabled = false;
+    setCurrentSource(SRC.current);
+  }
+}
+$("source").addEventListener("change", (e) => pickSource(e.target.value));
+
+// ---- This device's camera -------------------------------------------------------
+// Webcam frames go to the server as JPEGs over WS /camera. The server runs perception on
+// them and sends its frames back like any other source, so the overlay matches what it saw.
+const CAM = { stream: null, el: null, canvas: null, ws: null, timer: null, encoding: false, wanted: false };
+
+async function startCamera() {
+  if (CAM.stream) return true;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    srcNote("The camera only works over https or on localhost", true);
+    return false;
+  }
+  try {
+    CAM.stream = await navigator.mediaDevices.getUserMedia({ audio: false,
+      video: { width: { ideal: 1280 }, height: { ideal: 720 } } });
+  } catch (err) {
+    srcNote(err.name === "NotAllowedError" ? "Camera permission was denied" : `No camera: ${err.message}`, true);
+    return false;
+  }
+  CAM.el = Object.assign(document.createElement("video"), { muted: true, playsInline: true, srcObject: CAM.stream });
+  await CAM.el.play().catch(() => {});
+  CAM.canvas = document.createElement("canvas");
+  CAM.wanted = true;
+  try { sessionStorage.setItem(CAMERA_KEY, "1"); } catch {}
+  CAM.stream.getVideoTracks()[0]?.addEventListener("ended", () => { stopCamera(); srcNote("The camera stopped", true); });
+  openCameraSocket();
+  CAM.timer = setInterval(sendCameraFrame, 1000 / CAMERA_FPS);
+  return true;
+}
+
+function openCameraSocket() {
+  const ws = new WebSocket(CAMERA_URL);
+  CAM.ws = ws;
+  ws.onclose = (e) => {
+    if (CAM.ws !== ws) return;
+    CAM.ws = null;
+    if (e.code === CAMERA_BUSY_CODE) {
+      stopCamera();
+      srcNote("Another dashboard is already sending its camera", true);
+    } else if (CAM.wanted) {
+      setTimeout(() => { if (CAM.wanted && !CAM.ws) openCameraSocket(); }, CAMERA_RETRY_MS);
+    }
+  };
+}
+
+function sendCameraFrame() {
+  const ws = CAM.ws, v = CAM.el;
+  if (!ws || ws.readyState !== WebSocket.OPEN || CAM.encoding || ws.bufferedAmount > CAMERA_MAX_BUFFER) return;
+  if (!v?.videoWidth) return;
+  const scale = Math.min(1, CAMERA_MAX_SIDE / Math.max(v.videoWidth, v.videoHeight));
+  const c = CAM.canvas;
+  c.width = Math.round(v.videoWidth * scale);
+  c.height = Math.round(v.videoHeight * scale);
+  c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+  CAM.encoding = true;
+  c.toBlob((blob) => {
+    CAM.encoding = false;
+    if (blob && ws.readyState === WebSocket.OPEN) ws.send(blob);
+  }, "image/jpeg", CAMERA_JPEG_QUALITY);
+}
+
+function stopCamera() {
+  CAM.wanted = false;
+  try { sessionStorage.removeItem(CAMERA_KEY); } catch {}
+  clearInterval(CAM.timer);
+  CAM.timer = null;
+  CAM.stream?.getTracks().forEach((t) => t.stop());
+  CAM.stream = null;
+  if (CAM.el) CAM.el.srcObject = null;
+  CAM.el = null;
+  const ws = CAM.ws;
+  CAM.ws = null;
+  ws?.close();
+}
+
+// Keep sending only while the server is analysing the browser camera. After a reload, the
+// tab that was sending picks it up again.
+function syncCamera(hello) {
+  if (hello.source?.kind !== "browser_camera") { if (CAM.stream) stopCamera(); return; }
+  let resume = false;
+  try { resume = sessionStorage.getItem(CAMERA_KEY) === "1"; } catch {}
+  if (!CAM.stream && resume) startCamera();
+}
+
 // ---- WebSocket --------------------------------------------------------------
 let backoff = 500;
 function connect() {
@@ -1017,6 +1320,7 @@ function connect() {
     backoff = 500;
     setConn("ok", "Connected");
     loadVideo();
+    loadSources();
   };
   ws.onmessage = (e) => {
     if (e.data instanceof Blob) return showFrame(e.data.type ? e.data : new Blob([e.data], { type: "image/jpeg" }));

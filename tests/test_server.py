@@ -4,10 +4,12 @@ import json
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from coach.bus import Bus
 from coach.contracts import CoachEvent, HoldMap
 from coach.server.app import (
+    CAMERA_BUSY_CODE,
     CLIENT_BACKLOG,
     STATE_HZ,
     Client,
@@ -227,3 +229,78 @@ async def test_close_ends_dashboards_and_video_streams():
         await asyncio.wait_for(waiting, 1)
     items = [client.queue.get_nowait() for _ in range(client.queue.qsize())]
     assert items[-1] is None
+
+
+# ---- Switching the source -----------------------------------------------------------------
+
+
+class FakeControl:
+    """Stands in for run.py's Session."""
+
+    def __init__(self) -> None:
+        self.on_hello = None
+        self.frames: list[bytes] = []
+        self.camera_on = True
+
+    def listen(self, on_hello) -> None:
+        self.on_hello = on_hello
+
+    def sources(self) -> dict:
+        return {"current": "file:a.mp4", "options": [{"spec": "file:a.mp4", "name": "a.mp4"}]}
+
+    async def switch(self, spec: str) -> dict:
+        if spec != "browser":
+            raise ValueError(f"not an offered source: {spec!r}")
+        hello = {"problem_id": "p", "session": 2, "spec": spec}
+        self.on_hello(hello)
+        return hello
+
+    def feed_camera(self, jpeg: bytes) -> bool:
+        self.frames.append(jpeg)
+        return self.camera_on
+
+
+def test_new_hello_reaches_open_dashboards_and_forgets_the_holdmap():
+    hub = Hub(Bus(), hello={"session": 1}, clock=FakeClock())
+    client = hub.connect()
+    client.queue.get_nowait()  # the hello it got on connect
+    hub.holdmap_msg = encode("holdmap", 0.0, {"problem_id": "old"})
+    hub.set_hello({"session": 2})
+    msg = json.loads(client.queue.get_nowait())
+    late = hub.connect()
+    assert msg["topic"] == "hello" and msg["payload"] == {"session": 2}
+    assert [json.loads(late.queue.get_nowait())["topic"]] == ["hello"]  # no stale hold map
+    assert late.queue.empty()
+
+
+def test_source_endpoints_404_without_a_control():
+    with TestClient(create_app(Bus())) as client:
+        assert client.get("/api/sources").status_code == 404
+        assert client.post("/api/source", json={"spec": "browser"}).status_code == 404
+
+
+def test_switch_source_tells_every_dashboard():
+    control = FakeControl()
+    with TestClient(create_app(Bus(), {"session": 1}, control=control)) as client:
+        assert client.get("/api/sources").json()["current"] == "file:a.mp4"
+        with client.websocket_connect("/ws") as ws:
+            assert ws.receive_json()["payload"] == {"session": 1}
+            r = client.post("/api/source", json={"spec": "browser"})
+            pushed = ws.receive_json()
+        bad = client.post("/api/source", json={"spec": "file:/etc/passwd"})
+    assert r.status_code == 200 and r.json()["hello"]["session"] == 2
+    assert pushed["topic"] == "hello" and pushed["payload"]["spec"] == "browser"
+    assert bad.status_code == 400
+
+
+def test_camera_frames_reach_the_control_and_only_one_sender_at_a_time():
+    control = FakeControl()
+    with TestClient(create_app(Bus(), control=control)) as client:
+        with client.websocket_connect("/camera") as cam:
+            cam.send_bytes(b"jpeg-1")
+            cam.send_bytes(b"jpeg-2")
+            with client.websocket_connect("/camera") as second:
+                with pytest.raises(WebSocketDisconnect) as closed:
+                    second.receive_bytes()
+    assert control.frames == [b"jpeg-1", b"jpeg-2"]
+    assert closed.value.code == CAMERA_BUSY_CODE

@@ -193,3 +193,114 @@ async def test_fast_pose_replay_runs_end_to_end(monkeypatch, tmp_path):
     (log_file,) = (tmp_path / "logs").glob("*.jsonl")
     topics = [json.loads(line)["topic"] for line in log_file.read_text().splitlines()]
     assert topics.count("state") == 30
+
+
+# ---- Switching the source -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "maps", "expected"),
+    [
+        ("climb_2_05_hand_searching.mp4", [], "climb_2"),
+        ("climb_2_05_hand_searching.mp4", ["climb2"], "climb2"),  # A's hold map naming
+        ("climb_6_12-1_new_high_point.mp4", [], "climb_6"),
+        ("pink-v3_07_stall.mp4", [], "pink-v3"),
+        ("Vidéo 07-11-2026 19 03 59.mp4", [], "fallback"),
+    ],
+)
+def test_problem_for_reads_the_clip_name(tmp_path: Path, name, maps, expected):
+    for m in maps:
+        (tmp_path / f"{m}.json").write_text("{}")
+    assert run.problem_for(Path(name), "fallback", holdmap_dir=tmp_path) == expected
+
+
+def test_list_clips_is_natural_order_and_skips_other_files(tmp_path: Path):
+    (tmp_path / "mp4").mkdir()
+    for n in ["climb_10_00.mp4", "climb_2_00.mp4", "climb_2_00.mov", "notes.txt"]:
+        (tmp_path / "mp4" / n).write_bytes(b"")
+    assert [p.name for p in run.list_clips(tmp_path)] == ["climb_2_00.mp4", "climb_10_00.mp4"]
+
+
+def make_session(tmp_path: Path, monkeypatch, parts):
+    videos = tmp_path / "videos"
+    videos.mkdir()
+    for n in ["climb_1_02_send.mp4", "climb_3_06_feet_cut.mp4"]:
+        (videos / n).write_bytes(b"")
+    monkeypatch.setattr(run, "ROOT", tmp_path)
+    args = parse_args(["--source", f"file:{videos / 'climb_1_02_send.mp4'}", "--problem", "p1"])
+
+    class Voice:
+        stops = 0
+
+        def stop(self) -> None:
+            Voice.stops += 1
+
+    class Brain:
+        def __init__(self, cfg, bus, voice) -> None:
+            pass
+
+        async def run(self, states) -> None:
+            await asyncio.Event().wait()
+
+    bus = Bus()
+    bus.bind_loop()
+    return run.Session(args, {}, bus, Voice(), Brain, parts=parts, video_dir=videos), Voice
+
+
+async def test_session_offers_clips_and_camera_and_rejects_anything_else(tmp_path, monkeypatch):
+    _, parts = fake_parts()
+    session, _ = make_session(tmp_path, monkeypatch, parts)
+    specs = [o["spec"] for o in session.options()]
+    assert specs == [
+        "file:videos/climb_1_02_send.mp4",
+        "file:videos/climb_3_06_feet_cut.mp4",
+        "browser",
+    ]
+    with pytest.raises(ValueError):
+        session.args_for("file:/etc/passwd")
+    clip = session.args_for("file:videos/climb_3_06_feet_cut.mp4")
+    assert clip.problem == "climb_3" and clip.source.endswith("climb_3_06_feet_cut.mp4")
+    assert isinstance(session.args_for("browser").source, run.BrowserCamera)
+    assert session.args_for(specs[0]) is session.initial  # back to the start keeps --problem
+
+
+async def test_session_switch_rebuilds_and_announces_the_new_source(tmp_path, monkeypatch):
+    _, parts = fake_parts(n_frames=3)
+    session, voice = make_session(tmp_path, monkeypatch, parts)
+    hellos = []
+    session.listen(hellos.append)
+    await session.start(session.initial)
+    first_workers, first_brain = session.workers, session.brain_task
+
+    hello = await session.switch("browser")
+
+    assert [h["session"] for h in hellos] == [1, 2]
+    assert hello["spec"] == "browser" and hello["mode"] == "live"
+    assert hello["source"] == {"kind": "browser_camera"}
+    assert first_brain.cancelled() and session.workers is not first_workers
+    assert voice.stops == 1
+    assert session.feed_camera(b"jpeg") is True
+    assert await session.switch("browser") is hello  # already on it: nothing restarts
+    await session.stop()
+    assert session.feed_camera(b"jpeg") is False
+
+
+async def test_pose_threads_read_the_browser_camera_and_stop_cleanly():
+    import cv2
+
+    bus = Bus()
+    bus.bind_loop()
+    states = stubs.AsyncLatestQueue(asyncio.get_running_loop())
+    tracker, parts = fake_parts()
+    cam = run.BrowserCamera()
+    perception = run.PoseThreads(cam, "p1", {}, bus, states, fast=False, parts=parts)
+    ok, buf = cv2.imencode(".jpg", np.zeros((8, 8, 3), np.uint8))
+
+    perception.start()
+    cam.put(buf.tobytes())
+    state = await asyncio.wait_for(states.get(), 2)
+    await asyncio.to_thread(perception.stop)  # must not hang waiting for another frame
+
+    assert perception.spec == "browser" and not perception.is_file
+    assert state.frame_idx == 0
+    assert tracker.closed
