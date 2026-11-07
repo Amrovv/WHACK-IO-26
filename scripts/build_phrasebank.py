@@ -2,6 +2,10 @@
 
 Run from the repo root: uv run python -m scripts.build_phrasebank [--only KIND] [--dry-run]
 
+--check generates and renders nothing: it exits 1 if any clip Voice could need isn't on disk. Run
+it before a demo, because a line with a missing clip has to render live and can be lost.
+--render fills in missing clips from the bank as it stands, so the lines don't change.
+
 Without GEMINI_API_KEY or a real voice.llm_model, line generation is skipped with a warning; the
 existing bank is kept and the fragments are still rendered. --model overrides voice.llm_model.
 """
@@ -12,7 +16,7 @@ import argparse
 import json
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import yaml
@@ -27,7 +31,7 @@ from coach.voice.phrasebank import (
     render_texts,
     select_lines,
 )
-from coach.voice.tts import make_tts
+from coach.voice.tts import TTS, make_tts
 
 log = logging.getLogger(__name__)
 
@@ -182,11 +186,31 @@ def missing_llm_setting(api_key: str | None, model: str | None) -> str | None:
     return None
 
 
+def missing_clips(texts: Iterable[str], tts: TTS) -> list[str]:
+    """Clips that can't be loaded from the cache, whether absent or corrupt."""
+    return [text for text in texts if tts.cached(text) is None]
+
+
+def check_clips(bank: dict, persona: dict, tts: TTS) -> int:
+    """Report on the audio cache. Returns the process exit code."""
+    if not bank:
+        log.error("%s is missing or empty", BANK_PATH)
+        return 1
+    texts = render_texts(bank, persona["colours"], persona["fillers"])
+    missing = missing_clips(texts, tts)
+    for text in missing:
+        print(f"missing: {text!r}")
+    print(f"{len(texts) - len(missing)} of {len(texts)} clips are cached")
+    return 1 if missing else 0
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--only", choices=EVENT_KINDS, metavar="KIND", help="regenerate one kind")
     ap.add_argument("--dry-run", action="store_true", help="show the lines, write nothing")
     ap.add_argument("--model", help="override voice.llm_model")
+    ap.add_argument("--check", action="store_true", help="only check every clip is on disk")
+    ap.add_argument("--render", action="store_true", help="only render clips for the current bank")
     args = ap.parse_args()
     load_dotenv()
 
@@ -194,9 +218,12 @@ def main() -> None:
     persona = load_yaml(voice_cfg["persona"])
     bank = json.loads(BANK_PATH.read_text(encoding="utf-8")) if BANK_PATH.exists() else {}
 
+    if args.check:
+        raise SystemExit(check_clips(bank, persona, make_tts(voice_cfg, persona)))
+
     api_key = os.environ.get("GEMINI_API_KEY")
     model = args.model or voice_cfg.get("llm_model")
-    missing = missing_llm_setting(api_key, model)
+    missing = "--render was set" if args.render else missing_llm_setting(api_key, model)
     if missing:
         log.warning("skipping line generation: %s", missing)
     else:
