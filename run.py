@@ -1,7 +1,8 @@
 """Single entry point: wires perception, brain, voice, the dashboard server and the bus log.
 
 No business logic here. Each layer comes from its owner's package when it exists and falls back
-to coach/stubs.py when it doesn't, so this always runs.
+to coach/stubs.py when it doesn't, so this always runs. The interface between the layers is
+docs/LAYER-INTERFACES.md.
 
   uv run python run.py --source file:videos/test_climb.mp4 --problem demo --voice print
   uv run python run.py --replay-pose data/pose_cache/clip.jsonl --problem demo --voice print
@@ -20,8 +21,10 @@ import contextlib
 import importlib
 import logging
 import signal
+import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
 
@@ -33,6 +36,8 @@ log = logging.getLogger("run")
 ROOT = Path(__file__).resolve().parent
 LOG_DIR = ROOT / "data" / "logs"
 SHUTDOWN_TIMEOUT_S = 3.0
+FRAME_POLL_S = 0.2  # pose thread re-checks for shutdown this often while waiting for a frame
+JOIN_TIMEOUT_S = 2.0
 
 
 def load(module: str, name: str, fallback=None):
@@ -134,19 +139,145 @@ class QuietServer:
         self.server.should_exit = True
 
 
-def build_perception(args, cfg, bus, states):
+def a_parts() -> SimpleNamespace:
+    """A's perception building blocks. Raises ImportError when A's code isn't on this branch."""
+    from coach.perception.holds import load_holdmap_with_shapes
+    from coach.perception.pose import PoseTracker, load_perception_config
+
+    from coach.sources import LatestQueue, parse_source
+
+    cfg = load_perception_config()
+    return SimpleNamespace(
+        open_source=parse_source,  # (spec, fast=) -> iterable of (t, frame_idx, bgr), .close()
+        make_tracker=lambda holdmap, shapes: PoseTracker(cfg, holdmap=holdmap, shapes=shapes),
+        load_holdmap=load_holdmap_with_shapes,  # problem_id -> (HoldMap, shapes); raises if missing
+        frame_queue=LatestQueue,  # A's thread -> thread 1-slot queue
+    )
+
+
+class PoseThreads:
+    """Real perception wired from A's parts.
+
+    A reader thread puts frames into A's 1-slot LatestQueue (so a slow pose step drops old
+    frames instead of falling behind); a pose thread runs PoseTracker on the newest frame and
+    publishes "state" (to the bus and the brain's queue) and "frame" (~FRAME_FPS, for the
+    dashboard). The hold map is published once at start. Files loop unless fast=True, which
+    runs everything on one thread, drops nothing and stops at the end of the file.
+    """
+
+    def __init__(self, source, problem_id, cfg, bus, out, fast=False, parts=None) -> None:
+        self.parts = parts or a_parts()
+        self.spec = f"cam:{source}" if isinstance(source, int) else f"file:{source}"
+        self.is_file = not isinstance(source, int)
+        self.bus, self.out, self.fast = bus, out, fast
+        try:
+            self.holdmap, shapes = self.parts.load_holdmap(problem_id)
+        except FileNotFoundError:
+            log.warning("no hold map for %r; poses will have no contacts", problem_id)
+            self.holdmap, shapes = None, {}
+        self.tracker = self.parts.make_tracker(self.holdmap, shapes)  # may raise: no pose model
+        self.frames = self.parts.frame_queue()
+        self.done = threading.Event()
+        self._stop = threading.Event()
+        self._read_done = threading.Event()
+        self._last_frame_t = -float("inf")
+        self._threads: list[threading.Thread] = []
+
+    def start(self) -> None:
+        if self.holdmap is not None:
+            self.bus.publish("holdmap", self.holdmap)
+        targets = [self._fast] if self.fast else [self._read, self._pose]
+        self._threads = [
+            threading.Thread(target=self._guard, args=(f,), daemon=True) for f in targets
+        ]
+        for t in self._threads:
+            t.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self.frames.close()
+        for t in self._threads:
+            t.join(JOIN_TIMEOUT_S)
+        self.tracker.close()
+
+    def _guard(self, target) -> None:
+        try:
+            target()
+        except Exception:
+            log.exception("perception thread %s crashed", target.__name__)
+        finally:
+            if target is not self._read:
+                self.done.set()
+
+    def _frames(self):
+        """(t, frame_idx, bgr) from the source; files restart at the end unless fast."""
+        offset = 0
+        while not self._stop.is_set():
+            source = self.parts.open_source(
+                self.spec, **({"fast": self.fast} if self.is_file else {})
+            )
+            last = -1
+            try:
+                for t, idx, img in source:
+                    if self._stop.is_set():
+                        return
+                    last = idx
+                    yield t, idx + offset, img
+            finally:
+                source.close()
+            if self.fast or not self.is_file or last < 0:
+                return
+            offset += last + 1  # keep frame_idx growing so the dashboard can count loops
+
+    def _read(self) -> None:
+        try:
+            for frame in self._frames():
+                self.frames.put(frame)
+        finally:
+            self._read_done.set()
+            self.frames.close()
+
+    def _pose(self) -> None:
+        while not self._stop.is_set():
+            frame = self.frames.get(timeout=FRAME_POLL_S)
+            if frame is None:
+                if self._read_done.is_set():
+                    return
+                continue
+            self._process(*frame)
+
+    def _fast(self) -> None:
+        for frame in self._frames():
+            self._process(*frame)
+            if hasattr(self.out, "wait_taken"):
+                self.out.wait_taken(JOIN_TIMEOUT_S)
+
+    def _process(self, t: float, idx: int, img) -> None:
+        state = self.tracker.process(t, idx, img)
+        self.bus.publish("state", state)
+        self.out.put(state)
+        if t - self._last_frame_t >= 1.0 / stubs.FRAME_FPS:
+            self._last_frame_t = t
+            jpeg = stubs.encode_jpeg(img)
+            if jpeg is not None:
+                self.bus.publish("frame", jpeg)
+
+
+def build_perception(args, cfg, bus, states, parts=None):
     """The workers that feed states (and frames) for this combination of flags."""
-    workers = []
     common = dict(problem_id=args.problem, cfg=cfg, bus=bus, out=states, fast=args.fast)
     if args.replay_pose:
-        replay = load("coach.sources", "PoseReplay", stubs.PoseReplay)
-        workers.append(replay(args.replay_pose, **common))
+        workers = [stubs.PoseReplay(args.replay_pose, **common)]
         if args.source is not None:  # video only, for the dashboard
             workers.append(stubs.VideoPerception(args.source, **common, frames_only=True))
-    else:
-        perception = load("coach.perception", "Perception", stubs.VideoPerception)
-        workers.append(perception(args.source, **common))
-    return workers
+        return workers
+    try:
+        return [PoseThreads(args.source, **common, parts=parts)]
+    except ImportError as e:
+        log.info("A's perception isn't on this branch (%s); video only, no pose", e)
+    except Exception as e:  # e.g. pose model missing: keep the demo running
+        log.warning("pose pipeline failed to start (%s); video only, no pose", e)
+    return [stubs.VideoPerception(args.source, **common)]
 
 
 def build_voice(args, cfg, bus):
@@ -171,8 +302,9 @@ async def main(args: argparse.Namespace) -> int:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     bus_log = stubs.BusLog(bus, LOG_DIR / f"bus-{args.problem}-{stamp}.jsonl")
 
-    latest_queue = load("coach.sources", "LatestQueue", stubs.LatestQueue)
-    states = latest_queue(loop)
+    # Always D's async hand-off; A's coach.sources.LatestQueue is the thread -> thread queue
+    # inside perception (see docs/LAYER-INTERFACES.md).
+    states = stubs.AsyncLatestQueue(loop)
     voice = build_voice(args, cfg, bus)
     brain = load("coach.brain", "Brain", stubs.StubBrain)(cfg, bus, voice)
 

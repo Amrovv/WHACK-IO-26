@@ -384,6 +384,7 @@ const S = {
   holdmap: null,
   state: null,
   latencies: [],
+  spokenKeys: new Set(),  // cues that were actually said (capture time | kind)
   attemptNo: null,
   attemptStartT: null,   // state.t at attempt_start
   attemptLive: false,    // between attempt_start and its summary
@@ -560,11 +561,16 @@ function onEvent(ev) {
   renderCurrent();
 }
 
+// A cue is identified by its capture time and kind (the same key the brain uses).
+function cueKey(t, kind) { return `${t}|${kind}`; }
+
 function onSuppressed(s) {
   if (!s) return;
   const ev = s.event || {};
+  const key = cueKey(ev.t, ev.kind);
+  if (S.spokenKeys.has(key)) return;  // it was said after all; "spoken" is the record
   const detail = describeEventData(ev.data);
-  addTimeline("suppressed", `${ev.kind || "event"}${detail}`, s.reason || "?");
+  addTimeline("suppressed", `${ev.kind || "event"}${detail}`, s.reason || "?").dataset.key = key;
 }
 
 function describeEventData(d) {
@@ -585,6 +591,12 @@ function onSpoken(line) {
     if (S.latencies.length > LATENCY_WINDOW) S.latencies.shift();
   }
   S.curSpoken++;
+  // voice.say() can return False (logged as "not said: late") and still play once synthesis
+  // catches up. The SpokenLine is the record of what was said, so drop the earlier entry.
+  const key = cueKey(line.t_event, line.kind);
+  S.spokenKeys.add(key);
+  if (S.spokenKeys.size > TIMELINE_MAX) S.spokenKeys.delete(S.spokenKeys.values().next().value);
+  for (const li of $("timeline").querySelectorAll("li.suppressed")) if (li.dataset.key === key) li.remove();
   addTimeline("spoken", line.text, hasLat ? `${ms} ms` : line.kind || "");
   S.debriefing = false;
   setCaption(line.text, false, hasLat ? `${ms} ms` : "");
@@ -746,6 +758,7 @@ function addTimeline(cls, text, meta) {
   ul.prepend(li);
   while (ul.children.length > TIMELINE_MAX) ul.lastChild.remove();
   ul.classList.toggle("overflowing", ul.scrollHeight > ul.clientHeight + 2);
+  return li;
 }
 
 function renderLatency() {

@@ -1,22 +1,21 @@
-"""Stand-ins for every layer that isn't built yet, so run.py always runs end to end.
+"""Stand-ins for layers that aren't on this branch yet, plus D's own plumbing.
 
-Owned by D. run.py imports the real thing from each owner's package and falls back to the
-class here when it's missing. The real modules should match these shapes (or run.py changes):
+Owned by D. run.py uses each owner's real code when it's importable and falls back to the
+class here when it isn't. The interface every layer plugs into is docs/LAYER-INTERFACES.md.
 
-  coach.sources.LatestQueue(loop)                       put() from any thread, await get()
-  coach.perception.Perception(source, problem_id, cfg, bus, out, fast)   .start() .stop() .done
-  coach.sources.PoseReplay(path, problem_id, cfg, bus, out, fast)        .start() .stop() .done
-  coach.brain.Brain(cfg, bus, voice)                    await .run(states)
-  coach.voice.make_voice(cfg, bus, no_llm) -> Voice     the real voice ("--voice real")
-  coach.server.create_app(bus, hello) -> FastAPI        the dashboard server
+Stand-ins:
+  VideoPerception   for A's pose pipeline: frames only, every state has person_found=False
+  PoseReplay        replays a pose JSONL (A's pose-cache format) at recorded speed
+  StubBrain         for B's Brain: a fake "stalling" cue every STUB_EVENT_PERIOD_S
+  PrintVoice        logs lines instead of speaking, and publishes "spoken" like the real voice
 
-`.done` is a threading.Event set when a finite source (a file in --fast mode) runs out.
-
-Also here, because D owns them and they're not stubs of anyone else's work:
-  BusLog      writes every bus topic except "frame" to a JSONL file.
-  create_app  doubles as the dashboard server until coach/server exists. It serves web/,
-              forwards bus topics to the dashboard over /ws and streams frames on /ws and /video
-              (this replaces web/stream_test.py).
+D's own plumbing (not stand-ins):
+  AsyncLatestQueue  the perception -> brain hand-off: put() from any thread, await get().
+                    Not A's coach.sources.LatestQueue, which is thread -> thread inside
+                    perception (blocking get); the two are different hops.
+  BusLog            writes every bus topic except "frame" to a JSONL file.
+  encode_jpeg       BGR frame -> dashboard JPEG.
+  create_app        older copy of the dashboard server; coach/server/app.py is the real one.
 
   uv run python -m coach.stubs     # demo: replays a few fake states through the stub brain
 """
@@ -74,7 +73,7 @@ STUB_LINES = {"stalling": "Keep moving, commit to the next hold."}
 # ---- Queues -----------------------------------------------------------------------------
 
 
-class LatestQueue:
+class AsyncLatestQueue:
     """One-slot queue between a producer thread and the asyncio loop. A new put() replaces
     an item nobody has taken yet, so the consumer always gets the newest frame's state."""
 
@@ -205,7 +204,7 @@ class PoseReplay(_Worker):
     With fast=True it plays once with no waiting and hands over every state.
     """
 
-    def __init__(self, path, problem_id, cfg, bus: Bus, out: LatestQueue, fast: bool = False):
+    def __init__(self, path, problem_id, cfg, bus: Bus, out: AsyncLatestQueue, fast: bool = False):
         super().__init__("pose-replay")
         self.path, self.problem_id, self.bus, self.out, self.fast = (
             Path(path),
@@ -309,12 +308,20 @@ class VideoPerception(_Worker):
             cap.release()
 
     def _publish_frame(self, cv2, img) -> None:
-        if img.shape[1] > FRAME_MAX_WIDTH:
-            h = round(img.shape[0] * FRAME_MAX_WIDTH / img.shape[1])
-            img = cv2.resize(img, (FRAME_MAX_WIDTH, h), interpolation=cv2.INTER_AREA)
-        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, FRAME_JPEG_QUALITY])
-        if ok:
-            self.bus.publish("frame", buf.tobytes())
+        jpeg = encode_jpeg(img)
+        if jpeg is not None:
+            self.bus.publish("frame", jpeg)
+
+
+def encode_jpeg(img) -> bytes | None:
+    """BGR image -> JPEG for the dashboard, downscaled to FRAME_MAX_WIDTH."""
+    import cv2
+
+    if img.shape[1] > FRAME_MAX_WIDTH:
+        h = round(img.shape[0] * FRAME_MAX_WIDTH / img.shape[1])
+        img = cv2.resize(img, (FRAME_MAX_WIDTH, h), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, FRAME_JPEG_QUALITY])
+    return buf.tobytes() if ok else None
 
 
 # ---- Brain and voice stand-ins ----------------------------------------------------------
@@ -327,7 +334,7 @@ class StubBrain:
         self.bus, self.voice = bus, voice
         self.ttl_s = float(cfg["arbiter"]["ttl_s"]["p1"])
 
-    async def run(self, states: LatestQueue) -> None:
+    async def run(self, states: AsyncLatestQueue) -> None:
         last_t: float | None = None
         while True:
             s: ClimberState = await states.get()
@@ -554,7 +561,7 @@ if __name__ == "__main__":
         bus = Bus()
         bus.bind_loop()
         spoken = bus.subscribe("spoken")
-        states = LatestQueue(asyncio.get_running_loop())
+        states = AsyncLatestQueue(asyncio.get_running_loop())
         cfg = {"arbiter": {"ttl_s": {"p1": 1.2}}}
         brain = asyncio.create_task(StubBrain(cfg, bus, PrintVoice(cfg, bus)).run(states))
         now = time.monotonic()
