@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from math import atan2, degrees, hypot
 from typing import Any
 
-from coach.brain.attempts import _value, make_event
+from coach.brain.attempts import make_event
+from coach.brain.config import cfg
 from coach.brain.features import Features, height_above
 from coach.contracts import ClimberState, CoachEvent, HoldMap, Limb
 
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DetectorContext:
-    config: Any
+    config: dict[str, Any]
     holdmap: HoldMap | None
     on_wall: bool
     last_fall_t: float | None
@@ -24,7 +25,7 @@ class DetectorContext:
 
 
 def _brain(ctx: DetectorContext, name: str) -> Any:
-    return _value(ctx.config, "brain", name)
+    return cfg(ctx.config, "brain", name)
 
 
 class Detector:

@@ -2,7 +2,7 @@ from coach.brain.features import FeatureTracker
 from coach.contracts import ClimberState, Limb
 
 
-def state(t=0.0, *, x=0.2, hip_y=0.6, contacts=None, keypoints=None):
+def state(t=0.0, *, x=0.2, hip_x=0.3, hip_y=0.6, contacts=None, keypoints=None):
     points = {
         "left_shoulder": (0.2, 0.2, 1),
         "left_elbow": (0.2, 0.3, 1),
@@ -25,7 +25,7 @@ def state(t=0.0, *, x=0.2, hip_y=0.6, contacts=None, keypoints=None):
         points,
         {Limb.LH: (x, 0.4), Limb.RH: (0.4, 0.4), Limb.LF: (0.25, 0.9), Limb.RF: (0.35, 0.9)},
         contacts or {limb: None for limb in Limb},
-        (0.3, hip_y),
+        (hip_x, hip_y),
     )
 
 
@@ -55,3 +55,21 @@ def test_calibration_highest_hold_and_hand_search():
     )
     assert reset.hand_moving_no_contact_s[Limb.LH] == 0
     assert a.arm_length > 0 and a.leg_length > 0
+
+
+def test_highest_hold_resets_between_attempts():
+    tracker = FeatureTracker(0.02)
+    tracker.update(state(0, contacts={Limb.LH: 5}))
+    assert tracker.update(state(1, contacts={Limb.LH: 5})).highest_hold_id == 5
+
+    tracker.reset_highest_hold()
+    assert tracker.update(state(2, contacts={Limb.LH: 2})).highest_hold_id == 2
+
+
+def test_sideways_hip_motion_is_not_static():
+    tracker = FeatureTracker(0.02)
+    tracker.update(state(0, hip_x=0.3))
+    moved = tracker.update(state(0.2, hip_x=0.4))
+
+    assert moved.hip_speed > 0
+    assert moved.hip_static_s == 0

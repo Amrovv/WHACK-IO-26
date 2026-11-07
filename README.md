@@ -2,7 +2,8 @@
 
 Real-time AI bouldering coach. A fixed camera watches a climber; the system speaks short cues
 mid-climb and gives a persona-driven debrief between attempts. See `CLAUDE.md` for architecture
-and rules, `CONTRIBUTING.md` for the git workflow.
+and rules, `CONTRIBUTING.md` for the git workflow, `docs/INTEGRATION-contract.md` for exactly
+how the orchestrator (`run.py`) must wire the coach brain together.
 
 ## Setup
 

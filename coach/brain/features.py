@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from math import atan2, degrees, hypot
 from statistics import median
@@ -72,16 +72,7 @@ class Features:
 class FeatureTracker:
     """Keep the small amount of history needed by the attempt and cue logic."""
 
-    def __init__(self, move_speed_eps: float | Mapping[str, object] | object = 0.02) -> None:
-        if isinstance(move_speed_eps, Mapping) and "brain" in move_speed_eps:
-            move_speed_eps = move_speed_eps["brain"]
-        if not isinstance(move_speed_eps, (int, float)) and hasattr(move_speed_eps, "brain"):
-            brain = move_speed_eps.brain
-            move_speed_eps = (
-                brain["move_speed_eps"] if isinstance(brain, Mapping) else brain.move_speed_eps
-            )
-        if isinstance(move_speed_eps, Mapping):
-            move_speed_eps = move_speed_eps["move_speed_eps"]
+    def __init__(self, move_speed_eps: float = 0.02) -> None:
         self.move_speed_eps = float(move_speed_eps)
         self._previous: ClimberState | None = None
         self._hip_static_s = 0.0
@@ -102,6 +93,10 @@ class FeatureTracker:
         if leg is not None:
             self._leg_samples.append(leg)
 
+    def reset_highest_hold(self) -> None:
+        """Reset the highest hold tracker at the start of a new attempt."""
+        self._highest_hold_id = None
+
     def update(self, state: ClimberState) -> Features:
         previous = self._previous
         dt = max(0.0, state.t - previous.t) if previous is not None else 0.0
@@ -115,7 +110,9 @@ class FeatureTracker:
         hip_velocity = 0.0
         if previous is not None and dt > 0:
             hip_velocity = (state.hip[1] - previous.hip[1]) / dt
-        hip_speed = abs(hip_velocity)
+        hip_speed = 0.0
+        if previous is not None and dt > 0:
+            hip_speed = _distance(state.hip, previous.hip) / dt
         if previous is not None and dt > 0 and hip_speed < self.move_speed_eps:
             self._hip_static_s += dt
         elif hip_speed >= self.move_speed_eps:
