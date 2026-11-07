@@ -42,6 +42,14 @@ def test_speeds_angles_hip_and_static():
     assert first.highest_hold_id is None
 
 
+def test_low_visibility_keypoint_is_excluded_from_elbow_angle():
+    tracker = FeatureTracker(0.02)
+
+    features = tracker.update(state(keypoints={"left_elbow": (0.2, 0.3, 0.3)}))
+
+    assert features.elbow_angle["left"] is None
+
+
 def test_calibration_highest_hold_and_hand_search():
     tracker = FeatureTracker(0.02)
     a = tracker.update(state())
