@@ -1,0 +1,236 @@
+"""The real Voice: picks a persona line, stitches it from pre-rendered clips and plays it.
+
+say() never waits for synthesis. If a clip isn't on disk it returns False at once and a worker
+renders the clip, playing the line only if it is ready by the deadline and nothing has replaced
+it. So True always means audio started; the `spoken` topic is the full record of what was heard.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import logging
+import random
+import threading
+import time
+from collections.abc import Callable, Hashable, Sequence
+from concurrent.futures import Executor, ThreadPoolExecutor
+from pathlib import Path
+
+import numpy as np
+import yaml
+
+from coach.bus import Bus
+from coach.contracts import AttemptSummary, CoachEvent, HoldMap, SpeakRequest, SpokenLine
+from coach.voice.phrasebank import SLOT_RE, slot_values, stitch
+from coach.voice.speaker import Speaker, concat
+from coach.voice.tts import CONFIG_PATH, TTS, make_tts
+
+log = logging.getLogger(__name__)
+
+BANK_PATH = Path("data/phrasebank.json")
+NEUTRAL = "neutral"
+DEMO_DEADLINE_S = 5.0
+
+
+def fallback_keys(kind: str, level: int, mood: str) -> list[tuple[str, int, str]]:
+    """Keys to try in order: this mood down through the levels, then neutral the same way."""
+    moods = [mood] if mood == NEUTRAL else [mood, NEUTRAL]
+    return [(kind, lvl, m) for m in moods for lvl in range(level, -1, -1)]
+
+
+class Voice:
+    def __init__(
+        self,
+        bank: dict,
+        tts: TTS,
+        speaker: Speaker,
+        bus: Bus,
+        fillers: Sequence[str] = (),
+        clock: Callable[[], float] = time.monotonic,
+        rng: random.Random | None = None,
+        pool: Executor | None = None,
+    ) -> None:
+        self._bank = bank
+        self._tts = tts
+        self._speaker = speaker
+        self._bus = bus
+        self._fillers = list(fillers)
+        self._clock = clock
+        self._rng = rng or random.Random()
+        # One worker: the TTS engine isn't thread-safe, and late jobs bail out quickly.
+        self._pool = pool or ThreadPoolExecutor(max_workers=1, thread_name_prefix="voice-tts")
+        self._decks: dict[Hashable, list[str]] = {}
+        self._last: dict[Hashable, str] = {}
+        self._holdmaps: asyncio.Queue[HoldMap] = bus.subscribe("holdmap")
+        self._route_colour: str | None = None
+        self._lock = threading.Lock()  # makes "still current?" and starting playback one step
+        self._generation = 0  # bumped by every say/stop/debrief; older pending lines are dropped
+
+    def say(self, req: SpeakRequest) -> bool:
+        if self._clock() > req.deadline:
+            return False
+        while not self._holdmaps.empty():
+            self._route_colour = self._holdmaps.get_nowait().colour
+        values = slot_values(req.event.data, self._route_colour)
+        line = self._pick(req, values)
+        if line is None:
+            log.warning("no usable line for %s L%d %s", req.event.kind, req.level, req.mood)
+            return False
+        clips, text = stitch(line, values)
+        generation = self._supersede()
+        parts = [self._tts.cached(clip) for clip in clips]
+        if any(part is None for part in parts):
+            self._pool.submit(self._render_and_play, req, clips, text, generation)
+            return False
+        return self._play(req, parts, text, generation)
+
+    def is_speaking(self) -> bool:
+        return self._speaker.is_speaking()
+
+    def stop(self) -> None:
+        with self._lock:
+            self._generation += 1
+            self._speaker.stop()
+
+    async def debrief(
+        self, history: list[AttemptSummary], habits: dict, crux_hold: int | None
+    ) -> None:
+        """Plays the opening filler only; streaming the debrief itself is task C5."""
+        if not self._fillers:
+            return
+        filler = self._draw(("filler",), self._fillers, lambda _line: True)
+        generation = self._supersede()
+        loop = asyncio.get_running_loop()
+        audio = await loop.run_in_executor(self._pool, self._tts.synth, filler)
+        if self._start(audio, float("inf"), generation) is not None:
+            self._bus.publish("debrief_text", filler)
+
+    def warm_up(self) -> None:
+        """Load the TTS engine on the worker, so the first on-demand line can make its deadline."""
+        self._pool.submit(self._warm_up)
+
+    def close(self) -> None:
+        self._pool.shutdown(wait=False, cancel_futures=True)
+        self._speaker.close()
+
+    def _warm_up(self) -> None:
+        try:
+            self._tts.warmup()
+        except Exception:  # cached lines still work without the engine
+            log.exception("TTS warm-up failed")
+
+    def _pick(self, req: SpeakRequest, values: dict[str, str]) -> str | None:
+        """The next line from the first key with one whose slots the event can fill."""
+
+        def fillable(line: str) -> bool:
+            return set(SLOT_RE.findall(line)) <= values.keys()
+
+        for key in fallback_keys(req.event.kind, req.level, req.mood):
+            kind, level, mood = key
+            lines = self._bank.get(kind, {}).get(str(level), {}).get(mood, [])
+            if any(fillable(line) for line in lines):
+                return self._draw(key, lines, fillable)
+        return None
+
+    def _draw(self, key: Hashable, lines: list[str], usable: Callable[[str], bool]) -> str:
+        """Shuffle without replacement; a fresh deck never opens with the line just used."""
+        deck = self._decks.setdefault(key, [])
+        options = [line for line in deck if usable(line)]
+        if not options:
+            deck[:] = self._rng.sample(lines, len(lines))
+            options = [line for line in deck if usable(line)]
+        last = self._last.get(key)
+        line = next((option for option in options if option != last), options[0])
+        deck.remove(line)
+        self._last[key] = line
+        return line
+
+    def _supersede(self) -> int:
+        with self._lock:
+            self._generation += 1
+            return self._generation
+
+    def _render_and_play(
+        self, req: SpeakRequest, clips: list[str], text: str, generation: int
+    ) -> None:
+        try:
+            parts = []
+            for clip in clips:
+                if generation != self._generation or self._clock() > req.deadline:
+                    log.info("dropped %r: late or replaced before it was rendered", text)
+                    return
+                parts.append(self._tts.synth(clip))  # cached on disk even if we end up too late
+            self._play(req, parts, text, generation)
+        except Exception:  # nothing above this thread would report it
+            log.exception("on-demand synthesis failed for %r", text)
+
+    def _play(
+        self, req: SpeakRequest, parts: Sequence[np.ndarray], text: str, generation: int
+    ) -> bool:
+        t_audio_start = self._start(concat(parts), req.deadline, generation)
+        if t_audio_start is None:
+            return False
+        event = req.event
+        self._bus.publish("spoken", SpokenLine(event.t, t_audio_start, event.kind, text))
+        return True
+
+    def _start(self, audio: np.ndarray, deadline: float, generation: int) -> float | None:
+        """Start playback and return the audio start time, or None if it's late or replaced."""
+        with self._lock:
+            late = self._clock() + self._speaker.latency > deadline
+            if generation != self._generation or late:
+                return None
+            return self._speaker.play(audio)
+
+
+def make_voice(cfg: dict, bus: Bus, no_llm: bool = False, bank: dict | None = None) -> Voice:
+    """Build a Voice from the full config, as run.py does. The phrase bank must already be built.
+
+    `no_llm` is accepted for run.py and has no effect until debrief uses the LLM (task C5).
+    """
+    voice_cfg = cfg["voice"]
+    persona = yaml.safe_load(Path(voice_cfg["persona"]).read_text(encoding="utf-8"))
+    if bank is None:
+        bank = json.loads(BANK_PATH.read_text(encoding="utf-8"))
+    speaker = Speaker(device=voice_cfg.get("output_device"))
+    voice = Voice(bank, make_tts(voice_cfg, persona), speaker, bus, fillers=persona["fillers"])
+    voice.warm_up()
+    return voice
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Speak one line through the real Voice.")
+    ap.add_argument("--kind", default="feet_low")
+    ap.add_argument("--level", type=int, default=2)
+    ap.add_argument("--mood", default=NEUTRAL)
+    ap.add_argument("--line", help="say this line instead of using data/phrasebank.json")
+    args = ap.parse_args()
+
+    cfg = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+    bank = {args.kind: {str(args.level): {args.mood: [args.line]}}} if args.line else None
+    bus = Bus()
+    spoken = bus.subscribe("spoken")
+    voice = make_voice(cfg, bus, bank=bank)
+
+    now = time.monotonic()
+    data = {"limb": "LH", "hold_id": 6, "dir": "up and left", "colour": "pink"}
+    event = CoachEvent(t=now, kind=args.kind, priority=1, ttl_s=DEMO_DEADLINE_S, data=data)
+    req = SpeakRequest(event, args.level, args.mood, now + DEMO_DEADLINE_S)
+    log.info("say() returned %s after %.1f ms", voice.say(req), (time.monotonic() - now) * 1000)
+    while spoken.empty() and time.monotonic() < req.deadline:
+        time.sleep(0.02)
+    while voice.is_speaking():
+        time.sleep(0.02)
+    if spoken.empty():
+        log.warning("nothing was spoken")
+    else:
+        line = spoken.get_nowait()
+        log.info("%r started %.1f ms after the event", line.text, (line.t_audio_start - now) * 1000)
+    voice.close()
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    main()

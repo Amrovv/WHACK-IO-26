@@ -112,6 +112,11 @@ class Speaker:
             except Exception:
                 log.exception("on_finished callback failed")
 
+    @property
+    def latency(self) -> float:
+        """Seconds between play() and the audio reaching the output."""
+        return float(self._stream.latency)
+
     def play(self, samples: np.ndarray) -> float:
         """Queue `samples` (replacing any current clip). Returns estimated monotonic start time."""
         data = np.ascontiguousarray(samples, dtype=np.float32).reshape(-1)
@@ -121,7 +126,7 @@ class Speaker:
             self._fade_left = 0
             self._fade_total = 0
         # Audio reaches the DAC after the next callback plus the stream's output latency.
-        return time.monotonic() + float(self._stream.latency)
+        return time.monotonic() + self.latency
 
     def is_speaking(self) -> bool:
         with self._lock:
