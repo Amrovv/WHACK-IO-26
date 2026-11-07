@@ -1,7 +1,12 @@
+import json
+import os
+from pathlib import Path
+
 import cv2
 import numpy as np
 import pytest
 
+from coach.perception import holdmap_editor, holds
 from coach.perception.holdmap_editor import KEY_ENTER, KEY_ESC, Editor, EditorState
 from coach.perception.holds import (
     load_hold_shapes,
@@ -14,15 +19,52 @@ CFG = {
     "api_url": "https://example.invalid",
     "hue_tolerance": 12,
     "min_saturation": 60,
-    "patch_radius_px": 4,
+    "white_min_value": 210,
+    "white_max_saturation": 55,
+    "white_min_fraction": 0.15,
+    "patch_radius_px": 12,
     "morph_kernel_px": 5,
     "min_area": 0.0003,
     "max_area": 0.02,
     "split_peak_ratio": 0.75,
     "start_count": 2,
     "drag_min_px": 6,
+    "polygon_epsilon": 0.02,
 }
 W, H = 300, 200
+
+
+def test_drag_erases_touching_auto_and_manual_holds_and_undoes(tmp_path, monkeypatch):
+    auto = [
+        (20, 20, 40, 40),
+        (60, 20, 80, 40),
+        (100, 20, 120, 40),
+        (150, 20, 170, 40),
+        (48, 45, 60, 60),
+    ]
+    outlines = {
+        auto[0]: [(0, 0), (10, 0), (10, 10), (0, 10)],  # rectangle corner touches
+        auto[1]: [(-10, 20), (70, 20), (30, -20)],  # only edges cross; no vertex/corner inside
+        auto[2]: [(100, 20), (120, 20), (120, 40), (100, 40)],  # not touched
+    }
+    monkeypatch.setattr(holdmap_editor, "detect_holds", lambda image, cfg: auto)
+    monkeypatch.setattr(holdmap_editor, "detect_hold_polygons", lambda image, cfg: outlines)
+    state = EditorState(np.zeros((H, W, 3), np.uint8), CFG)
+    state.auto = auto
+    state.polygons.update({box: poly for box, poly in outlines.items()})
+    state.manual.append((5, 5, 12, 12))
+    state.polygons[(5, 5, 12, 12)] = [(5, 5), (12, 5), (12, 12), (5, 12)]
+    editor = Editor(state, "all", tmp_path)
+    assert state.auto == auto and state.polygons[auto[0]] == outlines[auto[0]]
+    assert editor.erase_mode
+    editor.on_mouse(cv2.EVENT_LBUTTONDOWN, 10, 10)
+    editor.on_mouse(cv2.EVENT_MOUSEMOVE, 55, 55)
+    editor.on_mouse(cv2.EVENT_LBUTTONUP, 55, 55)
+    assert set(state.included()) == {auto[2], auto[3]}
+    assert set(state.deleted) == {auto[0], auto[1], auto[4]}
+    state.undo()
+    assert set(state.included()) == {*auto, (5, 5, 12, 12)}
+    assert state.polygons[(5, 5, 12, 12)]
 
 
 def bgr(hue):
@@ -41,7 +83,10 @@ def image():
 
 
 @pytest.fixture
-def editor(image, tmp_path):
+def editor(image, tmp_path, monkeypatch):
+    boxes = [(50, 140, 71, 161), (70, 80, 91, 121), (90, 40, 111, 61), (190, 90, 211, 111)]
+    monkeypatch.setattr(holdmap_editor, "detect_holds", lambda _image, _cfg: boxes)
+    monkeypatch.setattr(holdmap_editor, "detect_hold_polygons", lambda _image, _cfg: {})
     return Editor(EditorState(image, CFG), "demo", root=tmp_path)
 
 
@@ -67,6 +112,100 @@ def test_first_click_picks_the_route_colour_and_finds_the_holds(editor):
     assert editor.state.colour_label() == "yellow"
 
 
+def test_default_detector_mode_filters_fake_detections_by_clicked_colour(monkeypatch):
+    image = np.full((H, W, 3), (120, 120, 120), np.uint8)
+    boxes = [(30, 30, 50, 50), (80, 30, 100, 50), (130, 30, 150, 50)]
+    colours = (bgr(28), bgr(2), (245, 245, 245))
+    polygons = {}
+    for box, colour in zip(boxes, colours, strict=True):
+        x0, y0, x1, y1 = box
+        cv2.rectangle(image, (x0, y0), (x1, y1), colour, -1)
+        polygons[box] = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    monkeypatch.setattr(holdmap_editor, "detect_holds", lambda _image, _cfg: boxes)
+    monkeypatch.setattr(holdmap_editor, "detect_hold_polygons", lambda _image, _cfg: polygons)
+
+    state = EditorState(image, CFG)
+    assert not state.detector_used
+    state.pick_colour((40, 40))
+    assert state.auto == [boxes[0]]
+    assert state.polygons[boxes[0]] == polygons[boxes[0]]
+
+
+def test_detector_failure_reports_message_and_manual_placement_still_works(monkeypatch):
+    image = np.full((H, W, 3), (120, 120, 120), np.uint8)
+    cv2.circle(image, (60, 100), 12, bgr(28), -1)
+    monkeypatch.setattr(
+        holdmap_editor,
+        "detect_holds",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+    state = EditorState(image, CFG)
+    state.pick_colour((60, 100))
+    assert not state.detector_used
+    assert not state.auto and "Roboflow unavailable" in state.message
+
+
+def test_real_climb1_yellow_detections_match_manual_map_when_available(monkeypatch):
+    json_path = os.environ.get("ROBOFLOW_JSON")
+    if not json_path or not Path(json_path).is_file():
+        pytest.skip("ROBOFLOW_JSON ground truth is unavailable")
+    data = json.loads(Path(json_path).read_text(encoding="utf-8"))["climb1_1.0s"]
+    video = Path(data["video"])
+    if not video.is_absolute():
+        video = Path.cwd() / video
+    if not video.is_file():
+        pytest.skip("Climb 1 video is unavailable")
+    frame = holds.read_frame(video, data["at"])
+    boxes = [tuple(int(v) for v in detection["box"]) for detection in data["detections"]]
+    polygons = {
+        box: [tuple(int(v) for v in point) for point in detection["polygon"]]
+        for box, detection in zip(boxes, data["detections"], strict=True)
+    }
+    monkeypatch.setattr(holds, "detect_holds", lambda _image, _cfg: boxes)
+    monkeypatch.setattr(holds, "detect_hold_polygons", lambda _image, _cfg: polygons)
+    monkeypatch.setattr(holdmap_editor, "detect_holds", lambda _image, _cfg: boxes)
+    monkeypatch.setattr(holdmap_editor, "detect_hold_polygons", lambda _image, _cfg: polygons)
+    state = EditorState(frame, CFG)
+    assert not state.detector_used
+
+    manual = [
+        (432, 243, 489, 288),
+        (429, 210, 475, 241),
+        (433, 169, 464, 206),
+        (505, 160, 541, 179),
+        (401, 128, 433, 175),
+        (352, 87, 366, 96),
+    ]
+    expected_centres = [(448, 187), (450, 230), (448, 265), (420, 150)]
+    counts, overlap_counts = [], []
+    for click_point in expected_centres:
+        state.pick_colour(click_point)
+        counts.append(len(state.auto))
+        overlaps = [any(_bbox_iou(box, truth) > 0.3 for truth in manual) for box in state.auto]
+        overlap_counts.append(sum(overlaps))
+        assert overlap_counts[-1] >= 3
+    out_dir = os.environ.get("OUT_DIR")
+    if out_dir:
+        target = Path(out_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        overlay = frame.copy()
+        for box in state.auto:
+            if box in polygons:
+                cv2.polylines(
+                    overlay, [np.asarray(polygons[box], np.int32)], True, (0, 255, 255), 2
+                )
+        cv2.imwrite(str(target / "climb1-yellow-kept.png"), overlay)
+    assert min(counts) >= 4
+
+
+def _bbox_iou(a, b):
+    ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
+    ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
+    intersection = max(0, ix1 - ix0) * max(0, iy1 - iy0)
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - intersection
+    return intersection / union if union else 0.0
+
+
 def test_click_toggles_a_box_out_and_back_in(editor):
     click(editor, 60, 150)
     click(editor, 80, 100)
@@ -77,28 +216,39 @@ def test_click_toggles_a_box_out_and_back_in(editor):
 
 def test_drag_on_empty_wall_draws_a_missing_hold_and_renumbers(editor):
     click(editor, 60, 150)
+    key(editor, "r")
     drag(editor, (150, 20), (175, 40))  # a new hold above the others
     hm = editor.state.build("demo")
-    assert len(hm.holds) == 4 and hm.mode == "manual"
+    assert len(hm.holds) == 4 and hm.mode == "detector"
     top = max(hm.holds, key=lambda h: h.id)
     assert top.center[1] == pytest.approx(30 / H)  # highest on the wall is the last id
 
 
+def test_r_toggles_plain_box_drag_before_colour_pick(editor):
+    key(editor, "r")
+    assert "plain box" in editor.state.message
+    drag(editor, (150, 20), (175, 40))
+    assert editor.state.manual == [(150, 20, 175, 40)]
+
+
 def test_clicking_a_drawn_box_removes_it(editor):
     click(editor, 60, 150)
+    key(editor, "r")
     drag(editor, (150, 20), (175, 40))
     click(editor, 160, 30)
     assert len(editor.state.included()) == 3 and editor.state.manual == []
 
 
-def test_short_drag_counts_as_a_click_and_drag_before_colour_is_ignored(editor):
-    drag(editor, (10, 10), (60, 60))  # no colour picked yet: ignored
-    assert editor.state.manual == [] and editor.state.ref_hue is None
+def test_short_drag_counts_as_a_click_and_manual_drag_is_available_before_colour(editor):
+    key(editor, "r")
+    drag(editor, (10, 10), (60, 60))
+    assert editor.state.manual == [(10, 10, 60, 60)] and editor.state.ref_hue is None
+    key(editor, "r")
     click(editor, 60, 150)
     ed = editor
     ed.on_mouse(cv2.EVENT_LBUTTONDOWN, 80, 100)
     ed.on_mouse(cv2.EVENT_LBUTTONUP, 83, 102)  # 3 px: a click, toggles the box out
-    assert len(ed.state.included()) == 2
+    assert len(ed.state.included()) == 3
 
 
 def test_s_and_t_then_click_mark_start_and_top(editor):
@@ -129,14 +279,6 @@ def test_c_repicks_the_colour(editor):
     assert len(editor.state.included()) == 1 and editor.state.colour_label() == "blue"
 
 
-def test_m_falls_back_to_colour_mode_when_the_detector_is_unavailable(editor, monkeypatch):
-    monkeypatch.delenv("ROBOFLOW_API_KEY", raising=False)
-    click(editor, 60, 150)
-    key(editor, "m")  # detector mode needs the API key
-    assert editor.state.mode == "colour" and "detector unavailable" in editor.state.message
-    assert len(editor.state.included()) == 3
-
-
 def test_enter_saves_a_loadable_holdmap_and_esc_does_not(editor, tmp_path):
     key(editor, KEY_ENTER)  # nothing to save yet
     assert not editor.done and editor.saved is None
@@ -144,7 +286,7 @@ def test_enter_saves_a_loadable_holdmap_and_esc_does_not(editor, tmp_path):
     key(editor, KEY_ENTER)
     assert editor.done and editor.saved == tmp_path / "demo.json"
     hm = load_holdmap("demo", tmp_path)
-    assert [h.id for h in hm.holds] == [1, 2, 3] and hm.colour == "yellow" and hm.mode == "colour"
+    assert [h.id for h in hm.holds] == [1, 2, 3] and hm.colour == "yellow" and hm.mode == "detector"
 
 
 def test_esc_quits_without_saving(editor, tmp_path):
@@ -181,6 +323,7 @@ def test_right_click_also_deletes_a_hold_that_was_toggled_off_and_a_drawn_one(ed
     click(editor, 80, 100)  # toggled off: dim outline still shown
     right_click(editor, 80, 100)  # now deleted outright
     assert editor.state.box_at((80, 100)) is None
+    key(editor, "r")
     drag(editor, (150, 20), (175, 40))
     right_click(editor, 160, 30)
     assert editor.state.manual == [] and len(editor.state.included()) == 2
@@ -197,6 +340,7 @@ def test_right_click_before_a_colour_is_picked_or_on_empty_wall_does_nothing(edi
 def test_u_undoes_deletes_toggles_drawn_boxes_and_marks_in_reverse_order(editor):
     click(editor, 60, 150)
     right_click(editor, 80, 100)
+    key(editor, "r")
     drag(editor, (150, 20), (175, 40))
     key(editor, "s")
     click(editor, 60, 150)
@@ -233,7 +377,10 @@ def white_wall():
 
 
 @pytest.fixture
-def white_editor(white_wall, tmp_path):
+def white_editor(white_wall, tmp_path, monkeypatch):
+    boxes = [(50, 140, 71, 161), (190, 90, 211, 111)]
+    monkeypatch.setattr(holdmap_editor, "detect_holds", lambda _image, _cfg: boxes)
+    monkeypatch.setattr(holdmap_editor, "detect_hold_polygons", lambda _image, _cfg: {})
     return Editor(EditorState(white_wall, CFG, colour="white"), "white-route", root=tmp_path)
 
 
@@ -242,17 +389,14 @@ def type_corners(ed, corners):
         click(ed, x, y)
 
 
-def test_a_click_on_a_white_hold_explains_that_n_starts_manual_mode(white_editor):
+def test_a_click_on_a_white_hold_selects_white(white_editor):
     click(white_editor, 60, 150)
-    assert not white_editor.state.ready
-    assert "press n" in white_editor.state.message
+    assert white_editor.state.ref_hue is not None
+    assert white_editor.state.colour_label() == "white"
 
 
-def test_n_allows_drawing_holds_without_a_colour(white_editor, tmp_path):
-    drag(white_editor, (50, 140), (70, 160))  # ignored: no colour and not in manual mode yet
-    assert white_editor.state.manual == []
-    key(white_editor, "n")
-    assert white_editor.state.ready and white_editor.state.ref_hue is None
+def test_manual_box_placement_works_before_a_colour_is_picked(white_editor, tmp_path):
+    key(white_editor, "r")
     drag(white_editor, (50, 140), (70, 160))
     drag(white_editor, (190, 90), (210, 110))
     assert len(white_editor.state.included()) == 2
@@ -263,9 +407,9 @@ def test_n_allows_drawing_holds_without_a_colour(white_editor, tmp_path):
     assert hm.colour == "white" and hm.mode == "manual" and len(hm.holds) == 1
 
 
-def test_p_needs_a_colour_or_manual_mode_first(white_editor):
+def test_p_polygon_mode_is_available_before_colour_pick(white_editor):
     key(white_editor, "p")
-    assert white_editor.poly is None and "press n" in white_editor.state.message
+    assert white_editor.poly == []
 
 
 SLAB = [(100, 100), (130, 100), (230, 190), (200, 190)]  # a slanted slab (pixels)

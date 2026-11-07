@@ -56,6 +56,49 @@ def point_in_polygon(p: Point, poly: Polygon) -> bool:
     return inside
 
 
+def polygon_intersects_rect(poly: Polygon, rect: tuple[float, float, float, float]) -> bool:
+    """Return whether a polygon touches an axis-aligned rectangle, including boundaries."""
+    x0, y0, x1, y1 = rect
+    corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    if any(x0 <= x <= x1 and y0 <= y <= y1 for x, y in poly):
+        return True
+    if any(point_in_polygon(corner, poly) for corner in corners):
+        return True
+
+    def orientation(a: Point, b: Point, c: Point) -> float:
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+    def on_segment(a: Point, b: Point, p: Point) -> bool:
+        return (
+            min(a[0], b[0]) <= p[0] <= max(a[0], b[0])
+            and min(a[1], b[1]) <= p[1] <= max(a[1], b[1])
+            and orientation(a, b, p) == 0
+        )
+
+    def crosses(a: Point, b: Point, c: Point, d: Point) -> bool:
+        oa, ob = orientation(a, b, c), orientation(a, b, d)
+        oc, od = orientation(c, d, a), orientation(c, d, b)
+        return (
+            (oa == 0 and on_segment(a, b, c))
+            or (ob == 0 and on_segment(a, b, d))
+            or (oc == 0 and on_segment(c, d, a))
+            or (od == 0 and on_segment(c, d, b))
+            or (oa < 0 < ob or ob < 0 < oa)
+            and (oc < 0 < od or od < 0 < oc)
+        )
+
+    rect_edges = list(zip(corners, corners[1:] + corners[:1], strict=True))
+    poly_edges = list(zip(poly, poly[1:] + poly[:1], strict=True))
+    return any(crosses(a, b, c, d) for a, b in poly_edges for c, d in rect_edges)
+
+
+def box_intersects_rect(
+    box: tuple[float, float, float, float], rect: tuple[float, float, float, float]
+) -> bool:
+    """Return whether two axis-aligned boxes overlap or touch."""
+    return box[0] <= rect[2] and box[2] >= rect[0] and box[1] <= rect[3] and box[3] >= rect[1]
+
+
 def _distance_to_segment(p: Point, a: Point, b: Point) -> float:
     ax, ay = a
     bx, by = b
