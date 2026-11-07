@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # run without installing
 
-from coach.perception.holds import load_holdmap
+from coach.perception.holds import load_holdmap_with_shapes
 from coach.perception.pose import PoseTracker, load_perception_config
 from coach.perception.serialize import state_to_line
 from coach.sources import FileSource, parse_source
@@ -46,8 +46,8 @@ def main() -> None:
     source = parse_source(args.source, fast=True)
     if not isinstance(source, FileSource):
         parser.error("record_pose needs a file: source")
-    holdmap = load_holdmap(args.problem) if args.problem else None
-    tracker = PoseTracker(load_perception_config(), holdmap=holdmap)
+    holdmap, shapes = load_holdmap_with_shapes(args.problem) if args.problem else (None, {})
+    tracker = PoseTracker(load_perception_config(), holdmap=holdmap, shapes=shapes)
     try:
         n, found = record(source, tracker, args.out)
     finally:

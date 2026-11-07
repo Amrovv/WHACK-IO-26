@@ -1,8 +1,8 @@
 """Hand-labelled left/right checks on a real clip (skipped if the pose cache isn't present).
 
 The cache is gitignored: record it with
-    uv run python scripts/record_pose.py --source file:data/footage/notalking_a1.mp4 \
-        --out data/pose_cache/notalking_a1.jsonl
+    uv run python scripts/record_pose.py --source file:data/footage/climb1_a1.mp4 \
+        --out data/pose_cache/climb1_a1.jsonl
 
 Ground truth (watched by the user): which of the climber's hands is higher.
 """
@@ -14,7 +14,7 @@ import pytest
 from coach.contracts import Limb
 from coach.perception.serialize import state_from_line
 
-CACHE = Path(__file__).resolve().parents[1] / "data" / "pose_cache" / "notalking_a1.jsonl"
+CACHE = Path(__file__).resolve().parents[1] / "data" / "pose_cache" / "climb1_a1.jsonl"
 
 # (time s, frame at 30 fps, higher hand): "the climber's right hand is higher", y smaller = higher
 RIGHT_HAND_HIGHER = [(14.5, 435), (17.93, 538), (18.17, 545)]

@@ -1,8 +1,8 @@
-"""Hand-labelled limb/hold contacts and hand heights on notalking_a1 (skipped if data is missing).
+"""Hand-labelled limb/hold contacts and hand heights on climb1_a1 (skipped if data is missing).
 
 Needs, all gitignored:
   data/holdmaps/test..json                  the 6-hold map built in the editor (problem id "test.")
-  data/pose_cache/notalking_a1.test.jsonl   pose states recorded with that map
+  data/pose_cache/climb1_a1.test.jsonl   pose states recorded with that map
 
 Labels come from the user watching the clip at 30 fps (frame = seconds x 30). Hold ids:
 1 = S1, 2 = S2 (the two lowest yellow holds), 3 and 5 = the next yellow holds, 4 = the
@@ -24,7 +24,7 @@ from coach.perception.holds import holdmap_path, load_holdmap
 from coach.perception.pose import load_perception_config
 from coach.perception.serialize import state_from_line
 
-CACHE = Path(__file__).resolve().parents[1] / "data" / "pose_cache" / "notalking_a1.test.jsonl"
+CACHE = Path(__file__).resolve().parents[1] / "data" / "pose_cache" / "climb1_a1.test.jsonl"
 PROBLEM = "test."
 LH, RH, LF, RF = Limb.LH, Limb.RH, Limb.LF, Limb.RF
 

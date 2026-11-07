@@ -1,10 +1,12 @@
 """Which hold is each hand/foot on?
 
-A limb is ON a hold when its point is inside the hold's box expanded by
+A limb is ON a hold when its point is inside the hold's shape expanded by
 `contact_margin x arm_length` AND the limb has been nearly still for `contact_settle_ms`.
-It is released only once it leaves a bigger box (`contact_release_ratio` x that margin), so
-jitter at the edge doesn't flicker. If two holds qualify, the nearest centre wins. A limb whose
-landmarks are not visible enough has no contact.
+The shape is the hold's polygon if it has one (diagonal holds), otherwise its box. It is
+released only once the point leaves a bigger zone (`contact_release_ratio` x that margin), so
+jitter at the edge doesn't flicker. If two holds qualify, the one the point is closest to wins
+(0 if it is on the shape itself), then the nearest centre. A limb whose landmarks are not
+visible enough has no contact.
 
 All coordinates are normalised 0-1 (y down); times come from `state.t`, never the wall clock.
 """
@@ -16,6 +18,7 @@ from collections import deque
 from statistics import median
 
 from coach.contracts import ClimberState, Hold, HoldMap, Limb, Point
+from coach.perception.shapes import Polygon, distance_to_polygon
 
 log = logging.getLogger(__name__)
 
@@ -41,9 +44,18 @@ def _inside(p: Point, bbox: tuple[float, float, float, float], margin: float) ->
     return x0 - margin <= p[0] <= x1 + margin and y0 - margin <= p[1] <= y1 + margin
 
 
+def _distance_to_box(p: Point, bbox: tuple[float, float, float, float]) -> float:
+    """0 if the point is inside the box, otherwise the distance to it."""
+    x0, y0, x1, y1 = bbox
+    return _dist(p, (min(max(p[0], x0), x1), min(max(p[1], y0), y1)))
+
+
 class ContactTracker:
-    def __init__(self, cfg: dict, holdmap: HoldMap) -> None:
+    def __init__(
+        self, cfg: dict, holdmap: HoldMap, shapes: dict[int, Polygon] | None = None
+    ) -> None:
         self._cfg = cfg
+        self._shapes = shapes or {}  # hold id -> polygon (diagonal holds only)
         self._holds: list[Hold] = holdmap.holds
         self._by_id = {h.id: h for h in self._holds}
         self._arm_samples: deque[float] = deque(maxlen=cfg["arm_length_frames"])
@@ -99,7 +111,7 @@ class ContactTracker:
             self._low_vis[limb] = 0
             self._update_stillness(limb, state.t, point)
             held = self._by_id.get(self._on[limb]) if self._on[limb] is not None else None
-            if held is not None and _inside(point, held.bbox, release_margin):
+            if held is not None and self._reach(held, point, release_margin) is not None:
                 contacts[limb] = held.id  # hysteresis: stay on until clearly outside
                 continue
             self._on[limb] = None
@@ -127,8 +139,21 @@ class ContactTracker:
         elif self._still_since[limb] is None:
             self._still_since[limb] = t
 
-    def _nearest_hold(self, point: Point, margin: float) -> int | None:
-        candidates = [h for h in self._holds if _inside(point, h.bbox, margin)]
-        if not candidates:
+    def _reach(self, hold: Hold, point: Point, margin: float) -> float | None:
+        """How far the point is from the hold's shape (0 = on it), or None if it is further than
+        `margin`. A polygon is measured with real distance; a plain box keeps the square margin."""
+        shape = self._shapes.get(hold.id)
+        if shape is not None:
+            d = distance_to_polygon(point, shape)
+            return d if d <= margin else None
+        if not _inside(point, hold.bbox, margin):
             return None
-        return min(candidates, key=lambda h: _dist(point, h.center)).id
+        return _distance_to_box(point, hold.bbox)
+
+    def _nearest_hold(self, point: Point, margin: float) -> int | None:
+        reached = []
+        for hold in self._holds:
+            d = self._reach(hold, point, margin)
+            if d is not None:
+                reached.append((d, _dist(point, hold.center), hold.id))
+        return min(reached)[2] if reached else None

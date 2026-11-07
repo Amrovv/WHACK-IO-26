@@ -22,7 +22,7 @@ import numpy as np
 
 from coach.contracts import ClimberState, HoldMap, Limb
 from coach.perception.contacts import ContactTracker
-from coach.perception.holds import load_holdmap
+from coach.perception.holds import load_holdmap_with_shapes
 from coach.perception.pose import draw_overlay, load_perception_config
 from coach.perception.serialize import state_from_line
 
@@ -98,9 +98,11 @@ def contact_text(state: ClimberState) -> str:
     )
 
 
-def recompute_contacts(states: list[ClimberState], holdmap: HoldMap) -> None:
+def recompute_contacts(
+    states: list[ClimberState], holdmap: HoldMap, shapes: dict | None = None
+) -> None:
     """Fill each state's contacts using the current config (run in order, like live)."""
-    tracker = ContactTracker(load_perception_config(), holdmap)
+    tracker = ContactTracker(load_perception_config(), holdmap, shapes)
     for s in states:
         s.contacts = tracker.update(s)
 
@@ -110,9 +112,13 @@ def load_states(cache: Path) -> list[ClimberState]:
 
 
 def render(
-    frame: np.ndarray, state: ClimberState, holdmap: HoldMap | None, fps: float
+    frame: np.ndarray,
+    state: ClimberState,
+    holdmap: HoldMap | None,
+    fps: float,
+    shapes: dict | None = None,
 ) -> np.ndarray:
-    out = draw_overlay(frame.copy(), state, state.frame_idx / fps, holdmap)
+    out = draw_overlay(frame.copy(), state, state.frame_idx / fps, holdmap, shapes)
     if holdmap is not None and state.person_found:
         cv2.putText(
             out, contact_text(state), (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2
@@ -120,7 +126,9 @@ def render(
     return out
 
 
-def run(video: Path, states: list[ClimberState], holdmap: HoldMap | None) -> None:
+def run(
+    video: Path, states: list[ClimberState], holdmap: HoldMap | None, shapes: dict | None = None
+) -> None:
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
         raise FileNotFoundError(f"cannot open video: {video}")
@@ -152,7 +160,7 @@ def run(video: Path, states: list[ClimberState], holdmap: HoldMap | None) -> Non
                 cv2.setTrackbarPos("frame", win, rv.idx)
                 syncing = False
             state = states[rv.idx]
-            cv2.imshow(win, render(frame, state, holdmap, fps))
+            cv2.imshow(win, render(frame, state, holdmap, fps, shapes))
             code = cv2.waitKeyEx(1 if rv.paused else max(int(1000 / fps), 1))
             rv.on_key(key_name(code))
             rv.tick()
@@ -170,11 +178,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     states = load_states(Path(args.cache))
-    holdmap = load_holdmap(args.problem) if args.problem else None
+    holdmap, shapes = load_holdmap_with_shapes(args.problem) if args.problem else (None, {})
     if holdmap is not None:
-        recompute_contacts(states, holdmap)
+        recompute_contacts(states, holdmap, shapes)
     log.info("%d frames loaded. Keys: space pause · a/d step · w/s ±1 s · q quit", len(states))
-    run(Path(args.video), states, holdmap)
+    run(Path(args.video), states, holdmap, shapes)
 
 
 if __name__ == "__main__":

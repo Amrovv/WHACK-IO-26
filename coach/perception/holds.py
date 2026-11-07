@@ -28,10 +28,13 @@ import numpy as np
 
 from coach.contracts import Hold, HoldMap
 from coach.perception.config import REPO_ROOT, load_config
+from coach.perception.shapes import polygon_centroid
 
 log = logging.getLogger(__name__)
 
 Box = tuple[int, int, int, int]  # x0, y0, x1, y1 in pixels
+PixelPolygon = list[tuple[int, int]]  # a diagonal hold's outline, in pixels
+Shapes = dict[int, list[tuple[float, float]]]  # hold id -> normalised polygon
 HUE_RANGE = 180
 
 # Spoken colour names by OpenCV hue (upper bound exclusive). Wraps: hues >= 170 are red again.
@@ -210,7 +213,7 @@ def detect_holds(image_bgr: np.ndarray, cfg: dict) -> list[Box]:
     return boxes
 
 
-def build_holdmap(
+def build_holdmap_with_shapes(
     problem_id: str,
     colour: str,
     boxes: list[Box],
@@ -219,13 +222,21 @@ def build_holdmap(
     cfg: dict,
     start_boxes: set[Box] | None = None,
     top_boxes: set[Box] | None = None,
-) -> HoldMap:
+    polygons: dict[Box, PixelPolygon] | None = None,
+) -> tuple[HoldMap, Shapes]:
     """Number holds bottom (1) to top (N); mark the lowest `start_count` as start, highest as top.
     Coordinates are normalised 0-1, origin top-left, y down. `image_size` is (width, height).
-    `start_boxes` / `top_boxes` (from the editor) replace the automatic start/top choice."""
+    `start_boxes` / `top_boxes` (from the editor) replace the automatic start/top choice.
+
+    A diagonal hold is given as its axis-aligned box (its bounding box, which is what the shared
+    HoldMap contract carries) plus an entry in `polygons[box]` with its real outline. The result
+    is the HoldMap and a `Shapes` dict {hold id: normalised polygon} for the polygon holds only.
+    """
     w, h = image_size
+    polygons = polygons or {}
     ordered = sorted(boxes, key=lambda b: (b[1] + b[3]) / 2, reverse=True)  # lowest first
     holds = []
+    shapes: Shapes = {}
     for i, (x0, y0, x1, y1) in enumerate(ordered, start=1):
         box = (x0, y0, x1, y1)
         if start_boxes or top_boxes:  # manual roles win over the automatic ones
@@ -242,62 +253,106 @@ def build_holdmap(
             role = "start"
         else:
             role = "mid"
-        holds.append(
-            Hold(
-                id=i,
-                center=((x0 + x1) / 2 / w, (y0 + y1) / 2 / h),
-                bbox=(x0 / w, y0 / h, x1 / w, y1 / h),
-                role=role,
-            )
-        )
-    return HoldMap(
+        center = ((x0 + x1) / 2 / w, (y0 + y1) / 2 / h)
+        if box in polygons:
+            shapes[i] = [(px / w, py / h) for px, py in polygons[box]]
+            center = polygon_centroid(shapes[i])
+        holds.append(Hold(id=i, center=center, bbox=(x0 / w, y0 / h, x1 / w, y1 / h), role=role))
+    holdmap = HoldMap(
         problem_id=problem_id, colour=colour, holds=holds, image_size=image_size, mode=mode
     )
+    return holdmap, shapes
+
+
+def build_holdmap(
+    problem_id: str,
+    colour: str,
+    boxes: list[Box],
+    image_size: tuple[int, int],
+    mode: str,
+    cfg: dict,
+    start_boxes: set[Box] | None = None,
+    top_boxes: set[Box] | None = None,
+) -> HoldMap:
+    """Boxes only (see `build_holdmap_with_shapes` for diagonal holds)."""
+    return build_holdmap_with_shapes(
+        problem_id, colour, boxes, image_size, mode, cfg, start_boxes, top_boxes
+    )[0]
 
 
 def holdmap_path(problem_id: str, root: str | Path | None = None) -> Path:
     return Path(root or REPO_ROOT / "data" / "holdmaps") / f"{problem_id}.json"
 
 
-def save_holdmap(holdmap: HoldMap, root: str | Path | None = None) -> Path:
+def save_holdmap(
+    holdmap: HoldMap, root: str | Path | None = None, shapes: Shapes | None = None
+) -> Path:
+    """Write the map as JSON. `shapes` adds an optional "polygon" to the holds that have one;
+    the shared fields (id, center, bbox, role) are the same as for a map without shapes."""
     path = holdmap_path(holdmap.problem_id, root)
     path.parent.mkdir(parents=True, exist_ok=True)
+    shapes = shapes or {}
+    holds = []
+    for h in holdmap.holds:
+        entry = {"id": h.id, "center": list(h.center), "bbox": list(h.bbox), "role": h.role}
+        if h.id in shapes:
+            entry["polygon"] = [list(pt) for pt in shapes[h.id]]
+        holds.append(entry)
     data = {
         "problem_id": holdmap.problem_id,
         "colour": holdmap.colour,
         "image_size": list(holdmap.image_size),
         "mode": holdmap.mode,
-        "holds": [
-            {"id": h.id, "center": list(h.center), "bbox": list(h.bbox), "role": h.role}
-            for h in holdmap.holds
-        ],
+        "holds": holds,
     }
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return path
 
 
 def load_holdmap(problem_id: str, root: str | Path | None = None) -> HoldMap:
+    return load_holdmap_with_shapes(problem_id, root)[0]
+
+
+def load_hold_shapes(problem_id: str, root: str | Path | None = None) -> Shapes:
+    """Polygons of the diagonal holds (empty for a map made of plain boxes)."""
+    return load_holdmap_with_shapes(problem_id, root)[1]
+
+
+def load_holdmap_with_shapes(
+    problem_id: str, root: str | Path | None = None
+) -> tuple[HoldMap, Shapes]:
     d = json.loads(holdmap_path(problem_id, root).read_text(encoding="utf-8"))
     holds = [
         Hold(id=h["id"], center=tuple(h["center"]), bbox=tuple(h["bbox"]), role=h["role"])
         for h in d["holds"]
     ]
-    return HoldMap(
+    shapes: Shapes = {
+        h["id"]: [tuple(pt) for pt in h["polygon"]] for h in d["holds"] if "polygon" in h
+    }
+    holdmap = HoldMap(
         problem_id=d["problem_id"],
         colour=d["colour"],
         holds=holds,
         image_size=tuple(d["image_size"]),
         mode=d["mode"],
     )
+    return holdmap, shapes
 
 
-def draw_holds(image_bgr: np.ndarray, holdmap: HoldMap) -> np.ndarray:
+def draw_holds(image_bgr: np.ndarray, holdmap: HoldMap, shapes: Shapes | None = None) -> np.ndarray:
+    """Draw every hold with its id: its outline if it has a polygon, otherwise its box."""
     h, w = image_bgr.shape[:2]
+    shapes = shapes or {}
     out = image_bgr.copy()
     for hold in holdmap.holds:
-        x0, y0, x1, y1 = (int(v * s) for v, s in zip(hold.bbox, (w, h, w, h), strict=True))
         colour = {"start": (0, 255, 0), "top": (0, 0, 255)}.get(hold.role, (255, 255, 0))
-        cv2.rectangle(out, (x0, y0), (x1, y1), colour, 2)
+        if hold.id in shapes:
+            pts = np.array([(round(x * w), round(y * h)) for x, y in shapes[hold.id]], np.int32)
+            cv2.polylines(out, [pts], True, colour, 2)
+            x0, y0 = int(pts[:, 0].min()), int(pts[:, 1].min())
+        else:
+            x0, y0, x1, y1 = (int(v * k) for v, k in zip(hold.bbox, (w, h, w, h), strict=True))
+            cv2.rectangle(out, (x0, y0), (x1, y1), colour, 2)
         cv2.putText(
             out, str(hold.id), (x0, max(y0 - 4, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2
         )

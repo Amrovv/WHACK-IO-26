@@ -196,10 +196,14 @@ class PoseTracker:
     """Frame in, ClimberState out. Stateful: smoothing, L/R stabilising, timestamps."""
 
     def __init__(
-        self, cfg: dict, detector: Detector | None = None, holdmap: HoldMap | None = None
+        self,
+        cfg: dict,
+        detector: Detector | None = None,
+        holdmap: HoldMap | None = None,
+        shapes: dict | None = None,
     ) -> None:
         self._detector = detector or MediapipeDetector(cfg)
-        self._contacts = ContactTracker(cfg, holdmap) if holdmap else None
+        self._contacts = ContactTracker(cfg, holdmap, shapes) if holdmap else None
         eu = cfg["one_euro"]
         self._stabilizer = LeftRightStabilizer(cfg["lr_swap_frames"], cfg["lr_min_x_gap"])
         self._filters = {limb: OneEuroPoint(**eu) for limb in Limb}
@@ -304,14 +308,22 @@ class PoseTracker:
             close()
 
 
+def _poly_px(poly, w: int, h: int) -> np.ndarray:
+    """Normalised polygon -> pixel points in the shape cv2.polylines wants."""
+    return np.array([(round(x * w), round(y * h)) for x, y in poly], np.int32)
+
+
 def draw_overlay(
     frame: np.ndarray,
     state: ClimberState,
     video_t: float | None = None,
     holdmap: HoldMap | None = None,
+    shapes: dict | None = None,
 ) -> np.ndarray:
     """Draw skeleton, limb dots and a frame/time label. `video_t` is seconds into the clip
-    (defaults to state.t, which is video time for pose-cache states)."""
+    (defaults to state.t, which is video time for pose-cache states). With a hold map the
+    holds are drawn too (a diagonal hold by its polygon) and each limb's hold is highlighted."""
+    shapes = shapes or {}
     h, w = frame.shape[:2]
 
     def px(p) -> tuple[int, int]:
@@ -329,7 +341,10 @@ def draw_overlay(
     if holdmap is not None:
         for hold in holdmap.holds:
             x0, y0, x1, y1 = (int(v * k) for v, k in zip(hold.bbox, (w, h, w, h), strict=True))
-            cv2.rectangle(frame, (x0, y0), (x1, y1), (160, 160, 160), 1)
+            if hold.id in shapes:
+                cv2.polylines(frame, [_poly_px(shapes[hold.id], w, h)], True, (160, 160, 160), 1)
+            else:
+                cv2.rectangle(frame, (x0, y0), (x1, y1), (160, 160, 160), 1)
             cv2.putText(
                 frame,
                 str(hold.id),
@@ -341,7 +356,9 @@ def draw_overlay(
             )
         by_id = {hold.id: hold for hold in holdmap.holds}
         for limb, hold_id in state.contacts.items():  # highlight each limb's hold in its colour
-            if hold_id in by_id:
+            if hold_id in shapes:
+                cv2.polylines(frame, [_poly_px(shapes[hold_id], w, h)], True, LIMB_COLOURS[limb], 3)
+            elif hold_id in by_id:
                 x0, y0, x1, y1 = (
                     int(v * k) for v, k in zip(by_id[hold_id].bbox, (w, h, w, h), strict=True)
                 )
@@ -368,10 +385,10 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    from coach.perception.holds import load_holdmap
+    from coach.perception.holds import load_holdmap_with_shapes
 
-    holdmap = load_holdmap(args.problem) if args.problem else None
-    tracker = PoseTracker(load_perception_config(), holdmap=holdmap)
+    holdmap, shapes = load_holdmap_with_shapes(args.problem) if args.problem else (None, {})
+    tracker = PoseTracker(load_perception_config(), holdmap=holdmap, shapes=shapes)
     source = parse_source(args.source)
     fps = getattr(source, "fps", None)  # file sources know their fps
     t_first = time.monotonic()
@@ -389,7 +406,7 @@ def main() -> None:
                 )
             if not args.no_window:
                 video_t = idx / fps if fps else t - t_first
-                cv2.imshow("pose", draw_overlay(frame, state, video_t, holdmap))
+                cv2.imshow("pose", draw_overlay(frame, state, video_t, holdmap, shapes))
                 if cv2.waitKey(1) & 0xFF in (27, ord("q")):
                     break
     except KeyboardInterrupt:

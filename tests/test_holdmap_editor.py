@@ -3,7 +3,11 @@ import numpy as np
 import pytest
 
 from coach.perception.holdmap_editor import KEY_ENTER, KEY_ESC, Editor, EditorState
-from coach.perception.holds import load_holdmap
+from coach.perception.holds import (
+    load_hold_shapes,
+    load_holdmap,
+    load_holdmap_with_shapes,
+)
 
 CFG = {
     "detector_model": "fake/1",
@@ -214,3 +218,198 @@ def test_changing_colour_resets_undo_history(editor):
     click(editor, 200, 100)  # re-pick: automatic boxes changed
     key(editor, "u")
     assert "nothing to undo" in editor.state.message
+
+
+# ---- manual mode (white holds) and polygon holds ---------------------------------------------
+
+
+@pytest.fixture
+def white_wall():
+    """Grey wall with white holds: no saturation, so the colour tool can not find them."""
+    img = np.full((H, W, 3), (120, 120, 120), np.uint8)
+    cv2.circle(img, (60, 150), 10, (240, 240, 240), -1)
+    cv2.circle(img, (200, 100), 10, (240, 240, 240), -1)
+    return img
+
+
+@pytest.fixture
+def white_editor(white_wall, tmp_path):
+    return Editor(EditorState(white_wall, CFG, colour="white"), "white-route", root=tmp_path)
+
+
+def type_corners(ed, corners):
+    for x, y in corners:
+        click(ed, x, y)
+
+
+def test_a_click_on_a_white_hold_explains_that_n_starts_manual_mode(white_editor):
+    click(white_editor, 60, 150)
+    assert not white_editor.state.ready
+    assert "press n" in white_editor.state.message
+
+
+def test_n_allows_drawing_holds_without_a_colour(white_editor, tmp_path):
+    drag(white_editor, (50, 140), (70, 160))  # ignored: no colour and not in manual mode yet
+    assert white_editor.state.manual == []
+    key(white_editor, "n")
+    assert white_editor.state.ready and white_editor.state.ref_hue is None
+    drag(white_editor, (50, 140), (70, 160))
+    drag(white_editor, (190, 90), (210, 110))
+    assert len(white_editor.state.included()) == 2
+    right_click(white_editor, 60, 150)
+    assert len(white_editor.state.included()) == 1
+    key(white_editor, KEY_ENTER)
+    hm = load_holdmap("white-route", tmp_path)
+    assert hm.colour == "white" and hm.mode == "manual" and len(hm.holds) == 1
+
+
+def test_p_needs_a_colour_or_manual_mode_first(white_editor):
+    key(white_editor, "p")
+    assert white_editor.poly is None and "press n" in white_editor.state.message
+
+
+SLAB = [(100, 100), (130, 100), (230, 190), (200, 190)]  # a slanted slab (pixels)
+SLAB_B = [(160, 100), (190, 100), (290, 190), (260, 190)]  # parallel: bounding boxes overlap
+
+
+def test_polygon_mode_adds_a_diagonal_hold_with_a_bbox_and_saves_its_shape(white_editor, tmp_path):
+    key(white_editor, "n")
+    key(white_editor, "p")
+    assert white_editor.poly == []
+    type_corners(white_editor, SLAB)
+    assert len(white_editor.poly) == 4
+    key(white_editor, KEY_ENTER)  # closes the polygon; it does NOT save or quit
+    assert white_editor.poly is None and not white_editor.done and white_editor.saved is None
+    hm, shapes = white_editor.state.build_with_shapes("white-route")
+    assert len(hm.holds) == 1 and len(shapes[1]) == 4
+    assert hm.holds[0].bbox == pytest.approx((100 / W, 100 / H, 230 / W, 190 / H))
+    key(white_editor, KEY_ENTER)  # now it saves
+    assert white_editor.saved is not None
+    back, back_shapes = load_holdmap_with_shapes("white-route", tmp_path)
+    assert back == hm and len(back_shapes[1]) == 4
+    assert load_hold_shapes("white-route", tmp_path)[1][0] == pytest.approx((100 / W, 100 / H))
+
+
+def test_esc_cancels_a_polygon_without_quitting_and_p_also_closes_it(white_editor):
+    key(white_editor, "n")
+    key(white_editor, "p")
+    type_corners(white_editor, SLAB[:3])
+    key(white_editor, KEY_ESC)
+    assert white_editor.poly is None and not white_editor.done
+    assert white_editor.state.manual == []
+    key(white_editor, "p")
+    type_corners(white_editor, SLAB)
+    key(white_editor, "p")  # p again closes it, like Enter
+    assert white_editor.poly is None and len(white_editor.state.manual) == 1
+
+
+def test_right_click_removes_the_last_corner_and_then_leaves_polygon_mode(white_editor):
+    key(white_editor, "n")
+    key(white_editor, "p")
+    type_corners(white_editor, SLAB[:3])
+    right_click(white_editor, 0, 0)
+    assert white_editor.poly == SLAB[:2]
+    right_click(white_editor, 0, 0)
+    right_click(white_editor, 0, 0)
+    assert white_editor.poly == []
+    right_click(white_editor, 0, 0)  # none left: leave polygon mode
+    assert white_editor.poly is None
+
+
+def test_a_polygon_needs_three_corners_that_are_not_in_a_line(white_editor):
+    key(white_editor, "n")
+    key(white_editor, "p")
+    type_corners(white_editor, SLAB[:2])
+    key(white_editor, KEY_ENTER)  # only 2 corners: stays in polygon mode
+    assert white_editor.poly is not None and "at least 3" in white_editor.state.message
+    type_corners(white_editor, [(160, 100)])  # a third corner on the same horizontal line
+    key(white_editor, KEY_ENTER)
+    assert white_editor.state.manual == [] and "not in a line" in white_editor.state.message
+    assert white_editor.poly is not None  # still drawing: fix a corner and try again
+
+
+def test_clicks_pick_the_hold_the_point_is_on_not_the_one_whose_box_is_smaller(white_editor):
+    key(white_editor, "n")
+    for slab in (SLAB, SLAB_B):
+        key(white_editor, "p")
+        type_corners(white_editor, slab)
+        key(white_editor, KEY_ENTER)
+    st = white_editor.state
+    on_a = (205, 180)  # on slab A's body; inside slab B's bounding box (x 160-290, y 100-190)
+    assert st.box_at(on_a) is not None
+    owner = st.box_at(on_a)
+    assert st.polygons[owner] == SLAB
+    assert st.box_at((115, 180)) is None  # empty corner of A's box, nothing there
+    right_click(white_editor, *on_a)  # delete slab A only
+    assert len(st.included()) == 1 and st.polygons[st.manual[0]][0] == (160, 100)
+
+
+def test_undo_restores_a_deleted_polygon_with_its_shape(white_editor):
+    key(white_editor, "n")
+    key(white_editor, "p")
+    type_corners(white_editor, SLAB)
+    key(white_editor, KEY_ENTER)
+    right_click(white_editor, 205, 180)
+    assert white_editor.state.included() == []
+    key(white_editor, "u")
+    assert len(white_editor.state.included()) == 1 and len(white_editor.state.polygons) == 1
+    key(white_editor, "u")  # undo the polygon itself
+    assert white_editor.state.included() == [] and white_editor.state.polygons == {}
+
+
+def test_s_and_t_marks_work_on_polygon_holds(white_editor):
+    key(white_editor, "n")
+    for slab in (SLAB, SLAB_B):
+        key(white_editor, "p")
+        type_corners(white_editor, slab)
+        key(white_editor, KEY_ENTER)
+    key(white_editor, "s")
+    click(white_editor, 205, 180)  # slab A
+    hm = white_editor.state.build("white-route")
+    roles = {
+        tuple(round(v * k) for v, k in zip(h.bbox, (W, H, W, H), strict=True)): h.role
+        for h in hm.holds
+    }
+    assert roles[(100, 100, 230, 190)] == "start"
+
+
+def test_render_draws_polygons_and_the_polygon_in_progress(white_editor, white_wall):
+    key(white_editor, "n")
+    key(white_editor, "p")
+    type_corners(white_editor, SLAB)
+    key(white_editor, KEY_ENTER)
+    key(white_editor, "p")
+    type_corners(white_editor, SLAB_B[:3])  # in progress
+    out = white_editor.render()
+    h, w = white_wall.shape[:2]
+    assert out.shape[1] == w and out.shape[0] > h  # the help bar is added below
+    drawn = (out[:h] != white_wall).any(axis=2)
+    # slab A's slanted left edge runs (100,100) -> (200,190): (150,145) is on it
+    assert drawn[143:148, 148:153].any()
+    # a corner of slab A's bounding box, far from the slab, stays untouched wall
+    assert not drawn[185:189, 103:108].any()
+
+
+def test_edit_loads_a_saved_map_with_polygons_and_roles_and_saves_it_back(white_editor, tmp_path):
+    key(white_editor, "n")
+    for slab in (SLAB, SLAB_B):
+        key(white_editor, "p")
+        type_corners(white_editor, slab)
+        key(white_editor, KEY_ENTER)
+    drag(white_editor, (10, 10), (40, 40))  # a plain box too
+    key(white_editor, "t")
+    click(white_editor, 275, 180)  # mark slab B as top
+    key(white_editor, KEY_ENTER)
+    first, first_shapes = load_holdmap_with_shapes("white-route", tmp_path)
+
+    state = EditorState(white_editor.state.image.copy(), CFG)
+    state.load_existing(first, first_shapes)
+    again = Editor(state, "white-route2", root=tmp_path)
+    assert len(state.included()) == 3 and len(state.polygons) == 2
+    key(again, KEY_ENTER)
+    second, second_shapes = load_holdmap_with_shapes("white-route2", tmp_path)
+    flat = lambda m: [v for h in m.holds for v in h.bbox]  # noqa: E731
+    assert flat(second) == pytest.approx(flat(first))
+    assert [h.role for h in second.holds] == [h.role for h in first.holds]
+    assert set(second_shapes) == set(first_shapes)
+    assert second.colour == "white"
