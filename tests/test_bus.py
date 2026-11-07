@@ -63,7 +63,9 @@ def test_publish_with_no_subscribers_is_a_noop():
     "payload",
     [
         Hold(id=1, center=(0.1, 0.9), bbox=(0.05, 0.85, 0.15, 0.95), role="start"),
-        HoldMap(problem_id="pink-v3", colour="pink", holds=[], image_size=(1920, 1080), mode="detector"),
+        HoldMap(
+            problem_id="pink-v3", colour="pink", holds=[], image_size=(1920, 1080), mode="detector"
+        ),
         ClimberState(
             t=12.3,
             frame_idx=42,
@@ -96,7 +98,9 @@ def test_publish_with_no_subscribers_is_a_noop():
             cues_followed=["feet_low"],
         ),
         SpokenLine(t_event=1.0, t_audio_start=1.05, kind="stalling", text="Move."),
-        Suppressed(event=CoachEvent(t=1.0, kind="arms_bent", priority=1, ttl_s=1.2), reason="cooldown"),
+        Suppressed(
+            event=CoachEvent(t=1.0, kind="arms_bent", priority=1, ttl_s=1.2), reason="cooldown"
+        ),
     ],
 )
 def test_to_jsonable_round_trips_through_json(payload):

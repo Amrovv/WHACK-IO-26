@@ -31,3 +31,9 @@ AGENTS.md
 # Local test videos for offline use; the folder is kept, its contents are not.
 videos/*
 !videos/.gitkeep
+CONTRIBUTING.md
+DELEGATION.md
+
+# Per-stage design explanations (local notes, worker-generated)
+design-stages-exp/
+
