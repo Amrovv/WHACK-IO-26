@@ -198,6 +198,7 @@ class Voice:
             speech.put_nowait(self._draw(("filler",), self._fillers, lambda _line: True))
         async with asyncio.TaskGroup() as group:
             group.create_task(self._speak_queue(speech, generation))
+            await asyncio.sleep(0)  # let the filler start before the LLM call can race a cut
             if not await self._stream_llm(payload, speech):
                 for sentence in template_sentences(payload):
                     speech.put_nowait(sentence)
