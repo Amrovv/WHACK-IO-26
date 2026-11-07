@@ -391,6 +391,8 @@ def main() -> None:
     tracker = PoseTracker(load_perception_config(), holdmap=holdmap, shapes=shapes)
     source = parse_source(args.source)
     fps = getattr(source, "fps", None)  # file sources know their fps
+    if not args.no_window:
+        cv2.namedWindow("pose", cv2.WINDOW_NORMAL)  # resizable
     t_first = time.monotonic()
     n, found, t_start = 0, 0, t_first
     try:

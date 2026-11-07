@@ -90,6 +90,8 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     source = parse_source(args.source)
+    if not args.no_window:
+        cv2.namedWindow("source", cv2.WINDOW_NORMAL)  # resizable
     count, t_start, t_last = 0, None, None
     try:
         for t, idx, frame in source:

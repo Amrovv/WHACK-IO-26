@@ -136,7 +136,7 @@ def run(
     n = min(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), len(states))
     rv = Reviewer(n, fps)
     win = "review"
-    cv2.namedWindow(win)
+    cv2.namedWindow(win, cv2.WINDOW_NORMAL)  # resizable
     syncing = False
 
     def on_slider(pos: int) -> None:

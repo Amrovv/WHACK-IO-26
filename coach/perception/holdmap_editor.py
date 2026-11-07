@@ -442,7 +442,7 @@ class Editor:
         return np.vstack([canvas, bar])
 
     def run(self) -> Path | None:
-        cv2.namedWindow("holdmap")
+        cv2.namedWindow("holdmap", cv2.WINDOW_NORMAL)  # resizable
         cv2.setMouseCallback("holdmap", lambda ev, x, y, *_: self.on_mouse(ev, x, y))
         try:
             while not self.done:
