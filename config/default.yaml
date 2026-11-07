@@ -50,6 +50,46 @@ brain:
   weight_shift_ratio: 0.25  # sideways hip-to-foot gap / leg length
   on_wall_margin: 0.15      # hip rise above standing height / leg length
 
+  # Features + attempts (B3)
+  move_speed_eps: 0.02      # normalised units/s; below this a limb/hip counts as static
+  on_wall_settle_s: 0.5     # hip must stay raised this long to confirm ON_WALL
+  top_hold_s: 1.0           # both hands on the top hold this long = top
+  fall_speed: 0.6           # downward hip velocity (norm units/s) above this = falling
+  ground_settle_s: 1.0      # back on the ground this long before the attempt is closed
+
+  # Detectors (B4)
+  cue_mute_after_fall_s: 1.0        # suppress all cue detectors this long after a fall
+  cue_mute_hip_speed: 0.6           # suppress cue detectors while hip speed exceeds this
+  next_hold_distance_penalty: 0.5   # weight on distance when scoring HandSearching's next hold
+
+  # Good-tier detectors (B6)
+  quiet_feet_window_s: 1.0          # foot leaves and re-touches the same hold within this = fidgety
+  feet_cut_ms: 300                  # both feet off while both hands on, longer than this = feet cut
+
+  # Memory + compliance (B5)
+  compliance_window_s: 3.0          # watch this long after a cue for the expected change
+  compliance_progress_s: 5.0        # a followed cue + new higher hold within this = told_you_so
+  arms_bent_comply_margin_deg: 10   # elbows must exceed arms_bent_deg + this to count as complied
+  feet_low_comply_rise_ratio: 0.3   # lowest foot must rise this * leg_length to count as complied
+  mood_impressed_rate: 0.6          # compliance rate over last 2 attempts above this = impressed
+  mood_exasperated_attempts: 3      # same habit firing in this many attempts = exasperated
+
+  priorities:               # event kind -> arbiter priority (0 big moment, 1 cue, 2 banter)
+    attempt_start: 2
+    hand_searching: 1
+    feet_low: 1
+    arms_bent: 1
+    stalling: 1
+    fall: 0
+    top: 0
+    high_point: 1
+    quiet_feet: 1
+    feet_cut: 1
+    weight_shift: 1
+    crux_warning: 1
+    route_preview: 2
+    told_you_so: 2
+
 arbiter:
   global_gap_s: 3
   cooldown_s: 15
