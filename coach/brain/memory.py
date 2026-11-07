@@ -19,7 +19,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
-from coach.brain.attempts import _value, make_event
+from coach.brain.attempts import make_event
+from coach.brain.config import cfg
 from coach.brain.features import Features
 from coach.contracts import AttemptSummary, ClimberState, CoachEvent, Limb, SpokenLine, Voice
 
@@ -29,8 +30,8 @@ logger = logging.getLogger(__name__)
 WATCHED_KINDS = ("arms_bent", "feet_low", "hand_searching", "stalling")
 
 
-def _brain(config: Any, name: str) -> Any:
-    return _value(config, "brain", name)
+def _brain(config: dict[str, Any], name: str) -> Any:
+    return cfg(config, "brain", name)
 
 
 @dataclass
@@ -78,14 +79,17 @@ def _highest_contact(state: ClimberState) -> int | None:
 class Memory:
     """Remember attempts, track compliance, pick mood, and trigger debriefs."""
 
-    def __init__(self, voice: Voice, config: Any) -> None:
+    def __init__(self, voice: Voice, config: dict[str, Any]) -> None:
         self.voice = voice
         self.config = config
         self.history: list[AttemptSummary] = []
         self._habit_attempts: dict[str, int] = defaultdict(int)
         self._habit_total: dict[str, int] = defaultdict(int)
         self._kinds_this_attempt: set[str] = set()
+        self._cue_kinds_this_attempt: list[str] = []
+        self._followed_kinds_this_attempt: list[str] = []
         self._stall_seconds: dict[int, float] = defaultdict(float)
+        self._stall_seconds_this_attempt: dict[int, float] = defaultdict(float)
         self._falls_at: dict[int, int] = defaultdict(int)
         self._cues_given = 0
         self._cues_followed = 0
@@ -102,6 +106,7 @@ class Memory:
         """Record an emitted cue for habit counting and spoken-line matching."""
         self._recent_events.append(event)
         self._kinds_this_attempt.add(event.kind)
+        self._cue_kinds_this_attempt.append(event.kind)
         self._habit_total[event.kind] += 1
 
     def on_spoken(self, spoken: SpokenLine) -> None:
@@ -130,6 +135,7 @@ class Memory:
             ref = _highest_contact(state)
             if ref is not None:
                 self._stall_seconds[ref] += dt
+                self._stall_seconds_this_attempt[ref] += dt
 
         window = float(_brain(self.config, "compliance_window_s"))
         progress = float(_brain(self.config, "compliance_progress_s"))
@@ -143,6 +149,7 @@ class Memory:
                     watch.followed_t = state.t
                     watch.progress_base_hold = features.highest_hold_id or 0
                     self._cues_followed += 1
+                    self._followed_kinds_this_attempt.append(watch.kind)
             else:
                 if watch.followed_t is not None and state.t - watch.followed_t <= progress:
                     high = features.highest_hold_id
@@ -162,10 +169,16 @@ class Memory:
 
     def on_attempt_end(self, summary: AttemptSummary) -> None:
         """Finalise habit counters and compliance, then trigger the debrief once."""
+        summary.stalls = list(self._stall_seconds_this_attempt.items())
+        summary.cues_given = list(self._cue_kinds_this_attempt)
+        summary.cues_followed = list(self._followed_kinds_this_attempt)
         self.history.append(summary)
         for kind in self._kinds_this_attempt:
             self._habit_attempts[kind] += 1
         self._kinds_this_attempt = set()
+        self._cue_kinds_this_attempt = []
+        self._followed_kinds_this_attempt = []
+        self._stall_seconds_this_attempt = defaultdict(float)
         if summary.outcome == "fall" and summary.high_hold_id is not None:
             self._falls_at[summary.high_hold_id] += 1
         self._attempt_compliance.append((self._cues_given, self._cues_followed))

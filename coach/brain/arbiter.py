@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from typing import Any
 
 from coach.contracts import CoachEvent, SpeakRequest, Suppressed, Voice
@@ -19,7 +19,7 @@ class Arbiter:
     def __init__(
         self,
         voice: Voice,
-        config: Mapping[str, Any] | object,
+        config: dict[str, Any],
         clock: Callable[[], float] = time.monotonic,
         publish: Callable[[str, object], None] | None = None,
         still_valid: Callable[[CoachEvent], bool] | None = None,
@@ -101,17 +101,10 @@ class Arbiter:
         return chosen_event
 
     def _value(self, name: str) -> float:
-        """Read an arbiter setting from a mapping or an attribute-based config."""
-        config: Any = self._config
-        if isinstance(config, Mapping) and "arbiter" in config:
-            config = config["arbiter"]
-        elif hasattr(config, "arbiter"):
-            config = config.arbiter
-        if isinstance(config, Mapping):
-            value = config[name]
-        else:
-            value = getattr(config, name)
-        return float(value)
+        """Read an arbiter setting. Accepts the full config dict (keyed under
+        "arbiter") or a flat dict of just the arbiter settings, as the tests do."""
+        section = self._config.get("arbiter", self._config)
+        return float(section[name])
 
     def _trim_budget(self, now: float) -> None:
         cutoff = now - self._value("budget_window_s")

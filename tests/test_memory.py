@@ -186,3 +186,41 @@ def test_debrief_fires_once_per_attempt_with_history_habits_crux():
     # A second, distinct attempt debriefs again.
     mem.on_attempt_end(summary(2))
     assert len(voice.debriefs) == 2
+
+
+def test_summary_records_given_and_followed_cues_per_attempt():
+    mem = Memory(FakeVoice(), CONFIG)
+    mem.on_event(CoachEvent(t=10.0, kind="stalling", priority=1, ttl_s=1.2))
+    mem.observe(st(9.9), feat())
+    mem.on_spoken(SpokenLine(t_event=10.0, t_audio_start=10.0, kind="stalling", text="move"))
+    mem.observe(st(10.2), feat(hip_speed=0.1, highest_hold_id=3))
+
+    result = summary(1)
+    mem.on_attempt_end(result)
+
+    assert result.cues_given == ["stalling"]
+    assert result.cues_followed == ["stalling"]
+
+
+def test_summary_records_stall_seconds_per_attempt():
+    mem = Memory(FakeVoice(), CONFIG)
+    mem.observe(st(0.0, contacts={Limb.LH: 7}), feat(hip_static_s=0.0))
+    mem.observe(st(1.5, contacts={Limb.LH: 7}), feat(hip_static_s=1.0))
+
+    result = summary(1)
+    mem.on_attempt_end(result)
+
+    assert result.stalls == [(7, 1.5)]
+
+
+def test_crux_hold_uses_cumulative_stalls_after_summary_bookkeeping():
+    mem = Memory(FakeVoice(), CONFIG)
+    mem.observe(st(0.0, contacts={Limb.LH: 7}), feat(hip_static_s=0.0))
+    mem.observe(st(6.0, contacts={Limb.LH: 7}), feat(hip_static_s=1.0))
+    first = summary(1)
+    mem.on_attempt_end(first)
+
+    mem.on_attempt_end(summary(2, outcome="fall", high=5))
+
+    assert first.stalls == [(7, 6.0)]
+    assert mem.crux_hold() == 7
