@@ -185,14 +185,15 @@ class FeetLow(Detector):
         if features.leg_length <= 0:
             return False, False
         lowest_foot_y = max(point[1] for point in feet if point is not None)
-        low = height_above(lowest_foot_y, state.hip[1]) / features.leg_length > float(
-            _brain(ctx, "feet_low_ratio")
-        )
+        low_ratio = height_above(lowest_foot_y, state.hip[1]) / features.leg_length
+        ratio = float(_brain(ctx, "feet_low_ratio"))
+        low = low_ratio > ratio
+        release = low_ratio > ratio * 0.95
         hands_high = all(
             height_above(shoulder[1], wrist[1]) > 0
             for shoulder, wrist in zip(shoulders, wrists, strict=True)
         )
-        return low and hands_high, low and hands_high
+        return low and hands_high, release and hands_high
 
     def _update(
         self, features: Features, state: ClimberState, ctx: DetectorContext
