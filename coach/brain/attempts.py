@@ -115,13 +115,25 @@ class AttemptTracker:
             self._attempt_high is None or current_high > self._attempt_high
         ):
             self._attempt_high = current_high
-            if current_high > self._best_hold and current_high > self._last_record_emitted:
+            # Only a prior *finished* attempt gives a real best to beat; on the very
+            # first attempt every new contact is trivially "further than ever" and
+            # would spam a high_point on almost every hold grabbed.
+            if (
+                self.finished_attempts
+                and current_high > self._best_hold
+                and current_high > self._last_record_emitted
+            ):
                 self._last_record_emitted = current_high
                 events.append(
                     make_event("high_point", state.t, {"hold_id": current_high}, self.config)
                 )
 
-        if self._is_top(state):
+        fall_speed = float(cfg(self.config, "brain", "fall_speed"))
+        # A frozen/hidden-limb contact (coach/perception/pose.py) can keep both hands
+        # reporting the top hold for a while after the climber has actually let go, so
+        # _is_top() alone isn't enough: require the climber not be mid-fall (fast
+        # downward hip velocity) for the hold to count towards the top-hold timer.
+        if self._is_top(state) and features.hip_velocity_y <= fall_speed:
             self._top_since = self._top_since or state.t
             if state.t - self._top_since >= float(cfg(self.config, "brain", "top_hold_s")):
                 events.append(
@@ -132,10 +144,13 @@ class AttemptTracker:
         else:
             self._top_since = None
 
-        if features.hip_velocity_y > float(cfg(self.config, "brain", "fall_speed")):
-            self._fall_seen = True
         if self._grounded(state, features):
             self._ground_since = self._ground_since or state.t
+            # Only the velocity during the actual trip to the ground decides "fall" vs
+            # "downclimb" — a fast move made earlier while still gripping the wall (e.g.
+            # a dynamic bump) must not poison a controlled downclimb at the end.
+            if features.hip_velocity_y > fall_speed:
+                self._fall_seen = True
             if state.t - self._ground_since >= float(cfg(self.config, "brain", "ground_settle_s")):
                 outcome = "fall" if self._fall_seen else "downclimb"
                 # Only "fall" is a spoken event kind; "downclimb" just closes the attempt
@@ -152,6 +167,7 @@ class AttemptTracker:
                 self._finish(state, outcome)
         else:
             self._ground_since = None
+            self._fall_seen = False
         return events
 
 

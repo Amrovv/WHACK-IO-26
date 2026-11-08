@@ -107,11 +107,17 @@ class FeatureTracker:
                 if old is not None:
                     speeds[limb] = _distance(point, old) / dt
 
+        # A person reappearing after a dropout (person_found False -> True) is not
+        # continuous motion: pose.py freezes the hip at its last known point while
+        # nobody is found, so the next real detection (possibly a different person
+        # entirely) can jump far away. Treating that jump as hip velocity/speed has
+        # mistaken a person just entering the frame for a fall.
+        continuous = previous is not None and previous.person_found and state.person_found
         hip_velocity = 0.0
-        if previous is not None and dt > 0:
+        if continuous and dt > 0:
             hip_velocity = (state.hip[1] - previous.hip[1]) / dt
         hip_speed = 0.0
-        if previous is not None and dt > 0:
+        if continuous and dt > 0:
             hip_speed = _distance(state.hip, previous.hip) / dt
         if previous is not None and dt > 0 and hip_speed < self.move_speed_eps:
             self._hip_static_s += dt

@@ -49,6 +49,25 @@ examples:
     - "Feet. Up. Same as last time."
     - "Bent arms again. Lock them out."
     - "Left foot, not right. Third time."
+# How holds are spoken, by height on the route (0 = lowest hold, 1 = highest). Team decision:
+# holds are named by position ("grab the high hold"), never by number. Names fill {hold}, so
+# keep them to two words. Bands are narrow so neighbouring holds get different names; "top
+# hold" is reserved for the very top (on climb2: bottom, low, middle, mid-high x3, high, top).
+hold_places:
+  - [0.15, bottom hold]
+  - [0.4, low hold]
+  - [0.55, middle hold]
+  - [0.8, mid-high hold]
+  - [0.99, high hold]
+  - [1.0, top hold]
+# Phrases that are wrong for one event even though they suit the persona: a catchphrase that is
+# another cue's instruction, or a line about something other than the climbing. Matched like
+# banned_phrases (whole words, any case), only for that event.
+off_topic:
+  attempt_start: ["feet first"]
+  fall: ["feet first"]
+  told_you_so: ["feet first"]
+  hand_searching: ["chalk"]
 # Placeholder until A's hold maps settle the spoken names (HoldMap.colour).
 colours: [pink, red, orange, yellow, green, teal, blue, purple, black, white, grey]
 fillers:

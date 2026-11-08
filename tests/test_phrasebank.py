@@ -279,3 +279,123 @@ def test_direction_keys_reject_hard_coded_directions() -> None:
     lines = ["Straight up.", "Reach {dir}.", "Stop hunting. Up and left.", "Grab it."]
     assert drop_fixed_directions("hand_searching", 2, lines) == ["Reach {dir}.", "Grab it."]
     assert drop_fixed_directions("feet_low", 2, ["Feet up."]) == ["Feet up."]
+
+
+def test_hold_places_name_holds_by_height_on_the_route() -> None:
+    from coach.contracts import Hold, HoldMap
+    from coach.voice.phrasebank import hold_places, slot_values
+
+    def hold(i: int, y: float) -> Hold:
+        return Hold(i, (0.5, y), (0.4, y - 0.05, 0.6, y + 0.05))
+
+    holdmap = HoldMap(
+        "p", "pink", [hold(1, 0.9), hold(2, 0.7), hold(3, 0.4), hold(4, 0.1)], (640, 480), "manual"
+    )
+    bands = [[0.25, "low hold"], [0.6, "middle hold"], [0.85, "high hold"], [1.0, "top hold"]]
+    places = hold_places(holdmap, bands)
+    assert places == {1: "low hold", 2: "middle hold", 3: "high hold", 4: "top hold"}
+    assert slot_values({"hold_id": 3}, None, places) == {"hold": "high hold"}
+    assert slot_values({"hold_id": 3}) == {"hold": "hold three"}  # no hold map yet
+
+
+def test_off_topic_phrases_are_blocked_only_for_their_event() -> None:
+    from coach.voice.phrasebank import blocked_phrases, reject_reason
+
+    persona = {
+        "banned_phrases": [],
+        "colours": [],
+        "off_topic": {"fall": ["feet first"], "hand_searching": ["chalk"]},
+    }
+    assert reject_reason("Feet first.", 4, blocked_phrases(persona, "fall")) == "banned phrase"
+    assert reject_reason("Feet first.", 4, blocked_phrases(persona, "feet_low")) is None
+    assert reject_reason("Grab the chalk.", 4, blocked_phrases(persona, "hand_searching"))
+    assert reject_reason("Chalk up.", 4, blocked_phrases(persona, "fall")) is None
+
+
+def test_prune_bank_drops_lines_new_rules_reject() -> None:
+    from scripts.build_phrasebank import prune_bank
+
+    persona = {
+        "banned_phrases": [],
+        "colours": [],
+        "max_words": {"level0": 4},
+        "off_topic": {"fall": ["feet first"]},
+    }
+    bank = {
+        "fall": {"0": {"neutral": ["Feet first.", "Chalk up."]}},
+        "feet_low": {"0": {"neutral": ["Feet first."]}},
+    }
+    pruned, dropped = prune_bank(bank, persona)
+    assert dropped == 1
+    assert pruned["fall"]["0"]["neutral"] == ["Chalk up."]
+    assert pruned["feet_low"]["0"]["neutral"] == ["Feet first."]
+
+
+def test_persona_hold_bands_tell_climb2_holds_apart() -> None:
+    import json
+    from pathlib import Path
+
+    import yaml
+
+    from coach.contracts import Hold, HoldMap
+    from coach.voice.phrasebank import hold_places
+
+    persona = yaml.safe_load(Path("config/personas/coach.yaml").read_text())
+    raw = json.loads(Path("data/holdmaps/climb2.json").read_text())
+    holds = [Hold(h["id"], tuple(h["center"]), tuple(h["bbox"])) for h in raw["holds"]]
+    holdmap = HoldMap("climb2", raw["colour"], holds, tuple(raw["image_size"]), raw["mode"])
+    places = hold_places(holdmap, persona["hold_places"])
+    assert [places[i] for i in (1, 2, 3, 7, 8)] == [
+        "bottom hold",
+        "low hold",
+        "middle hold",
+        "high hold",
+        "top hold",
+    ]
+    assert len(set(places.values())) == 6  # 4-6 sit within 0.1 of each other: one name
+    assert all(len(name.split()) <= 2 for name in places.values())
+
+
+def test_persona_instruction_accepts_a_plain_voice_name(persona: dict) -> None:
+    # tts.py allows `voice: af_heart`; the LLM instruction must not need a `tone` dict.
+    from coach.voice.phrasebank import persona_instruction
+
+    assert "low, flat" in persona_instruction(persona)
+    assert "Delivery: \n" in persona_instruction({**persona, "voice": "af_heart"})
+
+
+def test_check_covers_lines_the_rules_would_prune(cache_tts, tmp_path, monkeypatch, persona):
+    # Voice loads the bank file as it is, so --check must not skip a line prune_bank would drop.
+    bank = {"fall": {"0": {"neutral": ["Off again.", "Feet first."]}}}  # off_topic for fall
+    bank_path = tmp_path / "phrasebank.json"
+    bank_path.write_text(json.dumps(bank), encoding="utf-8")
+    pruned = {"fall": {"0": {"neutral": ["Off again."]}}}
+    places = [name for _, name in persona["hold_places"]]
+    for text in render_texts(pruned, persona["colours"], persona["fillers"], places):
+        cache_tts.synth(text)
+    monkeypatch.setattr(build_phrasebank, "BANK_PATH", bank_path)
+    monkeypatch.setattr(build_phrasebank, "make_tts", lambda *_args: cache_tts)
+    monkeypatch.setattr(build_phrasebank, "load_dotenv", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["build_phrasebank", "--check"])
+    with pytest.raises(SystemExit) as exit_:
+        build_phrasebank.main()
+    assert exit_.value.code == 1
+
+
+def test_only_regenerates_several_kinds(cache_tts, tmp_path, monkeypatch) -> None:
+    seen = {}
+
+    def fake_build_bank(_ask, _persona, kinds, previous):
+        seen["kinds"] = kinds
+        return previous
+
+    monkeypatch.setattr(build_phrasebank, "build_bank", fake_build_bank)
+    monkeypatch.setattr(build_phrasebank, "make_ask", lambda *_args: None)
+    monkeypatch.setattr(build_phrasebank, "BANK_PATH", tmp_path / "phrasebank.json")
+    monkeypatch.setattr(build_phrasebank, "make_tts", lambda *_args: cache_tts)
+    monkeypatch.setattr(build_phrasebank, "load_dotenv", lambda: None)
+    monkeypatch.setenv("GEMINI_API_KEY", "set")
+    argv = ["build_phrasebank", "--only", "quiet_feet", "told_you_so", "--dry-run", "--model", "m"]
+    monkeypatch.setattr(sys, "argv", argv)
+    build_phrasebank.main()
+    assert seen["kinds"] == ("quiet_feet", "told_you_so")

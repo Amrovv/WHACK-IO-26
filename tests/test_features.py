@@ -2,7 +2,7 @@ from coach.brain.features import FeatureTracker
 from coach.contracts import ClimberState, Limb
 
 
-def state(t=0.0, *, x=0.2, hip_x=0.3, hip_y=0.6, contacts=None, keypoints=None):
+def state(t=0.0, *, x=0.2, hip_x=0.3, hip_y=0.6, contacts=None, keypoints=None, person_found=True):
     points = {
         "left_shoulder": (0.2, 0.2, 1),
         "left_elbow": (0.2, 0.3, 1),
@@ -21,7 +21,7 @@ def state(t=0.0, *, x=0.2, hip_x=0.3, hip_y=0.6, contacts=None, keypoints=None):
     return ClimberState(
         t,
         int(t * 10),
-        True,
+        person_found,
         points,
         {Limb.LH: (x, 0.4), Limb.RH: (0.4, 0.4), Limb.LF: (0.25, 0.9), Limb.RF: (0.35, 0.9)},
         contacts or {limb: None for limb in Limb},
@@ -81,6 +81,19 @@ def test_sideways_hip_motion_is_not_static():
 
     assert moved.hip_speed > 0
     assert moved.hip_static_s == 0
+
+
+def test_person_reappearing_after_dropout_is_not_a_velocity_spike():
+    # pose.py freezes the hip at its last known point while person_found is False, so
+    # the next real detection can land far away (a different person, or the same one
+    # having moved during the gap). That jump must not register as hip velocity/speed
+    # -- it previously got mistaken for a fall.
+    tracker = FeatureTracker(0.02)
+    tracker.update(state(0, hip_y=0.3))
+    tracker.update(state(0.5, hip_y=0.3, person_found=False))
+    reappeared = tracker.update(state(0.6, hip_y=0.9))
+    assert reappeared.hip_velocity_y == 0
+    assert reappeared.hip_speed == 0
 
 
 def test_duplicate_timestamps_no_zero_division():

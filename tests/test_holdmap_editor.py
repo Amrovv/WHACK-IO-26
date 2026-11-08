@@ -21,6 +21,8 @@ CFG = {
     "min_saturation": 60,
     "white_min_value": 210,
     "white_max_saturation": 55,
+    "pale_min_saturation": 35,
+    "pale_min_fraction": 0.4,
     "white_min_fraction": 0.15,
     "patch_radius_px": 12,
     "morph_kernel_px": 5,
@@ -557,3 +559,64 @@ def test_edit_loads_a_saved_map_with_polygons_and_roles_and_saves_it_back(white_
     assert [h.role for h in second.holds] == [h.role for h in first.holds]
     assert set(second_shapes) == set(first_shapes)
     assert second.colour == "white"
+
+
+def test_ui_scale_keeps_text_the_same_size_for_tall_images():
+    from coach.perception.holdmap_editor import DISPLAY_H, ui_scale
+
+    assert ui_scale(360) == 1.0 and ui_scale(DISPLAY_H) == 1.0  # small images are not shrunk
+    assert ui_scale(1920) == pytest.approx(1920 / DISPLAY_H)  # a tall photo shown smaller
+
+
+def test_wrap_text_keeps_every_line_inside_the_width():
+    from coach.perception.holdmap_editor import wrap_text
+
+    text = "click=toggle right-click=delete drag=erase r=toggle erase/plain-box placement u=undo"
+    lines = wrap_text(text, 300, 0.5, 1)
+    assert len(lines) > 1 and " ".join(lines) == text
+    for line in lines:
+        assert cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0][0] <= 300
+
+
+def _hsv_bgr(h, s, v):
+    return tuple(int(c) for c in cv2.cvtColor(np.uint8([[[h, s, v]]]), cv2.COLOR_HSV2BGR)[0, 0])
+
+
+def test_pale_chalky_hold_is_recognised_by_its_whole_detected_polygon(monkeypatch):
+    """Light teal holds (saturation ~40, chalky patches ~20) on a cream wall (saturation ~30)."""
+    image = np.full((H, W, 3), _hsv_bgr(17, 30, 190), np.uint8)  # cream wall
+    rng = np.random.default_rng(1)
+    teal_a, teal_b, grey = (20, 20, 80, 70), (120, 20, 180, 70), (220, 20, 260, 70)
+    for x0, y0, x1, y1 in (teal_a, teal_b):
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                chalk = rng.random() < 0.3  # chalky pixels are nearly unsaturated
+                sat = int(rng.integers(12, 24)) if chalk else int(rng.integers(38, 50))
+                image[y, x] = _hsv_bgr(70, sat, 150)
+    cv2.rectangle(image, grey[:2], grey[2:], _hsv_bgr(0, 5, 100), -1)  # a grey hold
+    boxes = [teal_a, teal_b, grey]
+    polygons = {b: [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])] for b in boxes}
+    monkeypatch.setattr(holdmap_editor, "detect_holds", lambda _image, _cfg: boxes)
+    monkeypatch.setattr(holdmap_editor, "detect_hold_polygons", lambda _image, _cfg: polygons)
+
+    # a click on a chalky pixel: the small patch alone cannot tell it from the wall
+    chalky = next(
+        (x, y)
+        for y in range(25, 65)
+        for x in range(25, 75)
+        if image[y, x].tolist() != _hsv_bgr(70, 40, 150)
+        and cv2.cvtColor(image[y : y + 1, x : x + 1], cv2.COLOR_BGR2HSV)[0, 0, 1] < 25
+    )
+    state = EditorState(image, CFG)
+    state.pick_colour(chalky)
+    assert state.ref_hue is not None and 62 <= state.ref_hue <= 78
+    assert set(state.auto) == {teal_a, teal_b}  # both teal holds, not the grey one
+
+
+def test_detected_hold_hue_is_none_without_a_hold_under_the_click_or_for_grey():
+    image = np.full((H, W, 3), _hsv_bgr(17, 30, 190), np.uint8)
+    grey = (20, 20, 60, 60)
+    cv2.rectangle(image, grey[:2], grey[2:], _hsv_bgr(0, 5, 100), -1)
+    polys = {grey: [(20, 20), (60, 20), (60, 60), (20, 60)]}
+    assert holds.detected_hold_hue(image, (200, 150), [grey], polys, CFG) is None  # on the wall
+    assert holds.detected_hold_hue(image, (40, 40), [grey], polys, CFG) is None  # no hue (grey)

@@ -36,6 +36,7 @@ from coach.perception.holds import (
     colour_name,
     detect_hold_polygons,
     detect_holds,
+    detected_hold_hue,
     filter_by_colour,
     load_holdmap_with_shapes,
     load_holds_config,
@@ -60,6 +61,36 @@ HELP_LINES = (
     "c=colour  Enter=save  Esc=quit",
 )
 HELP_BAR_PX = 26
+STATUS_ROWS = 2  # the status line wraps to at most this many rows
+DISPLAY_H, DISPLAY_W = 800, 1400  # the window is sized to fit this; text and lines are drawn for it
+
+
+def ui_scale(image_h: int) -> float:
+    """Factor that makes text and lines look the same size in the window for any image size: a
+    tall 1080x1920 photo is shown shrunk to fit the screen, so its text is drawn bigger."""
+    return max(1.0, image_h / DISPLAY_H)
+
+
+def _px(base: float, scale: float) -> int:
+    return max(1, round(base * scale))
+
+
+def wrap_text(text: str, max_w: int, font_scale: float, thickness: int) -> list[str]:
+    """Split text into lines that each fit `max_w` pixels (a narrow portrait image would
+    otherwise cut the help text off at the right edge)."""
+    lines: list[str] = []
+    cur = ""
+    for word in text.split(" "):
+        trial = f"{cur} {word}" if cur else word
+        width = cv2.getTextSize(trial, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)[0][0]
+        if cur and width > max_w:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = trial
+    return [*lines, cur] if cur else lines
+
+
 MIN_BOX_PX = 3
 POLY_COLOUR = (0, 200, 255)  # BGR: the polygon being drawn
 
@@ -92,11 +123,25 @@ class EditorState:
 
     # -- colour selection ---------------------------------------------------------------------
     def pick_colour(self, point: tuple[int, int]) -> None:
-        try:
-            self.ref_hue, _ = sample_colour(self.image, point, self.cfg)
-        except ValueError as e:
-            self.message = f"{e}; manual placement is available with r"
-            return
+        hue = None
+        try:  # the colour of the whole detected hold under the click (robust on pale holds)
+            hue = detected_hold_hue(
+                self.image,
+                point,
+                detect_holds(self.image, self.cfg),
+                detect_hold_polygons(self.image, self.cfg),
+                self.cfg,
+            )
+        except Exception as e:  # no key / network: the small patch below still works
+            log.info("Roboflow not available to read the clicked hold's colour: %s", e)
+        if hue is not None:
+            self.ref_hue = hue
+        else:
+            try:
+                self.ref_hue, _ = sample_colour(self.image, point, self.cfg)
+            except ValueError as e:
+                self.message = f"{e}; manual placement is available with r"
+                return
         self.detector_used = False
         self.recompute()
 
@@ -428,9 +473,10 @@ class Editor:
     def render(self) -> np.ndarray:
         st = self.state
         canvas = st.image.copy()
+        k = ui_scale(canvas.shape[0])
         for box in st.visible_auto():
             if box in st.excluded:
-                cv2.rectangle(canvas, box[:2], box[2:], (0, 0, 160), 1)  # dim red: excluded
+                cv2.rectangle(canvas, box[:2], box[2:], (0, 0, 160), _px(1, k))  # dim red: excluded
         if st.included():
             hm, shapes = st.build_with_shapes(self.problem_id)
             h, w = canvas.shape[:2]
@@ -439,24 +485,30 @@ class Editor:
                 x0, y0, x1, y1 = (int(v * k) for v, k in zip(hold.bbox, (w, h, w, h), strict=True))
                 if hold.id in shapes:
                     pts = np.array([(round(x * w), round(y * h)) for x, y in shapes[hold.id]])
-                    cv2.polylines(canvas, [pts.astype(np.int32)], True, colour, 2)
+                    cv2.polylines(canvas, [pts.astype(np.int32)], True, colour, _px(2, k))
                 else:
-                    cv2.rectangle(canvas, (x0, y0), (x1, y1), colour, 2)
+                    cv2.rectangle(canvas, (x0, y0), (x1, y1), colour, _px(2, k))
                 label = (
                     f"{hold.id}{'S' if hold.role == 'start' else 'T' if hold.role == 'top' else ''}"
                 )
                 cv2.putText(
-                    canvas, label, (x0, max(y0 - 4, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2
+                    canvas,
+                    label,
+                    (x0, max(y0 - _px(4, k), _px(12, k))),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6 * k,
+                    colour,
+                    _px(2, k),
                 )
         if self.poly:  # the polygon being drawn: corners and the edges so far
             for a, b in zip(self.poly, self.poly[1:], strict=False):
-                cv2.line(canvas, a, b, POLY_COLOUR, 2)
+                cv2.line(canvas, a, b, POLY_COLOUR, _px(2, k))
             for pt in self.poly:
-                cv2.circle(canvas, pt, 4, POLY_COLOUR, -1)
+                cv2.circle(canvas, pt, _px(4, k), POLY_COLOUR, -1)
         if self.down is not None and self.drag is not None:
             erase = self.erase_mode
             colour = (0, 0, 255) if erase else (255, 255, 255)
-            cv2.rectangle(canvas, self.down, self.drag, colour, 2 if erase else 1)
+            cv2.rectangle(canvas, self.down, self.drag, colour, _px(2 if erase else 1, k))
             if erase:
                 rect = (*self.down, *self.drag)
                 x0, x1 = sorted((rect[0], rect[2]))
@@ -470,20 +522,34 @@ class Editor:
                     if touches:
                         if box in st.polygons:
                             pts = np.asarray(st.polygons[box], np.int32)
-                            cv2.polylines(canvas, [pts], True, (0, 0, 255), 3)
+                            cv2.polylines(canvas, [pts], True, (0, 0, 255), _px(3, k))
                         else:
-                            cv2.rectangle(canvas, box[:2], box[2:], (0, 0, 255), 3)
-        bar = np.zeros((HELP_BAR_PX * (1 + len(HELP_LINES)), canvas.shape[1], 3), np.uint8)
+                            cv2.rectangle(canvas, box[:2], box[2:], (0, 0, 255), _px(3, k))
+        bar_px = _px(HELP_BAR_PX, k)
         action = "erase" if self.erase_mode else "plain box placement"
         status = f"{st.message} | {len(st.included())} kept | drag: {action}"
-        cv2.putText(bar, status, (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-        for i, line in enumerate(HELP_LINES, start=1):
-            y = 18 + i * HELP_BAR_PX
-            cv2.putText(bar, line, (6, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+        width = canvas.shape[1] - 2 * _px(6, k)
+        status_lines = wrap_text(status, width, 0.5 * k, _px(1, k))[:STATUS_ROWS]
+        status_lines += [""] * (STATUS_ROWS - len(status_lines))  # fixed height: no window jumps
+        rows = [(line, 0.5 * k, (0, 255, 255)) for line in status_lines]
+        for text in HELP_LINES:
+            rows += [
+                (line, 0.45 * k, (255, 255, 255))
+                for line in wrap_text(text, width, 0.45 * k, _px(1, k))
+            ]
+        bar = np.zeros((bar_px * len(rows) + _px(6, k), canvas.shape[1], 3), np.uint8)
+        for i, (line, scale, colour) in enumerate(rows):
+            y = _px(18, k) + i * bar_px
+            cv2.putText(
+                bar, line, (_px(6, k), y), cv2.FONT_HERSHEY_SIMPLEX, scale, colour, _px(1, k)
+            )
         return np.vstack([canvas, bar])
 
     def run(self) -> Path | None:
         cv2.namedWindow("holdmap", cv2.WINDOW_NORMAL)  # resizable
+        total_h, img_w = self.render().shape[:2]
+        fit = min(1.0, DISPLAY_H / total_h, DISPLAY_W / img_w)
+        cv2.resizeWindow("holdmap", round(img_w * fit), round(total_h * fit))  # fits the screen
         cv2.setMouseCallback("holdmap", lambda ev, x, y, *_: self.on_mouse(ev, x, y))
         try:
             while not self.done:

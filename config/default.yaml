@@ -9,6 +9,7 @@ perception:
   contact_settle_ms: 150
   contact_release_ratio: 1.6   # release box = margin x this (hysteresis)
   contact_dip_frames: 3        # keep a contact through a visibility dip this short
+  freeze_max_frames: 90        # a hidden limb keeps its frozen point (and contact) this many frames (3 s), then it is dropped; sweep on climb_1 clean send: 15 loses the top, 60 keeps 1.6 s on top, 90 matches the old code (2.0 s)
   contact_still_speed: 0.4     # limb is 'still' below this speed (normalised units per second)
   min_visibility: 0.4          # landmarks below this give no contact and freeze the limb point
   resume_visibility: 0.7       # a frozen limb follows the pose again only above this...
@@ -30,6 +31,8 @@ holds:
   detector_model: hold-detector-rnvkl/1  # Roboflow model id (Climb AI hold detector; picked in experiment 2)
   hue_tolerance: 12         # OpenCV hue units, 0-179
   min_saturation: 60
+  pale_min_saturation: 35    # pale holds (light teal, saturation ~40) count at this lower floor...
+  pale_min_fraction: 0.4     # ...when too few of their pixels reach min_saturation; this share must reach the floor
   white_min_value: 210       # white holds must be bright enough to separate from the beige/grey wall
   white_max_saturation: 55   # and nearly neutral; excludes red/teal holds
   white_min_fraction: 0.15   # share of a detection's pixels that must be white (real white holds 0.18-0.66, others <= 0.10)
@@ -79,7 +82,7 @@ brain:
   mood_exasperated_attempts: 3      # same habit firing in this many attempts = exasperated
 
   priorities:               # event kind -> arbiter priority (0 big moment, 1 cue, 2 banter)
-    attempt_start: 2
+    attempt_start: 0         # interrupts a running debrief (arbiter.py) instead of queuing behind it
     hand_searching: 1
     feet_low: 1
     arms_bent: 1
