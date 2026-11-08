@@ -198,6 +198,14 @@ class FeetLow(Detector):
     def _update(
         self, features: Features, state: ClimberState, ctx: DetectorContext
     ) -> list[CoachEvent]:
+        # With no hold map there is no route-relative context for "low" to mean
+        # anything; feet dangling without ever reaching a mapped hold used to fire
+        # this repeatedly for the whole climb. Require a hold map, like the other
+        # hold-aware detectors.
+        if ctx.holdmap is None or not ctx.holdmap.holds:
+            self._pending_since = None
+            self._last_valid = False
+            return []
         condition, release = self._condition(features, state, ctx)
         self._last_valid = condition
         # Release at 95% of the configured ratio, while retaining the hand gate.

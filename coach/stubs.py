@@ -198,10 +198,16 @@ class _Worker:
 
 
 class PoseReplay(_Worker):
-    """Stub perception: replays a pose JSONL at its recorded speed, looping.
+    """Stub perception: replays a pose JSONL once, at its recorded speed.
 
     Capture times are shifted to now, so latency figures downstream stay meaningful.
     With fast=True it plays once with no waiting and hands over every state.
+
+    Does NOT loop: a cached recording is one real climbing session (one or more
+    attempts, each with a real ground-truth outcome). Looping it would replay the
+    same ground->wall->top/fall cycle over and over, and the brain has no way to
+    tell that apart from the climber genuinely re-attempting the same route, so it
+    would keep incrementing attempt_no and re-triggering debriefs forever.
     """
 
     def __init__(self, path, problem_id, cfg, bus: Bus, out: AsyncLatestQueue, fast: bool = False):
@@ -223,22 +229,19 @@ class PoseReplay(_Worker):
             log.error("no poses in %s", self.path)
             return
         log.info("replaying %d poses from %s", len(states), self.path)
-        while not self._stop.is_set():
-            t0, base = states[0].t, time.monotonic()
-            for s in states:
-                if self._stop.is_set():
-                    return
-                s = ClimberState(**{**s.__dict__, "t": base + (s.t - t0)})
-                if not self.fast:
-                    delay = s.t - time.monotonic()
-                    if delay > 0:
-                        self._stop.wait(delay)
-                self.bus.publish("state", s)
-                self.out.put(s)
-                if self.fast and hasattr(self.out, "wait_taken"):
-                    self.out.wait_taken(JOIN_TIMEOUT_S)
-            if self.fast:
+        t0, base = states[0].t, time.monotonic()
+        for s in states:
+            if self._stop.is_set():
                 return
+            s = ClimberState(**{**s.__dict__, "t": base + (s.t - t0)})
+            if not self.fast:
+                delay = s.t - time.monotonic()
+                if delay > 0:
+                    self._stop.wait(delay)
+            self.bus.publish("state", s)
+            self.out.put(s)
+            if self.fast and hasattr(self.out, "wait_taken"):
+                self.out.wait_taken(JOIN_TIMEOUT_S)
 
 
 class VideoPerception(_Worker):

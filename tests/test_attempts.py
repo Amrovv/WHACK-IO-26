@@ -99,13 +99,106 @@ def test_hip_settle_highpoint_and_downclimb():
         feature,
         s(1, hip=0.45, contacts={Limb.LH: 3, Limb.RH: None, Limb.LF: None, Limb.RF: None}),
     )
-    assert "high_point" in [e.kind for e in events]
+    # No finished attempt yet, so there is no prior best to beat: high_point must
+    # stay quiet on attempt 1 (it would otherwise fire on almost every new hold).
+    assert "high_point" not in [e.kind for e in events]
     run(attempt, feature, s(1.5, hip=0.7))
     events = run(attempt, feature, s(2.6, hip=0.7))
     # downclimb emits no CoachEvent; it only shows up as the summary outcome.
     assert "downclimb" not in [e.kind for e in events]
     assert attempt.finished_attempts[-1].outcome == "downclimb"
     assert attempt.finished_attempts[-1].high_hold_id == 3
+
+
+def test_high_point_fires_once_a_prior_attempt_exists():
+    # Attempt 1 reaches hold 3 and downclimbs (no high_point spoken, see above). On
+    # attempt 2, beating that hold 3 best is a real record and must fire high_point.
+    attempt, feature = make_tracker()
+    run(attempt, feature, s(0))
+    run(attempt, feature, s(0.2, hip=0.45))
+    run(attempt, feature, s(0.8, hip=0.45))
+    run(
+        attempt,
+        feature,
+        s(1, hip=0.45, contacts={Limb.LH: 3, Limb.RH: None, Limb.LF: None, Limb.RF: None}),
+    )
+    run(attempt, feature, s(1.5, hip=0.7))
+    run(attempt, feature, s(2.6, hip=0.7))
+    assert attempt.finished_attempts[-1].outcome == "downclimb"
+
+    run(attempt, feature, s(3, hip=0.45))
+    events = run(attempt, feature, s(3.6, hip=0.45))
+    assert "attempt_start" in [e.kind for e in events]
+    events = run(
+        attempt,
+        feature,
+        s(3.8, hip=0.45, contacts={Limb.LH: 4, Limb.RH: None, Limb.LF: None, Limb.RF: None}),
+    )
+    assert "high_point" in [e.kind for e in events]
+
+
+def test_dynamic_move_mid_climb_does_not_poison_later_downclimb():
+    # A fast hip move made while still clearly on the wall (e.g. a dynamic bump) must
+    # not be confused with a fall: _fall_seen should only reflect velocity during the
+    # actual trip to the ground, not any fast moment earlier in the attempt.
+    attempt, feature = make_tracker()
+    run(attempt, feature, s(0))
+    run(attempt, feature, s(0.2, hip=0.45))
+    run(attempt, feature, s(0.8, hip=0.45))
+    run(
+        attempt,
+        feature,
+        s(1, hip=0.45, contacts={Limb.LH: 1, Limb.RH: None, Limb.LF: None, Limb.RF: None}),
+    )
+    assert attempt.phase == "ON_WALL"
+
+    # Dynamic move: hip drops fast but the climber is still well off the ground
+    # (height above standing far exceeds on_wall_margin), so this is not a fall.
+    run(attempt, feature, s(1.05, hip=0.5))  # velocity = 0.05/0.05 = 1.0 > fall_speed
+    assert not attempt._fall_seen
+    assert attempt.phase == "ON_WALL"
+
+    # Climber then downclimbs slowly and controlled all the way to the ground.
+    run(attempt, feature, s(1.6, hip=0.6))
+    run(attempt, feature, s(2.2, hip=0.7))
+    events = run(attempt, feature, s(3.3, hip=0.7))
+    assert "fall" not in [e.kind for e in events]
+    assert attempt.finished_attempts[-1].outcome == "downclimb"
+
+
+def test_frozen_top_contact_during_a_fall_does_not_count_as_send():
+    # A frozen/hidden-limb contact (coach/perception/pose.py) can keep both hands
+    # reporting the top hold for a while after the climber has actually let go and
+    # started falling. The top-hold timer must not accumulate while hip velocity
+    # shows the climber is mid-fall, even if _is_top() still reads true.
+    attempt, feature = make_tracker()
+    run(attempt, feature, s(0))
+    run(attempt, feature, s(0.2, hip=0.3))
+    events = run(attempt, feature, s(0.8, hip=0.3))
+    assert "attempt_start" in [e.kind for e in events]
+    run(
+        attempt,
+        feature,
+        s(1, hip=0.3, contacts={Limb.LH: 5, Limb.RH: 5, Limb.LF: 1, Limb.RF: 1}),
+    )
+
+    # Stale top-hold contact (frozen point) while the hip is actually plunging fast.
+    events = run(
+        attempt,
+        feature,
+        s(1.3, hip=0.75, contacts={Limb.LH: 5, Limb.RH: 5, Limb.LF: None, Limb.RF: None}),
+    )
+    assert "top" not in [e.kind for e in events]
+    assert attempt._top_since is None
+
+    events = run(
+        attempt,
+        feature,
+        s(2.4, hip=0.7, contacts={Limb.LH: None, Limb.RH: None, Limb.LF: None, Limb.RF: None}),
+    )
+    assert "top" not in [e.kind for e in events]
+    assert "fall" in [e.kind for e in events]
+    assert attempt.finished_attempts[-1].outcome == "fall"
 
 
 def test_downclimb_against_real_config_does_not_crash():

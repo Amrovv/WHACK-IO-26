@@ -88,6 +88,9 @@ def test_arms_bent_requires_both_and_hysteresis():
     assert detector.update(feature(elbow_angle={"left": 150, "right": 100}), state(2), ctx()) == []
 
 
+FEET_LOW_HOLDMAP = HoldMap("p", "red", [Hold(4, (0.5, 0.2), (0, 0, 0, 0))], (100, 100), "manual")
+
+
 def test_feet_low_requires_high_hands():
     kp = {
         "left_shoulder": (0.4, 0.4, 1),
@@ -98,14 +101,35 @@ def test_feet_low_requires_high_hands():
     limbs = {Limb.LF: (0.4, 0.9), Limb.RF: (0.6, 0.8)}
     detector = FeetLow()
     f = feature(leg_length=0.3)
-    assert detector.update(f, state(0, limbs=limbs, keypoints=kp), ctx()) == []
-    event = detector.update(f, state(0.4, limbs=limbs, keypoints=kp, contacts={Limb.LH: 4}), ctx())[
-        0
-    ]
+    holdmap_ctx = ctx(holdmap=FEET_LOW_HOLDMAP)
+    assert detector.update(f, state(0, limbs=limbs, keypoints=kp), holdmap_ctx) == []
+    event = detector.update(
+        f, state(0.4, limbs=limbs, keypoints=kp, contacts={Limb.LH: 4}), holdmap_ctx
+    )[0]
     assert event.kind == "feet_low"
     assert event.data == {"hold_id": 4, "limb": Limb.LF.value}
     low_kp = {**kp, "left_wrist": (0.4, 0.5), "right_wrist": (0.6, 0.5)}
-    assert detector.update(f, state(1, limbs=limbs, keypoints=low_kp), ctx()) == []
+    assert detector.update(f, state(1, limbs=limbs, keypoints=low_kp), holdmap_ctx) == []
+
+
+def test_feet_low_requires_a_hold_map():
+    # Without a hold map there is no route-relative meaning to "low"; feet dangling
+    # with no labelled holds must not fire feet_low at all (it used to fire
+    # repeatedly for the whole climb).
+    kp = {
+        "left_shoulder": (0.4, 0.4, 1),
+        "right_shoulder": (0.6, 0.4, 1),
+        "left_wrist": (0.4, 0.2, 1),
+        "right_wrist": (0.6, 0.2, 1),
+    }
+    limbs = {Limb.LF: (0.4, 0.9), Limb.RF: (0.6, 0.8)}
+    detector = FeetLow()
+    f = feature(leg_length=0.3)
+    assert detector.update(f, state(0, limbs=limbs, keypoints=kp), ctx()) == []
+    assert (
+        detector.update(f, state(0.4, limbs=limbs, keypoints=kp, contacts={Limb.LH: 4}), ctx())
+        == []
+    )
 
 
 def test_hand_searching_scores_higher_candidate():
@@ -150,23 +174,32 @@ def test_feet_low_release_band_suppresses_refiring():
     # but > 0.855 (above release), so _active should stay True and NOT re-fire.
     detector = FeetLow()
     f = feature(leg_length=0.3)
+    holdmap_ctx = ctx(holdmap=FEET_LOW_HOLDMAP)
     limbs_fire = {Limb.LF: (0.4, 0.9), Limb.RF: (0.6, 0.9)}  # low
     # Debounce fires after 0.4 s.
-    assert detector.update(f, state(0, limbs=limbs_fire, keypoints=kp_high_hands), ctx()) == []
+    assert (
+        detector.update(f, state(0, limbs=limbs_fire, keypoints=kp_high_hands), holdmap_ctx) == []
+    )
     fired = detector.update(
-        f, state(0.4, limbs=limbs_fire, keypoints=kp_high_hands, contacts={Limb.LH: 4}), ctx()
+        f, state(0.4, limbs=limbs_fire, keypoints=kp_high_hands, contacts={Limb.LH: 4}), holdmap_ctx
     )
     assert len(fired) == 1 and fired[0].kind == "feet_low"
     # Hover at 94% of trigger threshold (between release and trigger): must NOT re-fire.
     limbs_hover = {Limb.LF: (0.4, 0.75), Limb.RF: (0.6, 0.75)}  # above 95% band, below trigger
-    assert detector.update(f, state(0.8, limbs=limbs_hover, keypoints=kp_high_hands), ctx()) == []
+    assert (
+        detector.update(f, state(0.8, limbs=limbs_hover, keypoints=kp_high_hands), holdmap_ctx)
+        == []
+    )
     # Drop back past the release threshold: must re-arm and eventually re-fire.
     limbs_low_again = {Limb.LF: (0.4, 0.95), Limb.RF: (0.6, 0.95)}
     assert (
-        detector.update(f, state(1.2, limbs=limbs_low_again, keypoints=kp_high_hands), ctx()) == []
+        detector.update(f, state(1.2, limbs=limbs_low_again, keypoints=kp_high_hands), holdmap_ctx)
+        == []
     )
     fired2 = detector.update(
-        f, state(1.6, limbs=limbs_low_again, keypoints=kp_high_hands, contacts={Limb.LH: 4}), ctx()
+        f,
+        state(1.6, limbs=limbs_low_again, keypoints=kp_high_hands, contacts={Limb.LH: 4}),
+        holdmap_ctx,
     )
     assert len(fired2) == 1 and fired2[0].kind == "feet_low"
 
