@@ -111,6 +111,18 @@ class AttemptTracker:
         self._fall_seen = False
         return make_event("attempt_start", state.t, {"attempt_no": self._attempt_no}, self.config)
 
+    def _start_ids(self) -> set[int]:
+        if self.holdmap is None:
+            return set()
+        start_ids = {hold.id for hold in self.holdmap.holds if hold.role == "start"}
+        return start_ids or {min(hold.id for hold in self.holdmap.holds)}
+
+    def _on_start_holds(self, state: ClimberState) -> bool:
+        start_ids = self._start_ids()
+        if not start_ids:
+            return False
+        return all(state.contacts.get(limb) in start_ids for limb in (Limb.LF, Limb.RF))
+
     def _finish(self, state: ClimberState, outcome: str) -> AttemptSummary:
         summary = AttemptSummary(
             self._attempt_no, state.t - self._start_t, self._attempt_high, outcome, [], [], []
@@ -136,12 +148,10 @@ class AttemptTracker:
             features.add_calibration_sample(state)
             if not self._standing_hips or not self._raised(state, features):
                 self._standing_hips.append(state.hip[1])
-            if state.contacts.get(Limb.LF) is not None and state.contacts.get(Limb.RF) is not None:
-                events.append(self._enter_wall(state))
-            elif self._raised(state, features):
+            if self._on_start_holds(state):
                 self._raised_since = self._raised_since or state.t
                 if state.t - self._raised_since >= float(
-                    cfg(self.config, "brain", "on_wall_settle_s")
+                    cfg(self.config, "brain", "start_hold_settle_s")
                 ):
                     events.append(self._enter_wall(state))
             else:
