@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from coach.bus import Bus
 from coach.perception import holdmap_editor
-from coach.perception.holds import load_holdmap_with_shapes
+from coach.perception.holds import load_holdmap_with_shapes, load_holds_config
 from coach.server import holds as holds_module
 from coach.server.app import create_app
 from coach.server.holds import HoldMapBuilder, camera_shift, features, same_view
@@ -19,7 +19,9 @@ W, H = 300, 200
 ROUTE = [(60, 150), (80, 100), (100, 50)]
 BLUE = (200, 100)
 BOXES = [(50, 140, 71, 161), (70, 90, 91, 111), (90, 40, 111, 61), (190, 90, 211, 111)]
+# The real "holds" settings (so keys A adds later are there), with this test's values on top.
 CFG = {
+    **load_holds_config(),
     "detector_model": "fake/1",
     "api_url": "https://example.invalid",
     "hue_tolerance": 12,
