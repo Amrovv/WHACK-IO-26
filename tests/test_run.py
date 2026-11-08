@@ -200,19 +200,29 @@ async def test_fast_pose_replay_runs_end_to_end(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("name", "maps", "expected"),
+    ("name", "expected"),
     [
-        ("climb_2_05_hand_searching.mp4", [], "climb_2"),
-        ("climb_2_05_hand_searching.mp4", ["climb2"], "climb2"),  # A's hold map naming
-        ("climb_6_12-1_new_high_point.mp4", [], "climb_6"),
-        ("pink-v3_07_stall.mp4", [], "pink-v3"),
-        ("Vidéo 07-11-2026 19 03 59.mp4", [], "fallback"),
+        ("climb_2_05_hand_searching.mp4", "climb_2"),  # never A's "climb2": other footage
+        ("climb_6_12-1_new_high_point.mp4", "climb_6"),
+        ("pink-v3_07_stall.mp4", "pink-v3"),
+        ("Vidéo 07-11-2026 19 03 59.mp4", "fallback"),
     ],
 )
-def test_problem_for_reads_the_clip_name(tmp_path: Path, name, maps, expected):
-    for m in maps:
-        (tmp_path / f"{m}.json").write_text("{}")
-    assert run.problem_for(Path(name), "fallback", holdmap_dir=tmp_path) == expected
+def test_problem_for_reads_the_clip_name(name, expected):
+    assert run.problem_for(Path(name), "fallback") == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("climb_9_00_empty_wall.mp4", True),
+        ("climb_9_00_empty_wall_out_of_frame.mp4", True),
+        ("climb_9_18_rest_between_attempts.mp4", False),
+        ("Vidéo 07-11-2026 19 03 59.mp4", False),
+    ],
+)
+def test_clip_00_is_the_empty_wall(name, expected):
+    assert run.is_empty_wall(Path(name)) is expected
 
 
 def test_list_clips_is_natural_order_and_skips_other_files(tmp_path: Path):
@@ -327,3 +337,142 @@ async def test_a_switch_during_startup_waits_for_it(tmp_path, monkeypatch):
     assert isinstance(session.args.source, run.BrowserCamera)  # startup didn't overwrite it
     assert [w.custom for w in session.workers] == [session.camera]
     await session.stop()
+
+
+# ---- Hold maps (coach/server/holds.py drives these) ---------------------------------------
+
+
+def write_clip(path: Path, colour=(0, 200, 255), frames=40) -> None:
+    """A 2 s clip at 20 fps. With colour=None each frame's brightness is 5x its index, so a
+    frame that's read back tells which moment it came from."""
+    import cv2
+
+    out = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 20, (32, 48))
+    for i in range(frames):
+        out.write(np.full((48, 32, 3), colour if colour is not None else 5 * i, np.uint8))
+    out.release()
+
+
+async def test_stills_offer_the_problems_empty_wall_then_the_current_frame(tmp_path, monkeypatch):
+    _, parts = fake_parts()
+    session, _ = make_session(tmp_path, monkeypatch, parts)
+    videos = tmp_path / "videos"
+    write_clip(videos / "climb_3_00_empty_wall.mp4", colour=None)
+    (videos / "climb_3_00_empty_wall (1).mp4").write_bytes(b"")  # a copy: offered last
+    (videos / "climb_1_00_empty_wall.mp4").write_bytes(b"")  # another problem's wall
+    session.args = session.args_for("file:videos/climb_3_06_feet_cut.mp4")
+
+    assert session.problem_id == "climb_3"
+    stills = session.stills()
+    assert stills[0].pop("duration") == pytest.approx(2.0)  # a video: any moment can be used
+    assert stills == [
+        {
+            "key": "file:videos/climb_3_00_empty_wall.mp4",
+            "name": "Empty wall · climb_3_00_empty_wall.mp4",
+            "at": 1.0,  # the default moment
+        },
+        {  # unreadable: no length, so no moments
+            "key": "file:videos/climb_3_00_empty_wall (1).mp4",
+            "name": "Empty wall · climb_3_00_empty_wall (1).mp4",
+        },
+        {  # the clip being analysed
+            "key": "file:videos/climb_3_06_feet_cut.mp4",
+            "name": "This video · climb_3_06_feet_cut.mp4",
+            "live": True,
+        },
+    ]
+    img = session.read_still("file:videos/climb_3_00_empty_wall.mp4")
+    assert img.shape == (48, 32, 3) and abs(int(img.mean()) - 100) <= 6  # frame 20, at 1 s
+    wall = "file:videos/climb_3_00_empty_wall.mp4"
+    assert abs(int(session.read_still(wall, at=0.5).mean()) - 50) <= 6  # frame 10
+    assert abs(int(session.read_still(wall, at=60).mean()) - 190) <= 6  # kept inside: frame 38
+    with pytest.raises(ValueError):
+        session.read_still("file:videos/climb_1_00_empty_wall.mp4")  # not this problem's
+    with pytest.raises(ValueError):
+        session.read_still("frame")  # nothing has been analysed yet
+
+    session.workers = [SimpleNamespace(latest_frame=np.zeros((4, 6, 3), np.uint8))]
+    assert session.stills()[-1] == {"key": "frame", "name": "Current frame", "live": True}
+    frame = session.read_still("frame")
+    frame[:] = 9
+    assert session.workers[0].latest_frame.max() == 0  # the editor gets its own copy
+
+
+async def test_reload_restarts_analysis_so_the_brain_gets_the_new_map(tmp_path, monkeypatch):
+    _, parts = fake_parts(n_frames=3)
+    session, voice = make_session(tmp_path, monkeypatch, parts)
+    await session.start(session.initial)
+    first_brain = session.brain_task
+
+    hello = await session.reload()
+
+    assert hello["session"] == 2 and hello["spec"] == "file:videos/climb_1_02_send.mp4"
+    assert first_brain.cancelled() and session.brain_task is not first_brain
+    await session.stop()
+
+
+async def test_pause_stops_analysis_but_keeps_the_last_frame_until_resume(tmp_path, monkeypatch):
+    _, parts = fake_parts(n_frames=3)
+    session, voice = make_session(tmp_path, monkeypatch, parts)
+    hellos = []
+    session.listen(hellos.append)
+    await session.start(session.initial)
+    first_brain = session.brain_task
+    seen = SimpleNamespace(latest_frame=np.ones((4, 6, 3), np.uint8), stop=lambda: None)
+    session.workers.insert(0, seen)  # the fake clip loops: pin the frame the pause will keep
+
+    await session.pause()
+    await session.pause()  # the editor may open twice (another picture): still one pause
+
+    assert session.paused and session.workers == [] and session.brain_task is None
+    assert first_brain.cancelled() and voice.stops == 1  # the coach stops talking
+    assert session.latest_frame().max() == 1  # the editor can still build from the last frame
+    assert session.stills()[-1]["key"] == "frame"
+
+    hello = await session.resume()
+
+    assert not session.paused and hello["session"] == 2 and [h["session"] for h in hellos] == [1, 2]
+    assert session.brain_task is not None and session._paused_frame is None  # fresh source
+    assert await session.resume() is hello  # not paused: nothing restarts
+    await session.stop()
+
+
+async def test_a_switch_while_paused_starts_the_new_source(tmp_path, monkeypatch):
+    _, parts = fake_parts(n_frames=3)
+    session, _ = make_session(tmp_path, monkeypatch, parts)
+    await session.start(session.initial)
+    await session.pause()
+
+    hello = await session.switch("file:videos/climb_3_06_feet_cut.mp4")
+
+    assert not session.paused and hello["session"] == 2 and session.workers
+    await session.stop()
+
+
+async def test_reload_on_the_browser_camera_opens_a_fresh_camera(tmp_path, monkeypatch):
+    _, parts = fake_parts(n_frames=3)
+    session, _ = make_session(tmp_path, monkeypatch, parts)
+    await session.start(session.initial)
+    await session.switch("browser")
+    old = session.camera
+
+    await session.reload()
+
+    assert session.camera is not old and isinstance(session.camera, run.BrowserCamera)
+    assert session.feed_camera(b"jpeg") is True
+    await session.stop()
+
+
+async def test_pose_threads_keep_the_newest_frame():
+    bus = Bus()
+    bus.bind_loop()
+    states = stubs.AsyncLatestQueue(asyncio.get_running_loop())
+    _, parts = fake_parts(n_frames=3)
+    perception = run.PoseThreads("clip.mp4", "p1", {}, bus, states, fast=True, parts=parts)
+    assert perception.latest_frame is None
+    perception.start()
+    for _ in range(3):
+        await asyncio.wait_for(states.get(), 2)
+    await asyncio.to_thread(perception.done.wait, 2)
+    perception.stop()
+    assert perception.latest_frame.shape == (4, 6, 3)

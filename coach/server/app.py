@@ -14,6 +14,8 @@ With a SourceControl (run.py's Session), the dashboard can also change what's an
   GET  /api/sources   {"current": spec, "options": [{"spec", "name", "group"}]}
   POST /api/source    {"spec": "..."} -> switches; every dashboard gets the new "hello"
   WS   /camera        binary JPEG frames from a dashboard's webcam (one sender at a time)
+and, when it is also a HoldsControl, build the problem's hold map from the dashboard:
+  /api/holds/...      see coach/server/holds.py
 
 run.py awaits serve(bus, host, port). Replay a bus log with no pipeline running:
 
@@ -32,15 +34,16 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Annotated, Any, Protocol
 
 import uvicorn
-from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from coach.bus import Bus, to_jsonable
 from coach.contracts import TOPICS
+from coach.server.holds import UPLOAD_MAX_BYTES, HoldMapBuilder, Unavailable
 
 log = logging.getLogger("coach.server")
 
@@ -214,6 +217,8 @@ def create_app(
     if control is not None:
         control.listen(hub.set_hello)
     camera_senders: set[WebSocket] = set()
+    # Hold maps are built against the session that's running, so they need its controls too.
+    builder = HoldMapBuilder(control) if hasattr(control, "read_still") else None
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -223,6 +228,7 @@ def create_app(
 
     app = FastAPI(title="Climbing Coach", lifespan=lifespan)
     app.state.hub = hub
+    app.state.holds = builder
 
     @app.get("/")
     async def index() -> FileResponse:
@@ -287,6 +293,68 @@ def create_app(
         finally:
             camera_senders.discard(sock)
             log.info("browser camera disconnected")
+
+    def need_builder() -> HoldMapBuilder:
+        if builder is None:
+            raise HTTPException(404, "this server can't build hold maps")
+        return builder
+
+    async def run_builder(call: Awaitable[dict]) -> dict:
+        """Builder errors as HTTP errors: 409 for a bad request, 503 without A's code."""
+        try:
+            return await call
+        except Unavailable as e:
+            raise HTTPException(503, str(e)) from e
+        except (ValueError, KeyError, TypeError) as e:
+            raise HTTPException(409, str(e)) from e
+
+    @app.get("/api/holds")
+    async def holds_status() -> dict:
+        return await asyncio.to_thread(need_builder().status)  # reads and compares stills
+
+    @app.get("/api/holds/view")
+    async def holds_view() -> dict:
+        return need_builder().view()  # lets a reloaded dashboard get back into an open editor
+
+    @app.get("/api/holds/shapes")
+    async def holds_shapes() -> dict:
+        return await asyncio.to_thread(need_builder().shapes)
+
+    @app.get("/api/holds/still.jpg")
+    async def holds_still() -> Response:
+        jpeg = need_builder().jpeg
+        if jpeg is None:
+            raise HTTPException(404, "no hold map is open")
+        return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/holds/open")
+    async def holds_open(
+        still: Annotated[str, Body(embed=True)],
+        at: Annotated[float | None, Body(embed=True)] = None,
+    ) -> dict:
+        return await run_builder(need_builder().open(still, at))
+
+    @app.post("/api/holds/upload")
+    async def holds_upload(request: Request, name: str = "picture") -> dict:
+        """The raw picture in the body (the page sends a JPEG); ?name= is its file name."""
+        if int(request.headers.get("content-length") or 0) > UPLOAD_MAX_BYTES:
+            raise HTTPException(413, "that picture is too big")
+        builder = need_builder()
+        return await run_builder(builder.upload(name, await request.body()))
+
+    @app.post("/api/holds/op")
+    async def holds_op(body: Annotated[dict, Body()]) -> dict:
+        args = dict(body)
+        return await run_builder(need_builder().op(str(args.pop("op", "")), args))
+
+    @app.post("/api/holds/save")
+    async def holds_save() -> dict:
+        return await run_builder(need_builder().save())
+
+    @app.post("/api/holds/close")
+    async def holds_close() -> dict:
+        await need_builder().close()  # restarts analysis
+        return {"open": False}
 
     return app
 

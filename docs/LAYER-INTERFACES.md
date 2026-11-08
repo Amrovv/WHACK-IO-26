@@ -51,6 +51,8 @@ The integration crash came from two classes both called `LatestQueue`. They do d
 | `PoseTracker(cfg, holdmap=, shapes=)` | `.process(t, frame_idx, bgr) -> ClimberState` and `.close()`. Stateful, so call it from one thread only. Contacts are only filled in when a hold map is given. |
 | `load_holdmap_with_shapes(problem_id)` | `data/holdmaps/<id>.json` → `(HoldMap, shapes)`. Raises `FileNotFoundError` when there's no map. |
 | `load_perception_config()` | the `perception` section of `config/default.yaml` |
+| `EditorState(image, cfg)` (`holdmap_editor`) | The hold map editor's logic with no window: `pick_colour` (runs the Roboflow detector, keeps holds of the clicked colour), `toggle_at`, `delete_at`, `erase_rect`, `add_box`, `mark`, `undo`, `clear_colour`, `load_existing`, `build_with_shapes(problem_id)`. D's dashboard editor drives it over HTTP. |
+| `save_holdmap(holdmap, root, shapes)`, `holdmap_path(problem_id, root)`, `load_holds_config()` | Write a map (with polygons) to `data/holdmaps/<id>.json`; where it lives; the `holds` config section. |
 | pose-cache JSONL | one `ClimberState` per line (`coach/perception/serialize.py`); `t` is video time in seconds |
 
 ### B, brain (`coach/brain`)
@@ -81,6 +83,7 @@ bus and so never publishes `"spoken"`. **Ask for C:** give `PrintVoice` an optio
 | `PoseThreads` (`run.py`) | Real perception from A's parts. Falls back to `stubs.VideoPerception` (video, no pose) if A's code isn't on the branch or the pose model fails to load. |
 | `coach.server.create_app(bus, hello, control=)`, `serve(bus, host, port)` | The dashboard: `/ws` sends every bus item as `{"topic", "t", "payload"}`; `/video` is MJPEG. With a `control` (run.py's `Session`): `GET /api/sources`, `POST /api/source {"spec"}` to switch, and `WS /camera` for webcam JPEGs from a dashboard. |
 | `Session` (`run.py`) | The current source, its perception workers and a brain. `switch(spec)` swaps to any clip under `videos/` or the browser camera while the server, voice and bus log keep running. The brain is rebuilt, so attempts and the hold map start fresh. A clip named `<problem>_<NN>_<name>` gets that problem id. |
+| `HoldMapBuilder` (`coach/server/holds.py`) | Builds a problem's hold map from the dashboard: a still of the problem's empty-wall clip (or the current frame), one click on a route hold runs A's Roboflow detector through `EditorState`, then toggle, erase, add, mark start/top, save. Roboflow runs only then, off the event loop, never in the live loop. Picking the colour again starts over in a fresh `EditorState` (A's `pick_colour` keeps hand-placed and loaded holds and adds the detected ones on top). Opening calls `Session.pause()` (perception, brain and voice stop; the last frame is kept); leaving calls `Session.resume()`, and saving calls `Session.reload()`: both restart perception and the brain on the same source, so A's contacts and B's brain both load the new map. Stills are compared with the video's newest frame (ORB features) and the ones filmed from another camera position are listed last and flagged. A video still (an empty-wall clip, or the clip being analysed) can be any moment: `Session.read_still(key, at)`, and the `frame` op swaps the picture while keeping the holds. Uploaded pictures (`POST /api/holds/upload`) are kept as JPEGs in `data/stills/<problem>/` and offered with the others. No change to A's or B's code. |
 | `BrowserCamera` (`coach/server/camera.py`) | A frame source fed by `/camera`: iterate it for `(t, frame_idx, bgr)` like A's camera. `t` is arrival time. `PoseThreads` and `VideoPerception` both accept it in place of a `cam:`/`file:` source. |
 | bus log | `data/logs/bus-<problem>-<stamp>.jsonl`, every topic except `"frame"`. |
 
@@ -109,3 +112,15 @@ trial merge of `main` + A + `daniel` passes the whole test suite and runs `run.p
    `CoachEvent.data["dir"]` already exists for this, so no contract change is needed: B fills it, C speaks it.
 3. **Climb 2 data.** A to push `data/pose_cache/*.jsonl` and the Climb 2 hold map (shared drive or
    LFS), so B can run the real end-to-end test.
+4. **Hold map mid-run (B, optional).** The brain reads the hold map once, when it starts, so a map
+   saved from the dashboard restarts analysis (attempt history resets). If the team wants to keep
+   the history, B could let `Brain` take a new `"holdmap"` from the bus while running; D would then
+   publish it instead of restarting. Not needed for the demo.
+5. **Footholds in the colour filter (A, optional).** On our Climb 1 footage, clicking a yellow hold
+   also keeps some grey screw-on footholds (`hue_tolerance` / `min_saturation` in `holds`). The
+   editor lets you leave them out by hand, but a tighter filter would save clicks.
+6. **Hold maps belong to a camera position.** A map only fits footage filmed from where its still
+   was taken. A's `climb2` map is different footage from our `climb_2_*` clips, so the clips get
+   problem `climb_2` and their own map. Even the two `climb_2_00_empty_wall` clips differ: only
+   `climb_2_00_empty_wall (1).mp4` matches `climb_2_05_hand_searching` (the other is 9.7% of the
+   width off). The dashboard editor checks each still against the video and offers the match first.

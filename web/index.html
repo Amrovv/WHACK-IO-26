@@ -203,8 +203,11 @@
     border-left: var(--rule-w) solid var(--rule-strong);
     padding: calc(var(--gap) * 0.65) var(--gap); }
   #ladder { flex: 1; min-width: 0; display: grid; grid-template-rows: repeat(var(--n, 1), minmax(0, 1fr)); min-height: 0; }
-  #ladder:empty::after { content: "No hold map yet"; align-self: center; justify-self: stretch; color: var(--pencil);
-    font-size: var(--s); text-align: center; }
+  #ladder:empty { display: none; }
+  #ladder-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 0.7em; color: var(--pencil); font-size: var(--s); text-align: center; }
+  #ladder:not(:empty) ~ #ladder-empty { display: none; }
+  #ladder-head .aside { display: inline-flex; align-items: baseline; gap: 0.6em; }
   .rung { display: flex; align-items: center; gap: 0.35em; border-top: 2px solid var(--rule); min-height: 0; min-width: 0;
     overflow: hidden; font-size: var(--rung-fs, var(--m)); }
   .rung:last-child { border-bottom: 2px solid var(--rule); }
@@ -312,9 +315,91 @@
   #cap-text.arrive { animation: arrive 0.45s var(--ease-out); }
   @keyframes arrive { from { opacity: 0.35; transform: translateY(0.18em); } }
 
+  /* ---- Buttons: square, ruled; the one primary action is an inverted ink block ---- */
+  .btn { font: inherit; font-size: var(--s); font-weight: 700; color: var(--ink); background: transparent;
+    border: 2px solid var(--rule-strong); border-radius: 0; padding: 0.3em 0.85em; cursor: pointer;
+    transition: border-color 0.15s, background-color 0.15s; white-space: nowrap; }
+  .btn:hover:not(:disabled) { border-color: var(--ink); }
+  .btn:focus-visible, .linkbtn:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  .btn:disabled { color: var(--pencil); cursor: not-allowed; }
+  .btn.primary { background: var(--ink); color: var(--page); border-color: var(--ink); }
+  .btn.primary:hover:not(:disabled) { background: var(--graphite); border-color: var(--graphite); }
+  .btn.primary:disabled { background: var(--rule); border-color: var(--rule); color: var(--pencil); }
+  .linkbtn { font: inherit; font-weight: 700; color: var(--graphite); background: none; border: 0; padding: 0;
+    cursor: pointer; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 0.2em; }
+  .linkbtn:hover { color: var(--ink); }
+
+  /* ---- Hold map editor: takes over everything under the running head while it's open ---- */
+  #editor { position: fixed; z-index: 10; inset: var(--head-h) 0 0 0; background: var(--page);
+    border-top: var(--rule-w) solid var(--rule-strong); display: grid;
+    grid-template-columns: minmax(0, 1fr) clamp(320px, 30vw, 520px); }
+  body.editing { overflow: hidden; }
+  #ed-stage { min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center;
+    padding: var(--gap) var(--gap) var(--gap) calc(var(--gap) * 1.4); }
+  #ed-frame { position: relative; flex: none; background: var(--frame); outline: 2px solid var(--rule); touch-action: none; }
+  #ed-still, #ed-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #ed-still { object-fit: fill; user-select: none; -webkit-user-drag: none; }
+  #ed-canvas { cursor: crosshair; }
+  #editor.busy #ed-canvas { cursor: progress; }
+  /* While Roboflow runs (or the map saves): the still dims and a spinner says it's working. */
+  #ed-busy { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(11, 12, 13, 0.38); cursor: progress; }
+  #ed-busy[hidden] { display: none; }
+  #ed-busy .box { display: flex; align-items: center; gap: 0.55em; background: var(--ink); color: var(--page);
+    font-size: var(--m); font-weight: 800; padding: 0.3em 0.7em; white-space: nowrap; }
+  /* The one spinner, added at the user's request; it stands still under reduced motion. */
+  .spinner { flex: none; width: 0.78em; height: 0.78em; border: 0.14em solid currentColor;
+    border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #ed-fit { border: 2px solid var(--ink); padding: 0.25em 0.55em; color: var(--ink); font-weight: 600; }
+  /* Moment: a video still can be any frame of its clip. */
+  #ed-scrub { display: flex; align-items: center; gap: 0.7em; margin-top: 0.6em; font-size: var(--s);
+    font-weight: 700; color: var(--graphite); }
+  #ed-scrub[hidden] { display: none; }
+  #ed-time { flex: 1; min-width: 0; margin: 0; accent-color: var(--ink); cursor: pointer; }
+  #ed-time:disabled { cursor: progress; }
+  #ed-time-label { color: var(--ink); white-space: nowrap; }
+  /* The sections scroll if they must; the actions stay pinned to the bottom, always in reach. */
+  #ed-panel { border-left: var(--rule-w) solid var(--rule-strong); display: flex; flex-direction: column;
+    min-height: 0; overflow-y: auto; }
+  #ed-panel .sect { padding-top: calc(var(--gap) * 0.55); padding-bottom: calc(var(--gap) * 0.55); }
+  #ed-panel .sect:last-of-type { border-bottom: 0; }
+  #ed-panel h2#ed-title { display: block; margin: 0; font-size: var(--m); font-weight: 800; color: var(--ink);
+    letter-spacing: -0.01em; line-height: 1.1; }
+  #ed-for { margin-top: 0.2em; font-size: var(--s); color: var(--graphite); }
+  #ed-for .num { color: var(--ink); font-weight: 700; }
+  #ed-message { margin: 0.5em 0 0; font-size: var(--s); line-height: 1.3; color: var(--ink); }
+  #ed-pic { display: flex; align-items: center; gap: 0.7em; font-size: var(--s); font-weight: 700; color: var(--graphite); }
+  #ed-pic .sel { flex: 1; min-width: 0; }
+  #ed-pic #ed-still-pick { width: 100%; max-width: 100%; }
+  #ed-still-pick { appearance: none; -webkit-appearance: none; font: inherit; font-size: var(--s); font-weight: 700;
+    color: var(--ink); background: var(--page-2); border: 2px solid var(--rule-strong); border-radius: 0;
+    padding: 0.2em 2.1em 0.2em 0.55em; text-overflow: ellipsis; cursor: pointer; }
+  #ed-still-pick:hover { border-color: var(--ink); }
+  #ed-still-pick:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  #ed-tools { display: flex; flex-direction: column; gap: 0.35em; font-size: var(--s); }
+  .tool { position: relative; display: flex; align-items: center; gap: 0.6em; padding: 0.22em 0.6em;
+    border: 2px solid var(--rule); cursor: pointer; font-weight: 700; color: var(--graphite);
+    transition: border-color 0.15s; }
+  .tool:hover { border-color: var(--rule-strong); color: var(--ink); }
+  .tool input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+  .tool:has(input:checked) { background: var(--ink); border-color: var(--ink); color: var(--page); }
+  .tool:has(input:focus-visible) { outline: 3px solid var(--ink); outline-offset: 2px; }
+  .tool:has(input:disabled) { color: var(--pencil); border-color: var(--rule); cursor: not-allowed; background: none; }
+  .tool .k { margin-left: auto; font-family: var(--mono); font-weight: 500; font-size: 0.8em; opacity: 0.75; }
+  .ed-hint { margin: 0.6em 0 0; font-size: var(--s); color: var(--graphite); line-height: 1.3; }
+  #ed-summary { font-size: var(--s); color: var(--graphite); line-height: 1.35; }
+  #ed-summary b { color: var(--ink); font-family: var(--mono); }
+  #ed-summary .count { display: block; font-size: var(--m); font-weight: 800; color: var(--ink); font-family: var(--sans); }
+  #ed-summary .linkbtn { font-size: inherit; }
+  #ed-actions { position: sticky; bottom: 0; margin-top: auto; display: flex; flex-wrap: wrap; gap: 0.6em;
+    padding: calc(var(--gap) * 0.8) calc(var(--gap) * 1.2); border-top: 2px solid var(--rule); background: var(--page); }
+  #ed-save { margin-left: auto; }
+
   @media (prefers-reduced-motion: reduce) {
+    .btn, .tool { transition: none; }
     #source { transition: none; }
-    #cap-text.arrive, .mark.fresh path, #mode.live .dot { animation: none; stroke-dashoffset: 0; }
+    #cap-text.arrive, .mark.fresh path, #mode.live .dot, .spinner { animation: none; stroke-dashoffset: 0; }
     .box path, .box:has(input:checked) path { transition: none; }
   }
 
@@ -338,6 +423,10 @@
     #timeline { max-height: 60vh; }
     #caption { padding: 14px 16px; flex-wrap: wrap; gap: 10px 16px; }
     #caption.fit:not(.debrief) #cap-text { -webkit-line-clamp: 3; }
+    #editor { grid-template-columns: minmax(0, 1fr); grid-template-rows: max-content max-content;
+      overflow-y: auto; top: 0; }
+    #ed-stage { padding: 12px 16px; }
+    #ed-panel { border-left: 0; border-top: var(--rule-w) solid var(--rule-strong); overflow: visible; }
   }
 </style>
 </head>
@@ -370,8 +459,9 @@
 </div>
 
 <section id="ladder-col" aria-label="Holds, top to bottom, with each attempt's highpoint">
-  <h2 id="ladder-head">Holds <span class="aside num" id="ladder-count"></span></h2>
+  <h2 id="ladder-head">Holds <span class="aside"><span class="num" id="ladder-count"></span><button type="button" class="linkbtn" id="ladder-edit" hidden>Edit</button></span></h2>
   <div id="ladder"></div>
+  <div id="ladder-empty"><span>No hold map yet</span><button type="button" class="btn" id="ladder-build" hidden>Build hold map</button></div>
 </section>
 
 <aside id="side">
@@ -402,6 +492,49 @@
   <div id="cap-ms" class="num"></div>
 </section>
 
+<section id="editor" hidden aria-labelledby="ed-title">
+  <div id="ed-stage">
+    <div id="ed-frame">
+      <img id="ed-still" alt="Still of the wall the hold map is built from">
+      <canvas id="ed-canvas" aria-label="Holds on the still: click to edit"></canvas>
+      <div id="ed-busy" role="status" hidden><div class="box"><span class="spinner" aria-hidden="true"></span><span id="ed-busy-text">Finding holds…</span></div></div>
+    </div>
+  </div>
+  <div id="ed-panel">
+    <div class="sect">
+      <h2 id="ed-title">Hold map</h2>
+      <div id="ed-for">for problem <span class="num" id="ed-problem"></span></div>
+      <p id="ed-message" aria-live="polite"></p>
+    </div>
+    <div class="sect">
+      <label id="ed-pic"><span>Picture</span><span class="sel"><select id="ed-still-pick"></select></span></label>
+      <label id="ed-scrub" hidden><span>Moment</span><input type="range" id="ed-time" min="0" step="0.04"><span id="ed-time-label" class="num"></span></label>
+      <p class="ed-hint"><button type="button" class="linkbtn" id="ed-own">Use your own picture</button></p>
+      <p class="ed-hint" id="ed-fit" hidden>This picture was filmed from a different spot than the video, so holds marked on it won't line up with the climber. Pick another picture.</p>
+    </div>
+    <div class="sect">
+      <h2>Click a hold to <span class="aside"><button type="button" class="linkbtn" id="ed-undo">Undo</button></span></h2>
+      <div id="ed-tools" role="radiogroup" aria-label="What a click does">
+        <label class="tool"><input type="radio" name="ed-tool" value="toggle" checked>Leave out or put back<span class="k">1</span></label>
+        <label class="tool"><input type="radio" name="ed-tool" value="start">Mark as a start hold<span class="k">2</span></label>
+        <label class="tool"><input type="radio" name="ed-tool" value="top">Mark as the top<span class="k">3</span></label>
+        <label class="tool"><input type="radio" name="ed-tool" value="box">Add a missing hold (drag)<span class="k">4</span></label>
+      </div>
+      <p class="ed-hint" id="ed-hint"></p>
+    </div>
+    <div class="sect">
+      <h2>Route <span class="aside"><button type="button" class="linkbtn" id="ed-recolour">Pick the colour again</button></span></h2>
+      <div id="ed-summary"></div>
+    </div>
+    <div id="ed-actions">
+      <button type="button" class="btn" id="ed-cancel">Cancel</button>
+      <button type="button" class="btn primary" id="ed-save">Save hold map</button>
+    </div>
+  </div>
+</section>
+<!-- Outside the editor, so "Build hold map" can ask for a picture before the editor opens. -->
+<input type="file" id="ed-file" accept="image/*" hidden>
+
 <script>
 "use strict";
 
@@ -417,6 +550,10 @@ const DEBRIEF_LONG_CHARS = 240;    // longer debriefs step down a size
 const HEAD_PAINT_MS = 250;          // running head refresh
 const ATTEMPT_CELLS = 2;            // newest attempts shown as cells; all of them are on the ladder
 const NARROW_MAX_VH = 0.7;          // narrow screens: the picture is at most this much of the screen height
+const ED_DRAG_MIN_PX = 6;           // hold map editor: a pointer move shorter than this is a click
+const UPLOAD_MAX_SIDE = 2560;       // your own picture is sent at most this long on its longer side, px
+const UPLOAD_JPEG_QUALITY = 0.92;
+const SAME_SHAPE_TOLERANCE = 0.02;  // aspect ratios this close line up (coach/server/holds.py)
 const BROWSER_SPEC = "browser";     // the source spec for this device's camera (coach/server/camera.py)
 const CAMERA_FPS = 15;              // webcam frames sent to the server per second
 const CAMERA_MAX_SIDE = 960;        // longer side of a sent webcam frame, px
@@ -472,6 +609,7 @@ const S = {
   source: null,          // hello.source
   stream: { arrivals: [], bytes: [] },  // video test: recent frame arrival times and sizes
   holdmap: null,
+  shapes: {},            // hold id -> outline (diagonal holds), from /api/holds/shapes
   state: null,
   latencies: [],
   spokenKeys: new Set(),  // cues that were actually said (capture time | kind)
@@ -526,13 +664,15 @@ function onHello(d) {
   if (d.mode) setMode(d.mode, d.source || null);
   if (d.spec) setCurrentSource(d.spec);
   syncCamera(d);
+  if (!DEMO) loadHoldsStatus();  // the problem may have changed
 }
 
 // A new source: forget the old problem, its attempts and cues, and wait for the new picture.
 function resetSession() {
   Object.assign(S, { state: null, latencies: [], attemptNo: null, attemptStartT: null, attemptLive: false,
     liveHold: null, highHold: null, attempts: [], freshAttempt: null, lastOutcome: null, curEvents: 0,
-    curSpoken: 0, debriefing: false, stream: { arrivals: [], bytes: [] }, overlayDirty: true, headDirty: true });
+    curSpoken: 0, debriefing: false, stream: { arrivals: [], bytes: [] }, shapes: {}, overlayDirty: true,
+    headDirty: true });
   S.spokenKeys.clear();
   onHoldmap(null);
   $("problem").hidden = true;
@@ -645,7 +785,21 @@ function onHoldmap(hm) {
     root.removeProperty("--hold"); root.removeProperty("--hold-ink");
   }
   renderLadder();
+  loadShapes(hm);
   S.headDirty = true;
+}
+
+// Diagonal holds have an outline in the hold map file (the HoldMap on the bus carries boxes
+// only). Contacts are measured against the outline, so the overlay draws it too.
+async function loadShapes(hm) {
+  S.shapes = {};
+  if (!hm || DEMO) return;
+  try {
+    const r = await fetch(`${HTTP_BASE}/api/holds/shapes`);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.problem_id === S.holdmap?.problem_id) { S.shapes = d.shapes || {}; S.overlayDirty = true; }
+  } catch {}
 }
 
 function luminance(hex) {
@@ -816,6 +970,7 @@ function renderLadder() {
   const holds = [...(S.holdmap?.holds || [])].sort((a, b) => b.id - a.id);
   el.style.setProperty("--n", Math.max(holds.length, 1));
   $("ladder-count").textContent = holds.length || "";
+  renderHoldsEntry();
   el.innerHTML = holds.map((h) => {
     return `<div class="rung" data-id="${h.id}"><span class="n">${h.id}</span><span class="marks"></span></div>`;
   }).join("");
@@ -1014,6 +1169,38 @@ function normLimbs(obj) {
 
 const OVERLAY_FONT = '"Atkinson Hyperlegible Next", system-ui, sans-serif';
 
+// A hold's shape as the current path: its outline if it has one, otherwise its box.
+// P maps a normalised [x, y] to canvas pixels.
+function holdPath(c, P, bbox, poly) {
+  c.beginPath();
+  if (poly && poly.length >= 3) {
+    poly.forEach((pt, i) => { const [x, y] = P(pt); if (i) c.lineTo(x, y); else c.moveTo(x, y); });
+    c.closePath();
+  } else {
+    const [x0, y0] = P([bbox[0], bbox[1]]), [x1, y1] = P([bbox[2], bbox[3]]);
+    c.rect(x0, y0, x1 - x0, y1 - y0);
+  }
+}
+
+// "1 START", "10 TOP" on white, mid holds' numbers on dark, above the hold (below if that's taken).
+function drawHoldLabel(c, u, id, role, [x0, y0, x1, y1], placed) {
+  const label = role === "start" ? `${id} START` : role === "top" ? `${id} TOP` : `${id}`;
+  c.font = `700 ${17 * u}px ${OVERLAY_FONT}`;
+  c.textBaseline = "middle";
+  c.textAlign = "center";
+  const tw = c.measureText(label).width + 12 * u, th = 24 * u;
+  const lx = (x0 + x1) / 2;
+  let ly = Math.max(th / 2, y0 - th / 2 - 3 * u);
+  const box = (y) => ({ x0: lx - tw / 2, x1: lx + tw / 2, y0: y - th / 2, y1: y + th / 2 });
+  const hits = (r) => placed.some((q) => r.x0 < q.x1 && r.x1 > q.x0 && r.y0 < q.y1 && r.y1 > q.y0);
+  if (hits(box(ly))) ly = y1 + th / 2 + 3 * u;
+  placed.push(box(ly));
+  c.fillStyle = role === "mid" ? "rgba(17,19,21,0.78)" : "#ffffff";
+  c.fillRect(lx - tw / 2, ly - th / 2, tw, th);
+  c.fillStyle = role === "mid" ? "#ffffff" : "#111315";
+  c.fillText(label, lx, ly + 1 * u);
+}
+
 function drawOverlay() {
   resizeCanvas();
   const dpr = window.devicePixelRatio || 1;
@@ -1033,34 +1220,18 @@ function drawOverlay() {
   const holds = S.holdmap?.holds || [];
   const byId = {};
   const placed = [];
-  const hits = (r) => placed.some((q) => r.x0 < q.x1 && r.x1 > q.x0 && r.y0 < q.y1 && r.y1 > q.y0);
-  ctx.textBaseline = "middle";
-  ctx.textAlign = "center";
   for (const h of holds) {
     byId[h.id] = h;
-    const [x0, y0] = P([h.bbox[0], h.bbox[1]]);
-    const [x1, y1] = P([h.bbox[2], h.bbox[3]]);
     const users = heldBy[h.id];
+    holdPath(ctx, P, h.bbox, S.shapes[h.id]);
     if (users) {
       ctx.fillStyle = LIMB_COLOURS[users[0]] + "55";
-      ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      ctx.fill();
     }
     ctx.lineWidth = (users ? 4 : h.role === "mid" ? 2 : 3) * u;
     ctx.strokeStyle = users ? LIMB_COLOURS[users[0]] : "rgba(255,255,255,0.8)";
-    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
-
-    const label = h.role === "start" ? `${h.id} START` : h.role === "top" ? `${h.id} TOP` : `${h.id}`;
-    ctx.font = `700 ${17 * u}px ${OVERLAY_FONT}`;
-    const tw = ctx.measureText(label).width + 12 * u, th = 24 * u;
-    const lx = (x0 + x1) / 2;
-    let ly = Math.max(th / 2, y0 - th / 2 - 3 * u);
-    const box = (y) => ({ x0: lx - tw / 2, x1: lx + tw / 2, y0: y - th / 2, y1: y + th / 2 });
-    if (hits(box(ly))) ly = y1 + th / 2 + 3 * u;   // try below the hold instead
-    placed.push(box(ly));
-    ctx.fillStyle = h.role === "mid" ? "rgba(17,19,21,0.78)" : "#ffffff";
-    ctx.fillRect(lx - tw / 2, ly - th / 2, tw, th);
-    ctx.fillStyle = h.role === "mid" ? "#ffffff" : "#111315";
-    ctx.fillText(label, lx, ly + 1 * u);
+    ctx.stroke();
+    drawHoldLabel(ctx, u, h.id, h.role, [...P([h.bbox[0], h.bbox[1]]), ...P([h.bbox[2], h.bbox[3]])], placed);
   }
 
   if (!st) return;
@@ -1228,6 +1399,449 @@ async function pickSource(spec) {
   }
 }
 $("source").addEventListener("change", (e) => pickSource(e.target.value));
+
+// ---- Hold map editor ---------------------------------------------------------------
+// Builds data/holdmaps/<problem>.json from a still of the empty wall, with A's Roboflow
+// detector doing the finding (coach/server/holds.py). Each click or drag is one op on the
+// server, which replies with the whole editor view to redraw. Analysis pauses while the editor
+// is open. Saving or leaving restarts it, so a new hello arrives (with the new map after a save).
+const HOLDS = { status: null, checked: false };  // GET /api/holds, or null when this server can't build maps
+const ED = { view: null, tool: "toggle", busy: false, down: null, drag: null, hover: null, edits: 0 };
+const edCanvas = $("ed-canvas"), edCtx = edCanvas.getContext("2d"), edStill = $("ed-still");
+const ED_HINTS = {
+  toggle: "Drag across holds to erase them. Right-click a hold to delete it.",
+  start: "Click a kept hold again to unmark it.",
+  top: "Click a kept hold again to unmark it.",
+  box: "Drag a box around a hold the detector missed.",
+};
+
+async function loadHoldsStatus() {
+  try {
+    const r = await fetch(`${HTTP_BASE}/api/holds`);
+    HOLDS.status = r.ok ? await r.json() : null;
+  } catch {
+    HOLDS.status = null;
+  }
+  renderHoldsEntry();
+  // Reloaded while the editor was open (analysis is paused): go back into it.
+  if (!HOLDS.checked && HOLDS.status) {
+    HOLDS.checked = true;
+    if (HOLDS.status.open && !ED.view) reopenEditor();
+  }
+}
+
+async function reopenEditor() {
+  try {
+    const r = await fetch(`${HTTP_BASE}/api/holds/view`);
+    const view = r.ok ? await r.json() : null;
+    if (!view?.open || ED.view) return;
+    ED.edits = 1;  // unknown edits: ask before leaving
+    showEditor(view);
+  } catch {}
+}
+
+function renderHoldsEntry() {
+  const st = HOLDS.status, can = !!st?.available, has = holdCount() > 0;
+  $("ladder-edit").hidden = !can || !has;
+  $("ladder-build").hidden = !can || has;
+}
+
+// body: JSON, or a Blob (a picture) sent as it is.
+async function edPost(path, body) {
+  const blob = body instanceof Blob;
+  const r = await fetch(`${HTTP_BASE}/api/holds/${path}`, { method: "POST",
+    headers: { "content-type": blob ? body.type || "image/jpeg" : "application/json" },
+    body: blob ? body : JSON.stringify(body || {}) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || r.statusText);
+  return data;
+}
+
+// label: the words beside the spinner over the still (slow steps only); null shows none.
+function setEdBusy(busy, label = null) {
+  ED.busy = busy;
+  $("editor").classList.toggle("busy", busy);
+  $("ed-busy").hidden = !(busy && label);
+  if (label) $("ed-busy-text").textContent = label;
+  for (const id of ["ed-undo", "ed-recolour", "ed-save", "ed-still-pick", "ed-time", "ed-own"]) $(id).disabled = busy;
+  if (!busy) renderEdControls();
+}
+
+// One request to the builder; the view it returns is drawn. Returns the view, or null on failure.
+async function edRun(path, body, label = null) {
+  if (ED.busy) return null;
+  setEdBusy(true, label);
+  try {
+    const view = await edPost(path, body);
+    showEditor(view);
+    if (path === "op") ED.edits++;
+    return view;
+  } catch (err) {
+    if (ED.view?.open) $("ed-message").textContent = `That didn't work: ${err.message}`;
+    else srcNote(`Couldn't open the hold map editor: ${err.message}`, true);
+    return null;
+  } finally {
+    setEdBusy(false);
+  }
+}
+
+async function openEditor(stillKey) {
+  if (ED.busy) return;
+  // Nothing to build from (no video, no empty-wall clip): ask for a picture of your own. This
+  // has to happen before any await, while the click still allows opening a file dialog.
+  if (!stillKey && HOLDS.status?.available && !HOLDS.status.stills?.length) return $("ed-file").click();
+  const first = !ED.view?.open;
+  if (first) srcNote("Opening the hold map editor and pausing analysis…");
+  await loadHoldsStatus();
+  const st = HOLDS.status;
+  if (!st?.available) return srcNote(st?.reason || "This server can't build hold maps", true);
+  if (!st.stills.length) {
+    return srcNote("There's no picture to build a hold map from yet. Click again to use your own picture.", true);
+  }
+  ED.edits = 0;
+  // The still used last (at its moment), else the first: the builder lists the stills filmed
+  // from the video's camera position first.
+  const body = stillKey ? { still: stillKey } : st.last ? { still: st.last.key, at: st.last.at }
+    : { still: st.stills[0].key };
+  const view = await edRun("open", body, first ? null : "Opening…");
+  if (view && first) srcNote(null);
+}
+
+// ---- Your own picture: converted in the browser (so any format it can open, the right way up,
+// at most UPLOAD_MAX_SIDE) to a JPEG, kept by the server for this problem, and opened.
+async function toJpeg(file) {
+  const bmp = await createImageBitmap(file);  // applies the photo's EXIF orientation
+  const k = Math.min(1, UPLOAD_MAX_SIDE / Math.max(bmp.width, bmp.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bmp.width * k);
+  c.height = Math.round(bmp.height * k);
+  c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close?.();
+  return new Promise((resolve, reject) => c.toBlob(
+    (b) => (b ? resolve(b) : reject(new Error("couldn't encode"))), "image/jpeg", UPLOAD_JPEG_QUALITY));
+}
+
+async function usePicture(file) {
+  if (!file || ED.busy) return;
+  const open = !!ED.view?.open;
+  if (open && ED.edits && !confirm("Switching pictures starts this map again. Continue?")) return;
+  const say = (text) => (open ? ($("ed-message").textContent = text) : srcNote(text, true));
+  if (!open) srcNote("Opening your picture and pausing analysis…");
+  let jpeg;
+  try {
+    jpeg = await toJpeg(file);
+  } catch {
+    return say(`This browser can't open ${file.name}: use a JPEG or PNG.`);
+  }
+  ED.edits = 0;
+  const view = await edRun(`upload?name=${encodeURIComponent(file.name)}`, jpeg, open ? "Opening…" : null);
+  if (!view) return;
+  if (!open) srcNote(null);
+  await loadHoldsStatus();  // the picture joins the list
+  renderEdControls();
+}
+
+// ---- Moment: drag through a video still. One request at a time; while one runs, only the
+// newest wanted moment is kept, so the picture follows the thumb without piling up requests.
+const SCRUB = { want: null, inflight: false };
+const timeLabel = (t, d) => `${t.toFixed(1)} s of ${d.toFixed(1)} s`;
+
+function scrubTo(at) {
+  SCRUB.want = at;
+  if (ED.view?.duration) $("ed-time-label").textContent = timeLabel(at, ED.view.duration);
+  if (!SCRUB.inflight) scrubNext();
+}
+
+async function scrubNext() {
+  if (SCRUB.want == null || !ED.view?.open) return;
+  const at = SCRUB.want;
+  SCRUB.want = null;
+  SCRUB.inflight = true;
+  try {
+    showEditor(await edPost("op", { op: "frame", at }));
+  } catch (err) {
+    $("ed-message").textContent = `That didn't work: ${err.message}`;
+  } finally {
+    SCRUB.inflight = false;
+    if (SCRUB.want != null) scrubNext();
+  }
+}
+
+function showEditor(view) {
+  if (!view?.open) return hideEditor();
+  const newStill = ED.view?.version !== view.version;
+  ED.view = view;
+  $("editor").hidden = false;
+  document.body.classList.add("editing");
+  $("ed-problem").textContent = view.problem_id;
+  if (newStill) {
+    edStill.src = `${HTTP_BASE}/api/holds/still.jpg?v=${view.version}`;
+    ED.hover = null;
+  }
+  $("ed-message").textContent = view.message;
+  renderEdControls();
+  fitEditor();
+  drawEditor();
+}
+
+function hideEditor() {
+  $("editor").hidden = true;
+  document.body.classList.remove("editing");
+  ED.view = null;
+  ED.hover = ED.down = ED.drag = null;
+  edStill.removeAttribute("src");
+}
+
+// Clicks pick the route colour until there are holds to work on, and after "Pick the colour
+// again" (the server's "picking") until a pick finds holds or "Keep these holds".
+function choosingColour() {
+  const v = ED.view;
+  return !!v && (v.picking || (!v.picked && v.kept === 0));
+}
+
+function renderEdControls() {
+  const v = ED.view;
+  if (!v?.open) return;
+  const pick = $("ed-still-pick"), stills = HOLDS.status?.stills || [];
+  pick.innerHTML = stills.map((s) => `<option value="${esc(s.key)}">${esc(s.name)}` +
+    `${s.fits === false ? " · doesn't match the video" : ""}</option>`).join("");
+  pick.value = v.still;
+  $("ed-scrub").hidden = !v.duration;
+  if (v.duration) {
+    const range = $("ed-time");
+    range.max = v.duration;
+    if (SCRUB.want == null && !SCRUB.inflight) {  // don't pull the thumb back mid-drag
+      range.value = v.at ?? 0;
+      $("ed-time-label").textContent = timeLabel(v.at ?? 0, v.duration);
+    }
+  }
+  $("ed-fit").hidden = v.fits !== false;
+  if (v.fits === false) {
+    const [vw, vh] = pictureSize(), [w, h] = v.size;
+    $("ed-fit").textContent = Math.abs(w / h - vw / vh) > SAME_SHAPE_TOLERANCE
+      ? `This picture is ${w}×${h}, a different shape from the video (${vw}×${vh}), so holds marked on it won't line up with the climber. Pick another picture.`
+      : "This picture was filmed from a different spot than the video, so holds marked on it won't line up with the climber. Pick another picture.";
+  }
+  const colour = choosingColour();
+  for (const input of document.querySelectorAll('input[name="ed-tool"]')) {
+    input.disabled = ED.busy || (colour && input.value !== "box");
+  }
+  $("ed-hint").textContent = !colour ? ED_HINTS[ED.tool]
+    : v.kept ? "The holds it finds replace the ones you have. Undo brings them back."
+    : "Or drag a box around a hold to place it by hand.";
+  const kept = v.holds.filter((h) => h.kept).sort((a, b) => a.id - b.id);
+  const ids = (role) => kept.filter((h) => h.role === role).map((h) => `<b>${h.id}</b>`).join(", ") || "none";
+  const how = kept.length ? v.origin : "";
+  $("ed-summary").innerHTML = kept.length
+    ? `<span class="count num">${kept.length} hold${kept.length === 1 ? "" : "s"}</span>` +
+      `${esc([v.colour, how].filter(Boolean).join(" · "))}<br>` +
+      `Start ${ids("start")} · Top ${ids("top")}`
+    : "No holds yet.";
+  const keeping = v.picking && kept.length > 0;  // mid re-pick: offer a way back out
+  $("ed-recolour").hidden = colour && !keeping;
+  $("ed-recolour").textContent = keeping ? "Keep these holds" : "Pick the colour again";
+  $("ed-save").disabled = ED.busy || !kept.length;
+  $("ed-undo").disabled = ED.busy;
+}
+
+// The still, as large as fits beside the panel (or under it on a narrow screen).
+function fitEditor() {
+  const v = ED.view;
+  if (!v?.open) return;
+  const stage = $("ed-stage"), frameEl = $("ed-frame"), cs = getComputedStyle(stage);
+  const sw = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const sh = matchMedia("(max-width: 900px)").matches ? window.innerHeight * NARROW_MAX_VH
+    : stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  const [iw, ih] = v.size;
+  const k = Math.min(sw / iw, sh / ih);
+  if (!(k > 0)) return;
+  frameEl.style.width = `${Math.floor(iw * k)}px`;
+  frameEl.style.height = `${Math.floor(ih * k)}px`;
+}
+
+function drawEditor() {
+  const v = ED.view;
+  if (!v?.open) return;
+  const dpr = window.devicePixelRatio || 1, r = edCanvas.getBoundingClientRect();
+  const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
+  if (edCanvas.width !== W || edCanvas.height !== H) { edCanvas.width = W; edCanvas.height = H; }
+  const c = edCtx, P = ([x, y]) => [x * W, y * H];
+  const u = Math.max(0.65, Math.min(1.6, Math.max(W, H) / (900 * dpr))) * dpr;
+  c.clearRect(0, 0, W, H);
+  // Left out: dashed and dim, still clickable to put back.
+  c.setLineDash([5 * u, 4 * u]);
+  for (const h of v.holds.filter((x) => !x.kept)) {
+    holdPath(c, P, h.box, h.polygon);
+    c.lineWidth = 2 * u;
+    c.strokeStyle = "rgba(180, 186, 193, 0.85)";
+    c.stroke();
+  }
+  c.setLineDash([]);
+  if (ED.hover) {
+    holdPath(c, P, ED.hover.box, ED.hover.polygon);
+    c.fillStyle = "rgba(255, 255, 255, 0.28)";
+    c.fill();
+  }
+  // Kept: white over a dark edge, so the outline reads on a pale wall and on a dark one.
+  const kept = v.holds.filter((x) => x.kept).sort((a, b) => a.id - b.id);
+  for (const h of kept) {
+    const w = (h.role === "mid" ? 2.5 : 3.5) * u;
+    holdPath(c, P, h.box, h.polygon);
+    c.lineWidth = w + 3 * u;
+    c.strokeStyle = "rgba(11, 12, 13, 0.6)";
+    c.stroke();
+    c.lineWidth = w;
+    c.strokeStyle = "#ffffff";
+    c.stroke();
+  }
+  const placed = [];
+  for (const h of kept) drawHoldLabel(c, u, h.id, h.role, [...P(h.box.slice(0, 2)), ...P(h.box.slice(2))], placed);
+  if (ED.drag) {
+    const [[ax, ay], [bx, by]] = ED.drag.map(P);
+    const adding = ED.tool === "box";
+    c.fillStyle = adding ? "rgba(255, 255, 255, 0.14)" : "rgba(11, 12, 13, 0.45)";
+    c.fillRect(Math.min(ax, bx), Math.min(ay, by), Math.abs(bx - ax), Math.abs(by - ay));
+    c.setLineDash(adding ? [] : [6 * u, 4 * u]);
+    c.lineWidth = 2 * u;
+    c.strokeStyle = "#ffffff";
+    c.strokeRect(Math.min(ax, bx), Math.min(ay, by), Math.abs(bx - ax), Math.abs(by - ay));
+    c.setLineDash([]);
+  }
+}
+
+function edPoint(e) {
+  const r = edCanvas.getBoundingClientRect();
+  const clamp = (n) => Math.min(1, Math.max(0, n));
+  return [clamp((e.clientX - r.left) / r.width), clamp((e.clientY - r.top) / r.height)];
+}
+
+function insideHold(h, [x, y]) {
+  const poly = h.polygon;
+  if (!poly) return x >= h.box[0] && x <= h.box[2] && y >= h.box[1] && y <= h.box[3];
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+// The smallest hold under the point, as the server picks it.
+function holdAt(p) {
+  const area = (h) => (h.box[2] - h.box[0]) * (h.box[3] - h.box[1]);
+  const hits = (ED.view?.holds || []).filter((h) => insideHold(h, p));
+  return hits.length ? hits.reduce((a, b) => (area(b) < area(a) ? b : a)) : null;
+}
+
+function edClick([x, y]) {
+  if (choosingColour()) return edRun("op", { op: "pick", x, y }, "Finding holds…");
+  if (ED.tool === "box") {
+    $("ed-message").textContent = "Drag a box around the hold to add it.";
+    return;
+  }
+  edRun("op", { op: ED.tool, x, y });
+}
+
+edCanvas.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0 || ED.busy || !ED.view?.open) return;
+  try { edCanvas.setPointerCapture(e.pointerId); } catch {}  // keeps a drag going outside the picture
+  ED.down = edPoint(e);
+  ED.drag = null;
+});
+edCanvas.addEventListener("pointermove", (e) => {
+  const p = edPoint(e);
+  if (ED.down) {
+    const r = edCanvas.getBoundingClientRect();
+    const moved = Math.max(Math.abs(p[0] - ED.down[0]) * r.width, Math.abs(p[1] - ED.down[1]) * r.height);
+    if (moved >= ED_DRAG_MIN_PX) ED.drag = [ED.down, p];
+    drawEditor();
+    return;
+  }
+  const h = ED.busy ? null : holdAt(p);
+  if (h !== ED.hover) { ED.hover = h; drawEditor(); }
+});
+edCanvas.addEventListener("pointerup", (e) => {
+  if (!ED.down) return;
+  const start = ED.down, drag = ED.drag;
+  ED.down = ED.drag = null;
+  if (!drag) return edClick(start);
+  drawEditor();
+  const [[x0, y0], [x1, y1]] = drag;
+  edRun("op", { op: ED.tool === "box" ? "box" : "erase", x0, y0, x1, y1 });
+});
+edCanvas.addEventListener("pointercancel", () => { ED.down = ED.drag = null; drawEditor(); });
+edCanvas.addEventListener("pointerleave", () => { if (!ED.down && ED.hover) { ED.hover = null; drawEditor(); } });
+edCanvas.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  if (ED.busy || !ED.view?.open || choosingColour()) return;
+  const [x, y] = edPoint(e);
+  edRun("op", { op: "delete", x, y });
+});
+
+for (const input of document.querySelectorAll('input[name="ed-tool"]')) {
+  input.addEventListener("change", () => { ED.tool = input.value; renderEdControls(); });
+}
+document.addEventListener("keydown", (e) => {
+  if (!ED.view?.open || e.target.tagName === "SELECT") return;
+  if (e.key === "Escape" && ED.down) { ED.down = ED.drag = null; drawEditor(); return; }
+  if ((e.key === "z" && (e.metaKey || e.ctrlKey)) || (e.key === "u" && !e.metaKey && !e.ctrlKey)) {
+    e.preventDefault();
+    edRun("op", { op: "undo" });
+    return;
+  }
+  const radio = document.querySelectorAll('input[name="ed-tool"]')[Number(e.key) - 1];
+  if (radio && !radio.disabled && !e.metaKey && !e.ctrlKey) {
+    radio.checked = true;
+    radio.dispatchEvent(new Event("change"));
+  }
+});
+
+$("ed-undo").addEventListener("click", () => edRun("op", { op: "undo" }));
+$("ed-time").addEventListener("input", (e) => scrubTo(Number(e.target.value)));
+$("ed-own").addEventListener("click", () => $("ed-file").click());
+$("ed-file").addEventListener("change", (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = "";  // choosing the same file again still counts
+  usePicture(file);
+});
+$("ed-recolour").addEventListener("click", () => edRun("op", { op: ED.view?.picking ? "keep" : "recolour" }));
+$("ed-still-pick").addEventListener("change", (e) => {
+  const key = e.target.value;
+  if (ED.edits && !confirm("Switching pictures starts this map again. Continue?")) {
+    e.target.value = ED.view.still;
+    return;
+  }
+  openEditor(key);
+});
+$("ed-cancel").addEventListener("click", async () => {
+  if (ED.busy || (ED.edits && !confirm("Leave without saving this hold map?"))) return;
+  hideEditor();
+  srcNote("Restarting analysis…");
+  try {
+    await edPost("close");
+    srcNote(null);
+  } catch (err) {
+    srcNote(`Couldn't restart analysis: ${err.message}`, true);
+  }
+});
+$("ed-save").addEventListener("click", async () => {
+  if (ED.busy) return;
+  setEdBusy(true, "Saving…");
+  $("ed-message").textContent = "Saving, then restarting analysis with the new map…";
+  try {
+    const { holds } = await edPost("save");
+    hideEditor();
+    srcNote(`Saved a hold map with ${holds} holds. The coach is using it now.`);
+    setTimeout(() => { if ($("src-note").textContent.startsWith("Saved a hold map")) srcNote(null); }, 6000);
+  } catch (err) {
+    $("ed-message").textContent = `Couldn't save: ${err.message}`;
+  } finally {
+    setEdBusy(false);
+  }
+});
+$("ladder-edit").addEventListener("click", () => openEditor());
+$("ladder-build").addEventListener("click", () => openEditor());
+window.addEventListener("resize", () => { if (ED.view?.open) { fitEditor(); drawEditor(); } });
 
 // ---- This device's camera -------------------------------------------------------
 // Webcam frames go to the server as JPEGs over WS /camera. The server runs perception on

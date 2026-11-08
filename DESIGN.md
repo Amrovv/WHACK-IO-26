@@ -249,8 +249,24 @@ One line per entry, divided by 1px Faint Rules, meta in Mono on the right.
 
 ### Video Overlay
 Drawn on a canvas over the camera picture, scaled with the picture.
-- **Holds:** white outlined rectangles (80% alpha), numbered. Start and top holds get a white label with dark ink ("1 START", "10 TOP"); mid holds get a dark translucent label with white ink. A held hold takes its limb's colour as outline and a translucent fill.
+- **Holds:** white outlines (80% alpha), numbered: the hold's real outline when the hold map has one (the shape contacts are measured against), otherwise its box. Start and top holds get a white label with dark ink ("1 START", "10 TOP"); mid holds get a dark translucent label with white ink. A held hold takes its limb's colour as outline and a translucent fill.
 - **Pose:** white skeleton (88% alpha, 4px round caps), a ring at the hip, limb dots in the limb colours with a dashed line to the hold they are on.
+
+### Buttons
+The dashboard is watched, not operated, so buttons appear only for setup tasks.
+- **Button:** small-step 700 Pencil Ink text in a 2px Strong Rule box, square; the border turns Pencil Ink on hover; 3px Pencil Ink focus outline at 2px offset. Disabled text is Pencil.
+- **Primary:** the one main action of a task (Save hold map) is an inverted Pencil Ink block with Graphite Page text, Graphite on hover.
+- **Text button:** an underlined 700 word in Graphite for small actions inside a heading's aside ("Edit", "Undo", "Pick the colour again").
+
+### Hold Map Editor
+Builds the problem's hold map with A's Roboflow detector, opened from the Holds column ("Build hold map" when there's none, "Edit" beside the count when there is). It takes over everything under the running head until it's saved or cancelled.
+- **Layout:** the still of the empty wall as large as fits on the left; a ruled panel on the right (clamp 320–520px) with the title and status line, the picture picker, the click tools, the route summary, and Cancel and Save pinned to the bottom. Below 900px the panel follows the picture and the page scrolls.
+- **Holds on the still:** kept holds in white over a dark edge (so they read on a pale wall or a dark one), numbered and labelled like the video overlay; left-out holds as dimmed dashed outlines; the hold under the pointer fills with white at 28%; a drag draws a dashed box (erase) or a solid one (add).
+- **Tools:** a column of ruled rows; the chosen one is an inverted Pencil Ink block, with its number key in Mono. Before a colour is picked, clicks pick the route colour and only "Add a missing hold" is enabled.
+- **Status:** one sentence in Pencil Ink that says what happened and what to do next; while Roboflow runs (or the map saves), the still dims and "Finding holds…" ("Saving…") sits on it as an inverted block with a small spinning ring. The spinner is the second motion exception, at the user's request, so a 1.5 s detector call reads as working; it stands still under reduced motion.
+- **Moment and own pictures:** under the picker, a video still has a "Moment" slider (ink accent, the time in Mono as "3.0 s of 31.8 s") that moves through its clip while the holds stay put; the clip being analysed is offered too ("This video"). "Use your own picture" (a text button) uploads a photo, which joins the list as "Your picture · name.jpg". With no picture to build from at all, "Build hold map" asks for one straight away.
+- **Picture:** the stills filmed from the video's camera position come first. One that isn't says so in its option ("doesn't match the video") and, while open, in a 2px boxed line under the picker.
+- **Analysis pauses** while the editor is open: the coach goes quiet, and saving or Cancel restarts analysis from the start of the clip.
 
 ## Do's and Don'ts
 

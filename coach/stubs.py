@@ -257,6 +257,7 @@ class VideoPerception(_Worker):
         super().__init__("video")
         self.source, self.problem_id, self.bus, self.out = source, problem_id, bus, out
         self.fast, self.frames_only = fast, frames_only
+        self.latest_frame = None  # newest BGR frame, for building a hold map from it
 
     def stop(self) -> None:
         if not isinstance(self.source, (int, str)):
@@ -301,6 +302,7 @@ class VideoPerception(_Worker):
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # loop the clip
                     continue
                 t = time.monotonic()
+                self.latest_frame = img
                 self._publish_frame(cv2, img)
                 if not self.frames_only:
                     s = ClimberState(t, frame_idx, False, {}, {}, {}, (0.5, 0.5))
@@ -323,6 +325,7 @@ class VideoPerception(_Worker):
         for t, frame_idx, img in self.source:
             if self._stop.is_set():
                 return
+            self.latest_frame = img
             if t - last_sent >= 1.0 / FRAME_FPS:
                 last_sent = t
                 self._publish_frame(cv2, img)

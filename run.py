@@ -42,10 +42,13 @@ log = logging.getLogger("run")
 ROOT = Path(__file__).resolve().parent
 LOG_DIR = ROOT / "data" / "logs"
 VIDEO_DIR = ROOT / "videos"
-HOLDMAP_DIR = ROOT / "data" / "holdmaps"
 # .mov is left out on purpose: the phone originals are HDR, and videos/mp4 has SDR copies.
 VIDEO_EXTS = {".mp4", ".m4v", ".mkv", ".webm", ".avi"}
 SWITCH_SETTLE_S = 0.05  # lets the old source's last frames reach the dashboard before "hello"
+EMPTY_WALL_AT_S = 1.0  # hold maps are built from this far into an empty-wall clip
+CLIP_END_MARGIN_S = 0.1  # a still is read at least this long before a clip's end (seeking to
+# the very end reads nothing)
+CLIP_NAME = re.compile(r"(.+?)_(\d{2})(?:-\d+)?_")  # <problem>_<clip no>_<name> (TEST_CLIMBS.md)
 SHUTDOWN_TIMEOUT_S = 3.0
 FRAME_POLL_S = 0.2  # pose thread re-checks for shutdown this often while waiting for a frame
 JOIN_TIMEOUT_S = 2.0
@@ -124,20 +127,48 @@ def list_clips(video_dir: Path = VIDEO_DIR) -> list[Path]:
     return sorted(clips, key=natural_key)
 
 
-def problem_for(clip: Path, default: str, holdmap_dir: Path = HOLDMAP_DIR) -> str:
-    """The problem id for a clip named <problem>_<clip no>_<name> (TEST_CLIMBS.md).
+def problem_for(clip: Path, default: str) -> str:
+    """The problem id for a clip named <problem>_<clip no>_<name> (TEST_CLIMBS.md):
+    "climb_2_05_hand_searching" -> "climb_2". Other names keep the default (--problem).
 
-    "climb_2_05_hand_searching" -> "climb_2", or "climb2" if only that hold map exists.
-    Names that don't follow the pattern keep the default (the --problem flag).
+    A hold map only fits footage from the same camera position, so a clip never borrows a
+    similarly named map (A's "climb2" is different footage from our "climb_2" clips).
     """
-    m = re.match(r"(.+?)_\d{2}(?:-\d+)?_", clip.stem)
-    if not m:
-        return default
-    prefix = m.group(1)
-    for candidate in (prefix, prefix.replace("_", "").replace("-", "")):
-        if (holdmap_dir / f"{candidate}.json").exists():
-            return candidate
-    return prefix
+    m = CLIP_NAME.match(clip.stem)
+    return m.group(1) if m else default
+
+
+def is_empty_wall(clip: Path) -> bool:
+    """Clip 00 of a problem films the empty wall (TEST_CLIMBS.md): hold maps are built from it."""
+    m = CLIP_NAME.match(clip.stem)
+    return bool(m) and m.group(2) == "00"
+
+
+def clip_duration(path: str | Path) -> float | None:
+    """A video file's length in seconds, or None when it can't be told."""
+    import cv2
+
+    cap = cv2.VideoCapture(str(path))
+    try:
+        frames, fps = cap.get(cv2.CAP_PROP_FRAME_COUNT), cap.get(cv2.CAP_PROP_FPS)
+    finally:
+        cap.release()
+    return frames / fps if frames > 0 and fps > 0 else None
+
+
+def frame_at(path: str | Path, seconds: float):
+    """One BGR frame from a video file; ValueError if it can't be read."""
+    import cv2
+
+    cap = cv2.VideoCapture(str(path))
+    try:
+        cap.set(cv2.CAP_PROP_POS_MSEC, seconds * 1000)
+        ok, img = cap.read()
+    finally:
+        cap.release()
+    if not ok:
+        raise ValueError(f"cannot read a frame at {seconds} s from {path}")
+    return img
 
 
 def source_spec(text: str) -> int | str:
@@ -250,6 +281,7 @@ class PoseThreads:
         self._stop = threading.Event()
         self._read_done = threading.Event()
         self._last_frame_t = -float("inf")
+        self.latest_frame = None  # newest BGR frame, for building a hold map from it
         self._threads: list[threading.Thread] = []
 
     def start(self) -> None:
@@ -327,6 +359,7 @@ class PoseThreads:
                 self.out.wait_taken(JOIN_TIMEOUT_S)
 
     def _process(self, t: float, idx: int, img) -> None:
+        self.latest_frame = img
         state = self.tracker.process(t, idx, img)
         self.bus.publish("state", state)
         self.out.put(state)
@@ -369,7 +402,9 @@ class Session:
     switch() swaps the source while the server, voice and bus log keep running. The brain
     is rebuilt each time, so attempts and the hold map start fresh for the new problem.
     (The bus can't unsubscribe, so each old brain leaves two idle queues behind; a few
-    switches in a demo make that negligible.) This is the server's SourceControl.
+    switches in a demo make that negligible.) This is the server's SourceControl, and its
+    HoldsControl for building hold maps: stills to build from, and reload() to restart
+    analysis so A's contacts and B's brain load a freshly saved map.
     """
 
     def __init__(
@@ -383,6 +418,9 @@ class Session:
         self.camera: BrowserCamera | None = None
         self.hello: dict = {}
         self.number = 0
+        self.paused = False  # stopped while the hold map is edited
+        self._paused_frame = None  # the last frame before the pause: the editor can build from it
+        self._durations: dict[str, float | None] = {}  # clip spec -> seconds, for the stills
         self._listeners: list = []
         self._lock = asyncio.Lock()
 
@@ -436,6 +474,7 @@ class Session:
     async def _start(self, args: argparse.Namespace) -> None:
         self.args = args
         self.number += 1
+        self.paused, self._paused_frame = False, None
         self.camera = args.source if isinstance(args.source, BrowserCamera) else None
         states = stubs.AsyncLatestQueue(asyncio.get_running_loop())
         # Model loading and clip probing block, so they run off the loop.
@@ -484,6 +523,104 @@ class Session:
     def wait_done(self) -> None:
         """Block until every worker of the current source has finished (finite sources)."""
         _wait_all(self.workers)
+
+    # -- hold maps (coach/server/holds.py) ---------------------------------------------------
+
+    @property
+    def problem_id(self) -> str:
+        return self.args.problem
+
+    def latest_frame(self):
+        """The newest frame perception saw (the last one before a pause), or None (pose
+        replays have no video)."""
+        for w in self.workers:
+            img = getattr(w, "latest_frame", None)
+            if img is not None:
+                return img
+        return self._paused_frame
+
+    def stills(self) -> list[dict]:
+        """Pictures a hold map can be built from: this problem's empty-wall clips first (the
+        wall with nobody in front of it), then the clip being analysed, then the current frame.
+        Videos carry their "duration" (seconds), so the editor can pick any moment of them;
+        "live" marks the video being analysed. The builder moves the walls filmed from
+        somewhere else to the end."""
+        walls = [
+            clip
+            for clip in list_clips(self.video_dir)
+            if is_empty_wall(clip) and problem_for(clip, "") == self.problem_id
+        ]
+        walls.sort(key=lambda clip: re.search(r" \(\d+\)$", clip.stem) is not None)  # copies last
+        out = [self._video_still(clip, f"Empty wall · {clip.name}") for clip in walls]
+        if isinstance(self.args.source, str):  # a clip: any moment of it can be the still
+            spec = file_spec(self.args.source)
+            mine = next((s for s in out if s["key"] == spec), None)
+            if mine is None:
+                mine = self._video_still(self.args.source, f"This video · {Path(spec).name}")
+                out.append(mine)
+            mine["live"] = True
+        if self.latest_frame() is not None:
+            out.append({"key": "frame", "name": "Current frame", "live": True})
+        return out
+
+    def _video_still(self, path: str | Path, name: str) -> dict:
+        key = file_spec(path)
+        if key not in self._durations:  # probing opens the file: once per clip
+            self._durations[key] = clip_duration(ROOT / key.removeprefix("file:"))
+        duration = self._durations[key]
+        if not duration:
+            return {"key": key, "name": name}
+        at = min(EMPTY_WALL_AT_S, max(duration - CLIP_END_MARGIN_S, 0.0))  # the default moment
+        return {"key": key, "name": name, "duration": duration, "at": at}
+
+    def read_still(self, key: str, at: float | None = None):
+        """The picture for a still key (BGR): a video's frame `at` seconds in (default
+        EMPTY_WALL_AT_S, kept inside the clip). Blocking: call it off the loop."""
+        if key == "frame":
+            img = self.latest_frame()
+            if img is None:
+                raise ValueError("there's no frame yet")
+            return img.copy()
+        still = next((s for s in self.stills() if s["key"] == key), None)
+        if still is None:
+            raise ValueError(f"not an offered still: {key!r}")
+        t = EMPTY_WALL_AT_S if at is None else float(at)
+        if still.get("duration"):
+            t = min(max(t, 0.0), max(still["duration"] - CLIP_END_MARGIN_S, 0.0))
+        return frame_at(ROOT / key.removeprefix("file:"), t)
+
+    async def pause(self) -> None:
+        """Stop analysing (perception, brain and voice) while the hold map is edited, keeping
+        the last frame for the editor. resume() or reload() starts again."""
+        async with self._lock:
+            if self.paused:
+                return
+            frame = self.latest_frame()
+            await self._stop()
+            self.paused, self._paused_frame = True, frame
+            log.info("analysis paused while the hold map is edited")
+
+    async def resume(self) -> dict:
+        """Start analysing again after pause(): the same source from its start, with a fresh
+        brain. (Picking up mid-clip would hand the brain a gap in state.t as long as the pause.)"""
+        async with self._lock:
+            if self.paused:
+                await self._restart()
+            return self.hello
+
+    async def reload(self) -> dict:
+        """Restart analysis on the same source, so perception and the brain reload the hold map."""
+        async with self._lock:
+            await self._restart()
+            return self.hello
+
+    async def _restart(self) -> None:
+        args = self.args
+        if isinstance(args.source, BrowserCamera):  # the old one is closed by _stop
+            args = argparse.Namespace(**{**vars(args), "source": BrowserCamera()})
+        await self._stop()
+        await asyncio.sleep(SWITCH_SETTLE_S)
+        await self._start(args)
 
 
 async def main(args: argparse.Namespace) -> int:
