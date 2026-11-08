@@ -9,6 +9,8 @@ docs/LAYER-INTERFACES.md.
   uv run python run.py --source cam:0 --problem pink-v3 --voice real
   then open http://localhost:8000/
 
+--transcript [PATH]: also write a readable transcript of the brain's decisions (every event,
+every suppressed cue and why, what was spoken), for debugging cues; tail -f it while it runs.
 --source and --replay-pose together: poses come from the replay, video from the source.
 --fast (tests only): no real-time pacing, no server, exits when the source runs out.
 
@@ -193,6 +195,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--voice", choices=("print", "real"), default="print")
     p.add_argument("--no-llm", action="store_true", help="no Gemini debriefs")
+    p.add_argument(
+        "--transcript",
+        nargs="?",
+        const=True,
+        type=Path,
+        metavar="PATH",
+        help="write a readable transcript of the brain's decisions, suppressed cues included "
+        "(default data/logs/transcript-<problem>-<time>.txt)",
+    )
     p.add_argument("--config", type=Path, default=ROOT / "config" / "default.yaml")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
@@ -829,6 +840,12 @@ async def main(args: argparse.Namespace) -> int:
     bus.bind_loop()
     stamp = time.strftime("%Y%m%d-%H%M%S")
     bus_log = stubs.BusLog(bus, LOG_DIR / f"bus-{args.problem}-{stamp}.jsonl")
+    transcript = None
+    if args.transcript:  # a readable log of the live brain's decisions, suppressed cues too
+        path = args.transcript if isinstance(args.transcript, Path) else None
+        path = path or LOG_DIR / f"transcript-{args.problem}-{stamp}.txt"
+        transcript = stubs.Transcript(bus, path)
+        log.info("writing the brain transcript to %s", path)
 
     # The state hand-off inside Session is always D's AsyncLatestQueue; A's
     # coach.sources.LatestQueue is the thread -> thread queue inside perception
@@ -836,6 +853,8 @@ async def main(args: argparse.Namespace) -> int:
     voice = build_voice(args, cfg, bus)
     make_brain = load("coach.brain", "Brain", stubs.StubBrain)
     session = Session(args, cfg, bus, voice, make_brain)
+    if transcript is not None:
+        session.listen(transcript.on_hello)  # a block per source; looped replays not repeated
 
     server = None
     if not args.fast:
@@ -847,6 +866,8 @@ async def main(args: argparse.Namespace) -> int:
         server = QuietServer(app, args.host, args.port)
 
     tasks = [asyncio.create_task(bus_log.run(), name="bus-log")]
+    if transcript is not None:
+        tasks.append(asyncio.create_task(transcript.run(), name="transcript"))
     if server:
         tasks.append(asyncio.create_task(server.serve(), name="server"))
         log.info("dashboard at %s", server.url)
@@ -872,6 +893,8 @@ async def main(args: argparse.Namespace) -> int:
     with contextlib.suppress(AttributeError):
         voice.close()  # the real voice closes its audio stream here
     bus_log.close()
+    if transcript is not None:
+        transcript.close()
     bus.close()
     return 0
 

@@ -461,6 +461,136 @@ class BusLog:
         log.info("bus log written to %s", self.path)
 
 
+class Transcript:
+    """A readable transcript of what the live coach brain did, for debugging its cues.
+
+    One line per decision, from the bus, so it's what the running brain did (not a re-run):
+    every event it emitted (detectors, memory, attempts) with priority and data, every one the
+    arbiter suppressed and why, every line the voice spoke and how late, attempt summaries and
+    debrief sentences, and the perception changes behind them (person found or lost, the hold
+    each limb is on). Times are seconds since the session's first frame. Each new source starts
+    a "=== session ===" block; once a looping clip replays its first pass (run.py's LoopReplay)
+    the repeats aren't written again. Flushed line by line, so `tail -f` it while a clip runs.
+
+    run.py --transcript [PATH]  (default data/logs/transcript-<problem>-<stamp>.txt)
+    """
+
+    TOPICS = ("state", "event", "suppressed", "spoken", "attempt", "debrief_text")
+
+    def __init__(self, bus: Bus, path: Path, clock=time.monotonic) -> None:
+        self.path, self.clock = path, clock
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = path.open("a", encoding="utf-8")
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._pending = [(bus.subscribe(t), t) for t in self.TOPICS]
+        self._tasks: list[asyncio.Task] = []
+        self._t0: float | None = None  # the session's first frame
+        self._person: bool | None = None
+        self._contacts: dict = {}
+        self._muted = False  # a looping clip is replaying: already written
+
+    def on_hello(self, hello: dict) -> None:
+        """Session listener: a new source (or a looping clip's next pass). Queued, so it lands
+        after whatever the old session already sent."""
+        self._queue.put_nowait(("hello", hello))
+
+    async def run(self) -> None:
+        self._tasks = [asyncio.create_task(self._pump(q, t)) for q, t in self._pending]
+        while True:
+            self._handle(*await self._queue.get())
+
+    async def _pump(self, q: asyncio.Queue, topic: str) -> None:
+        while True:
+            self._queue.put_nowait((topic, await q.get()))
+
+    def _handle(self, topic: str, payload: Any) -> None:
+        if topic == "hello":
+            self._hello(payload)
+            return
+        if self._muted:
+            return
+        lines = self._state(payload) if topic == "state" else [self._line(topic, payload)]
+        for line in lines:
+            if line:
+                self._file.write(line + "\n")
+        self._file.flush()
+
+    def _hello(self, hello: dict) -> None:
+        if hello.get("pass"):  # a looping clip's replayed pass: the same as what's written
+            if not self._muted:
+                self._file.write("--- the clip looped: later passes replay this one ---\n")
+                self._file.flush()
+            self._muted = True
+            return
+        self._muted, self._t0, self._person, self._contacts = False, None, None, {}
+        source = hello.get("spec") or hello.get("source") or "?"
+        self._file.write(
+            f"\n=== session {hello.get('session', '?')}: {source} "
+            f"(problem {hello.get('problem_id', '?')}) ===\n"
+        )
+        self._file.flush()
+
+    def _at(self, t: float | None) -> str:
+        t = self.clock() if t is None else t
+        if self._t0 is None:
+            self._t0 = t
+        return f"{t - self._t0:8.2f}s"
+
+    def _state(self, s: Any) -> list[str]:
+        """Only what changed: the person appearing or going, a limb taking or leaving a hold."""
+        lines, at = [], self._at(s.t)
+        if s.person_found != self._person:
+            lines.append(f"{at}  PERCEPTION  person {'found' if s.person_found else 'lost'}")
+            self._person = s.person_found
+        for limb, hold in s.contacts.items():
+            name = getattr(limb, "value", limb)
+            if self._contacts.get(name, None) != hold and (name in self._contacts or hold):
+                old = self._contacts.get(name)
+                lines.append(
+                    f"{at}  PERCEPTION  {name}: "
+                    f"{'none' if old is None else old} -> {'none' if hold is None else hold}"
+                )
+            self._contacts[name] = hold
+        return lines
+
+    def _line(self, topic: str, p: Any) -> str | None:
+        if topic == "event":
+            data = json.dumps(to_jsonable(p.data)) if p.data else ""
+            return f"{self._at(p.t)}  EVENT       {p.kind:<20} p{p.priority}  {data}".rstrip()
+        if topic == "suppressed":
+            return f"{self._at(p.event.t)}  SUPPRESSED  {p.event.kind:<20} {p.reason}"
+        if topic == "spoken":
+            late = round((p.t_audio_start - p.t_event) * 1000)
+            return (
+                f"{self._at(p.t_audio_start)}  SPOKEN      {p.kind:<20} "
+                f'"{p.text}"  ({late} ms after the event)'
+            )
+        if topic == "attempt":
+            stalls = ", ".join(f"hold {h} {s:.1f} s" for h, s in p.stalls) or "none"
+            return (
+                f"{self._at(None)}  ATTEMPT     #{p.attempt_no} {p.outcome}, high hold "
+                f"{p.high_hold_id}, {p.duration_s:.1f} s; stalls: {stalls}; cues given: "
+                f"{', '.join(p.cues_given) or 'none'}; followed: "
+                f"{', '.join(p.cues_followed) or 'none'}"
+            )
+        if topic == "debrief_text":
+            text = p if isinstance(p, str) else json.dumps(to_jsonable(p))
+            return f'{self._at(None)}  DEBRIEF     "{text}"'
+        return None
+
+    def close(self) -> None:
+        """Write whatever is still queued, then close."""
+        for task in self._tasks:
+            task.cancel()
+        for q, topic in self._pending:
+            while not q.empty():
+                self._queue.put_nowait((topic, q.get_nowait()))
+        while not self._queue.empty():
+            self._handle(*self._queue.get_nowait())
+        self._file.close()
+        log.info("brain transcript written to %s", self.path)
+
+
 # ---- Dashboard server -------------------------------------------------------------------
 
 
