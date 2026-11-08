@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import dataclasses
 import importlib
 import inspect
 import logging
@@ -250,6 +251,155 @@ def a_parts() -> SimpleNamespace:
     )
 
 
+TIME_FIELDS = ("t", "deadline")  # plus every field named t_*: monotonic times, shifted on replay
+REPLAY_SKIP_TOPICS = {"frame", "holdmap"}  # the video is live on every pass; the map never changes
+
+
+def shift_times(obj, dt: float, d_idx: int = 0):
+    """A copy of a contracts dataclass with its monotonic times moved by dt seconds and its
+    frame_idx by d_idx, nested dataclasses included. Anything else comes back as it is."""
+    if not dataclasses.is_dataclass(obj) or isinstance(obj, type):
+        return obj
+    changes = {}
+    for f in dataclasses.fields(obj):
+        v = getattr(obj, f.name)
+        if (f.name in TIME_FIELDS or f.name.startswith("t_")) and isinstance(v, (int, float)):
+            changes[f.name] = v + dt
+        elif f.name == "frame_idx" and isinstance(v, int):
+            changes[f.name] = v + d_idx
+        elif dataclasses.is_dataclass(v):
+            changes[f.name] = shift_times(v, dt, d_idx)
+    return dataclasses.replace(obj, **changes)
+
+
+class LoopReplay:
+    """A looping clip is analysed live once, then replayed.
+
+    A clip loops so the demo keeps going, but the climber walking back to the start isn't a new
+    attempt. So the first pass runs live and everything the coach does is recorded, each at its
+    time from the start of the pass: what perception and the brain publish (through TapBus) and
+    what the brain asks the voice to do (through TapVoice). On later passes perception and the
+    brain rest; the video plays and the recording is played back in step with it, its times
+    shifted to now, so it looks and sounds like the first pass. Kept in memory only: a new
+    source, a restart or a saved hold map analyses live again.
+
+    Threads: perception records and advances from its threads, the brain records from the
+    event loop; voice calls are replayed on the loop, like the brain makes them.
+    """
+
+    def __init__(self, bus, voice=None, loop=None, clock=time.monotonic, on_pass=None) -> None:
+        self.bus, self.voice, self.loop, self.clock = bus, voice, loop, clock
+        self.on_pass = on_pass  # called with the pass number as each replayed pass starts
+        self.items: list[tuple[float, str, str | None, object]] = []  # (offset, kind, topic, x)
+        self.passes = 0  # passes started so far
+        self.recording = False
+        self._t0 = 0.0  # when the live pass started
+        self._pass_start = 0.0  # when the current replayed pass started
+        self._idx_offset = 0  # frame_idx of the current pass's first frame
+        self._next = 0  # the next item to play in this pass
+        self._lock = threading.Lock()
+        self._tasks: set = set()  # replayed debriefs, kept until done
+
+    @property
+    def replaying(self) -> bool:
+        return self.passes >= 2
+
+    def start_pass(self, idx_offset: int) -> None:
+        """Perception calls this at the first frame of every pass of the clip."""
+        with self._lock:
+            leftover = self.items[self._next :] if self.passes >= 2 else []
+            now = self.clock()
+            if self.passes == 0:
+                self._t0, self.recording = now, True
+            elif self.passes == 1:
+                self.recording = False
+                log.info("clip looped: replaying the live pass (%d items)", len(self.items))
+            self.passes += 1
+            number = self.passes
+        for item in leftover:  # what the coach did after the last frame of the clip
+            self._play(item)
+        if number >= 2 and self.on_pass is not None:  # dashboards start this pass fresh
+            self.on_pass(number)
+        with self._lock:
+            self._pass_start, self._idx_offset, self._next = now, idx_offset, 0
+
+    def record(self, kind: str, topic: str | None, payload) -> None:
+        with self._lock:
+            if self.recording:
+                self.items.append((self.clock() - self._t0, kind, topic, payload))
+
+    def advance(self) -> None:
+        """Play everything due by now in this pass. Perception calls this every frame."""
+        with self._lock:
+            if not self.replaying:
+                return
+            elapsed = self.clock() - self._pass_start
+            start = self._next
+            while self._next < len(self.items) and self.items[self._next][0] <= elapsed:
+                self._next += 1
+            due = self.items[start : self._next]
+        for item in due:
+            self._play(item)
+
+    def _play(self, item) -> None:
+        offset, kind, topic, payload = item
+        if kind == "bus":
+            dt = self._pass_start - self._t0
+            self.bus.publish(topic, shift_times(payload, dt, self._idx_offset))
+        elif self.voice is not None and self.loop is not None:
+            dt = self.clock() - (self._t0 + offset)  # the deadline keeps its slack from now
+            self.loop.call_soon_threadsafe(self._voice_call, kind, shift_times(payload, dt))
+
+    def _voice_call(self, kind: str, payload) -> None:
+        if kind == "say":
+            self.voice.say(payload)
+        elif kind == "stop":
+            self.voice.stop()
+        elif kind == "debrief":
+            result = self.voice.debrief(*payload)
+            if inspect.isawaitable(result):
+                task = asyncio.ensure_future(result)
+                self._tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
+
+
+class TapBus:
+    """The bus as perception and the brain see it: what they publish is also recorded."""
+
+    def __init__(self, bus, replay: LoopReplay) -> None:
+        self._bus, self._replay = bus, replay
+
+    def publish(self, topic: str, payload) -> None:
+        if topic not in REPLAY_SKIP_TOPICS:
+            self._replay.record("bus", topic, payload)
+        self._bus.publish(topic, payload)
+
+    def __getattr__(self, name):
+        return getattr(self._bus, name)
+
+
+class TapVoice:
+    """The voice as the brain sees it: what the brain asks of it is also recorded."""
+
+    def __init__(self, voice, replay: LoopReplay) -> None:
+        self._voice, self._replay = voice, replay
+
+    def say(self, req) -> bool:
+        self._replay.record("say", None, req)
+        return self._voice.say(req)
+
+    def stop(self) -> None:
+        self._replay.record("stop", None, None)
+        self._voice.stop()
+
+    def debrief(self, history, habits, crux_hold):
+        self._replay.record("debrief", None, (list(history), dict(habits), crux_hold))
+        return self._voice.debrief(history, habits, crux_hold)
+
+    def __getattr__(self, name):
+        return getattr(self._voice, name)
+
+
 class PoseThreads:
     """Real perception wired from A's parts.
 
@@ -257,11 +407,16 @@ class PoseThreads:
     frames instead of falling behind); a pose thread runs PoseTracker on the newest frame and
     publishes "state" (to the bus and the brain's queue) and "frame" (~FRAME_FPS, for the
     dashboard). The hold map is published once at start. Files loop unless fast=True, which
-    runs everything on one thread, drops nothing and stops at the end of the file.
+    runs everything on one thread, drops nothing and stops at the end of the file. With a
+    LoopReplay, only a file's first pass is analysed; later passes show the video and play
+    the recording back (the reader thread does that; the pose thread rests).
     """
 
-    def __init__(self, source, problem_id, cfg, bus, out, fast=False, parts=None) -> None:
+    def __init__(
+        self, source, problem_id, cfg, bus, out, fast=False, parts=None, replay=None
+    ) -> None:
         self.parts = parts or a_parts()
+        self.replay: LoopReplay | None = replay
         # A frame source object (the browser camera) is read as it is, not opened by spec.
         self.custom = None if isinstance(source, (int, str)) else source
         if self.custom is not None:
@@ -323,10 +478,13 @@ class PoseThreads:
                     self.spec, **({"fast": self.fast} if self.is_file else {})
                 )
             last = -1
+            looping = self.replay is not None and self.is_file and not self.fast
             try:
                 for t, idx, img in source:
                     if self._stop.is_set():
                         return
+                    if looping and last < 0:  # first frame of this pass
+                        self.replay.start_pass(offset)
                     last = idx
                     yield t, idx + offset, img
             finally:
@@ -338,7 +496,10 @@ class PoseThreads:
     def _read(self) -> None:
         try:
             for frame in self._frames():
-                self.frames.put(frame)
+                if self.replay is not None and self.replay.replaying:
+                    self._show(*frame)  # a replayed pass: video only, the recording does the rest
+                else:
+                    self.frames.put(frame)
         finally:
             self._read_done.set()
             self.frames.close()
@@ -359,10 +520,17 @@ class PoseThreads:
                 self.out.wait_taken(JOIN_TIMEOUT_S)
 
     def _process(self, t: float, idx: int, img) -> None:
-        self.latest_frame = img
         state = self.tracker.process(t, idx, img)
         self.bus.publish("state", state)
         self.out.put(state)
+        self._show(t, idx, img)
+
+    def _show(self, t: float, idx: int, img) -> None:
+        """Keep the frame for the hold map editor, send it to the dashboard (~FRAME_FPS), and
+        on a replayed pass play what the coach did by now."""
+        self.latest_frame = img
+        if self.replay is not None:
+            self.replay.advance()
         if t - self._last_frame_t >= 1.0 / stubs.FRAME_FPS:
             self._last_frame_t = t
             jpeg = stubs.encode_jpeg(img)
@@ -370,8 +538,9 @@ class PoseThreads:
                 self.bus.publish("frame", jpeg)
 
 
-def build_perception(args, cfg, bus, states, parts=None):
-    """The workers that feed states (and frames) for this combination of flags."""
+def build_perception(args, cfg, bus, states, parts=None, replay=None):
+    """The workers that feed states (and frames) for this combination of flags. A LoopReplay
+    makes a looping clip analysed once and replayed after (PoseThreads only)."""
     common = dict(problem_id=args.problem, cfg=cfg, bus=bus, out=states, fast=args.fast)
     if args.replay_pose:
         workers = [stubs.PoseReplay(args.replay_pose, **common)]
@@ -379,7 +548,7 @@ def build_perception(args, cfg, bus, states, parts=None):
             workers.append(stubs.VideoPerception(args.source, **common, frames_only=True))
         return workers
     try:
-        return [PoseThreads(args.source, **common, parts=parts)]
+        return [PoseThreads(args.source, **common, parts=parts, replay=replay)]
     except ImportError as e:
         log.info("A's perception isn't on this branch (%s); video only, no pose", e)
     except Exception as e:  # e.g. pose model missing: keep the demo running
@@ -414,6 +583,8 @@ class Session:
         self.cfg, self.bus, self.voice, self.make_brain = cfg, bus, voice, make_brain
         self.parts, self.video_dir = parts, video_dir
         self.workers: list = []
+        self.replay: LoopReplay | None = None  # a clip's recorded first pass
+        self._loop: asyncio.AbstractEventLoop | None = None
         self.brain_task: asyncio.Task | None = None
         self.camera: BrowserCamera | None = None
         self.hello: dict = {}
@@ -476,14 +647,20 @@ class Session:
         self.number += 1
         self.paused, self._paused_frame = False, None
         self.camera = args.source if isinstance(args.source, BrowserCamera) else None
-        states = stubs.AsyncLatestQueue(asyncio.get_running_loop())
+        loop = self._loop = asyncio.get_running_loop()
+        states = stubs.AsyncLatestQueue(loop)
+        # A clip loops: its first pass is analysed live and recorded, later passes replay that.
+        bus, voice, self.replay = self.bus, self.voice, None
+        if isinstance(args.source, str) and not args.fast and not args.replay_pose:
+            self.replay = LoopReplay(self.bus, self.voice, loop, on_pass=self._replayed_pass)
+            bus, voice = TapBus(self.bus, self.replay), TapVoice(self.voice, self.replay)
         # Model loading and clip probing block, so they run off the loop.
         workers = await asyncio.to_thread(
-            build_perception, args, self.cfg, self.bus, states, self.parts
+            build_perception, args, self.cfg, bus, states, self.parts, self.replay
         )
         hello = await asyncio.to_thread(build_hello, args) if not args.fast else {}
         # The brain subscribes to "holdmap" when built, so build it before perception starts.
-        brain = self.make_brain(self.cfg, self.bus, self.voice)
+        brain = self.make_brain(self.cfg, bus, voice)
         self.brain_task = asyncio.create_task(brain.run(states), name="brain")
         self.hello = {**hello, "session": self.number, "spec": spec_of(args)}
         for on_hello in self._listeners:
@@ -492,6 +669,23 @@ class Session:
         for w in workers:
             w.start()
         log.info("analysing %s (problem %s)", self.hello["spec"], args.problem)
+
+    def _replayed_pass(self, number: int) -> None:
+        """A clip started a replayed pass (perception's reader thread): over to the loop."""
+        replay = self.replay
+        self._loop.call_soon_threadsafe(self._announce_pass, replay, number)
+
+    def _announce_pass(self, replay: LoopReplay, number: int) -> None:
+        """Dashboards start each pass fresh, as on the first: a new hello (with the pass
+        number) clears their attempts and timeline, then the hold map goes out again."""
+        if replay is not self.replay:  # the source changed meanwhile
+            return
+        self.hello = {**self.hello, "pass": number}
+        for on_hello in self._listeners:
+            on_hello(self.hello)
+        holdmap = next((w.holdmap for w in self.workers if getattr(w, "holdmap", None)), None)
+        if holdmap is not None:
+            self.bus.publish("holdmap", holdmap)
 
     async def _stop(self) -> None:
         self.camera = None  # webcam frames that arrive from now on are ignored

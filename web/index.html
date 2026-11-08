@@ -636,7 +636,7 @@ const MIN_VISIBILITY = 0.4;
 // ---- State ------------------------------------------------------------------
 const S = {
   mode: null,            // "live" | "offline" | "video_test" | "session_replay" | "demo", from hello
-  session: null,         // hello.session; a new number means a new source
+  session: null,         // "<hello.session>.<hello.pass>": a new source, or a looping clip's next pass
   source: null,          // hello.source
   stream: { arrivals: [], bytes: [] },  // video test: recent frame arrival times and sizes
   holdmap: null,
@@ -688,8 +688,10 @@ function handle(msg) {
 }
 
 function onHello(d) {
-  if (d.session != null && S.session != null && d.session !== S.session) resetSession();
-  if (d.session != null) S.session = d.session;
+  // A new source, or a looping clip starting a replayed pass ("pass"): start the page fresh.
+  const run = d.session != null ? `${d.session}.${d.pass ?? 1}` : null;
+  if (run != null && S.session != null && run !== S.session) resetSession();
+  if (run != null) S.session = run;
   $("offline").hidden = !(d.no_llm || d.offline || params.has("offline"));
   if (d.problem_id) showProblem(d.problem_id);
   if (d.mode) setMode(d.mode, d.source || null);
