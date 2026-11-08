@@ -23,6 +23,10 @@ CFG = {
     "api_url": "https://example.invalid",
     "polygon_epsilon": 0.02,
     "hue_tolerance": 12,
+    "colour_min_value": 45,
+    "colour_max_value": 248,
+    "colour_saturation_tolerance": 55,
+    "colour_value_tolerance": 160,
     "min_saturation": 60,
     "white_min_value": 210,
     "white_max_saturation": 55,
@@ -144,6 +148,58 @@ def test_filter_by_colour_keeps_matching_hues_including_wrap():
 def test_filter_by_colour_drops_boxes_with_no_saturated_pixels():
     img = blob_image([])
     assert filter_by_colour(img, [(10, 10, 50, 50)], ref_hue=30, cfg=CFG) == []
+
+
+@pytest.mark.parametrize("reference", [(28, 190, 210), (29, 170, 100)])
+def test_yellow_reference_keeps_lighting_variants_and_drops_warm_neutrals(reference):
+    """Whole-polygon medians tolerate exposure changes but separate tan/orange/cream."""
+    image = np.full((H, W, 3), bgr(0, 0, 120), np.uint8)
+    specs = [
+        (28, 190, 210),
+        (30, 165, 95),
+        (27, 220, 235),  # yellow in bright/dim light
+        (12, 210, 190),
+        (20, 105, 170),
+        (25, 25, 220),  # orange, tan, cream
+    ]
+    boxes = []
+    for i, hsv in enumerate(specs):
+        box = (10 + i * 45, 40, 45 + i * 45, 80)
+        boxes.append(box)
+        cv2.rectangle(image, box[:2], box[2:], bgr(*hsv), -1)
+    refbox = boxes[0] if reference[2] > 150 else boxes[1]
+    ref = holds.box_hsv(image, refbox, CFG)
+    assert ref is not None
+    kept = filter_by_colour(image, boxes, ref[0], CFG, ref_saturation=ref[1], ref_value=ref[2])
+    assert kept == boxes[:3]
+
+
+@pytest.mark.parametrize("ref_hue,other_hue", [(2, 110), (110, 2)])
+def test_reference_matching_keeps_red_or_blue_and_drops_the_other(ref_hue, other_hue):
+    image = blob_image([(60, 80, 15, ref_hue), (150, 80, 15, other_hue)])
+    boxes = [(45, 65, 75, 95), (135, 65, 165, 95)]
+    ref = holds.box_hsv(image, boxes[0], CFG)
+    assert ref is not None
+    assert (
+        filter_by_colour(image, boxes, ref[0], CFG, ref_saturation=ref[1], ref_value=ref[2])
+        == boxes[:1]
+    )
+
+
+def test_reference_matching_preserves_pale_teal_and_white_paths():
+    teal = np.full((H, W, 3), bgr(70, 42, 160), np.uint8)
+    boxes = [(20, 20, 70, 70), (100, 20, 150, 70)]
+    cv2.rectangle(teal, boxes[1][:2], boxes[1][2:], bgr(17, 30, 190), -1)
+    ref = holds.box_hsv(teal, boxes[0], CFG)
+    assert ref is not None
+    assert (
+        filter_by_colour(teal, boxes, ref[0], CFG, ref_saturation=ref[1], ref_value=ref[2])
+        == boxes[:1]
+    )
+    white = np.full((H, W, 3), (120, 120, 120), np.uint8)
+    cv2.rectangle(white, (20, 20), (70, 70), (245, 245, 245), -1)
+    cv2.rectangle(white, (100, 20), (150, 70), bgr(70, 42, 160), -1)
+    assert filter_by_colour(white, boxes, -1, CFG) == boxes[:1]
 
 
 def test_build_holdmap_numbers_bottom_to_top_and_marks_roles():

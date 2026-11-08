@@ -13,6 +13,7 @@ CONFIG = {
         "on_wall_margin": 0.15,
         "move_speed_eps": 0.02,
         "on_wall_settle_s": 0.5,
+        "start_hold_settle_s": 0.0,
         "top_hold_s": 1,
         "fall_speed": 0.6,
         "ground_settle_s": 1,
@@ -88,11 +89,29 @@ def test_both_feet_start_and_top_summary():
     assert attempt.finished_attempts[-1].duration_s == 1.5
 
 
+def test_start_requires_one_foot_on_start_hold_for_settle_time():
+    config = {**CONFIG, "brain": {**CONFIG["brain"], "start_hold_settle_s": 0.5}}
+    holds = [
+        Hold(1, (0.2, 0.8), (0, 0, 0, 0), "start"),
+        Hold(2, (0.4, 0.8), (0, 0, 0, 0), "start"),
+        Hold(3, (0.6, 0.6), (0, 0, 0, 0), "mid"),
+    ]
+    attempt = AttemptTracker(HoldMap("p", "red", holds, (100, 100), "manual"), config)
+    feature = FeatureTracker()
+    run(attempt, feature, s(0))
+    assert run(attempt, feature, s(1, contacts={Limb.LF: 1})) == []
+    assert run(attempt, feature, s(2, contacts={Limb.LF: 3, Limb.RF: 3})) == []
+    assert run(attempt, feature, s(2.1, contacts={Limb.LF: 1, Limb.RF: 3})) == []
+    assert run(attempt, feature, s(2.5, contacts={Limb.LF: 1, Limb.RF: 3})) == []
+    events = run(attempt, feature, s(2.6, contacts={Limb.LF: 1, Limb.RF: 3}))
+    assert [event.kind for event in events] == ["attempt_start"]
+
+
 def test_hip_settle_highpoint_and_downclimb():
     attempt, feature = make_tracker()
     run(attempt, feature, s(0))
     assert not run(attempt, feature, s(0.2, hip=0.45))
-    events = run(attempt, feature, s(0.8, hip=0.45))
+    events = run(attempt, feature, s(0.8, hip=0.45, contacts={Limb.LF: 1, Limb.RF: 1}))
     assert "attempt_start" in [e.kind for e in events]
     events = run(
         attempt,
@@ -116,7 +135,7 @@ def test_high_point_fires_once_a_prior_attempt_exists():
     attempt, feature = make_tracker()
     run(attempt, feature, s(0))
     run(attempt, feature, s(0.2, hip=0.45))
-    run(attempt, feature, s(0.8, hip=0.45))
+    run(attempt, feature, s(0.8, hip=0.45, contacts={Limb.LF: 1, Limb.RF: 1}))
     run(
         attempt,
         feature,
@@ -127,7 +146,7 @@ def test_high_point_fires_once_a_prior_attempt_exists():
     assert attempt.finished_attempts[-1].outcome == "downclimb"
 
     run(attempt, feature, s(3, hip=0.45))
-    events = run(attempt, feature, s(3.6, hip=0.45))
+    events = run(attempt, feature, s(3.6, hip=0.45, contacts={Limb.LF: 1, Limb.RF: 1}))
     assert "attempt_start" in [e.kind for e in events]
     events = run(
         attempt,
@@ -144,7 +163,7 @@ def test_dynamic_move_mid_climb_does_not_poison_later_downclimb():
     attempt, feature = make_tracker()
     run(attempt, feature, s(0))
     run(attempt, feature, s(0.2, hip=0.45))
-    run(attempt, feature, s(0.8, hip=0.45))
+    run(attempt, feature, s(0.8, hip=0.45, contacts={Limb.LF: 1, Limb.RF: 1}))
     run(
         attempt,
         feature,
@@ -174,7 +193,7 @@ def test_frozen_top_contact_during_a_fall_does_not_count_as_send():
     attempt, feature = make_tracker()
     run(attempt, feature, s(0))
     run(attempt, feature, s(0.2, hip=0.3))
-    events = run(attempt, feature, s(0.8, hip=0.3))
+    events = run(attempt, feature, s(0.8, hip=0.3, contacts={Limb.LF: 1, Limb.RF: 1}))
     assert "attempt_start" in [e.kind for e in events]
     run(
         attempt,
@@ -206,13 +225,16 @@ def test_downclimb_against_real_config_does_not_crash():
     # downclimb CoachEvent would KeyError. A downclimb must close quietly instead.
     config = real_config()
     feature = FeatureTracker(float(config["brain"]["move_speed_eps"]))
-    attempt = AttemptTracker(None, config)
+    attempt = AttemptTracker(
+        HoldMap("p", "red", [Hold(1, (0.2, 0.8), (0, 0, 0, 0), "start")], (100, 100), "manual"),
+        config,
+    )
     run(attempt, feature, s(0))
-    run(attempt, feature, s(0.8, hip=0.45))  # hip raised; raised_since starts
+    run(attempt, feature, s(0.8, hip=0.45, contacts={Limb.LF: 1, Limb.RF: 1}))
     run(
         attempt,
         feature,
-        s(1.4, hip=0.45, contacts={Limb.LH: 3, Limb.RH: None, Limb.LF: None, Limb.RF: None}),
+        s(1.4, hip=0.45, contacts={Limb.LH: 3, Limb.RH: None, Limb.LF: 1, Limb.RF: 1}),
     )  # raised for >= on_wall_settle_s -> ON_WALL
     # Descend gradually so hip velocity stays under fall_speed (no fall is registered).
     run(attempt, feature, s(2.0, hip=0.55))
@@ -282,7 +304,7 @@ def test_feet_cut_no_hip_velocity_does_not_set_fall_seen():
     attempt, feature = make_tracker()
     # Establish ON_WALL phase with hip raised.
     run(attempt, feature, s(0))
-    run(attempt, feature, s(0.8, hip=0.45))  # raised_since starts
+    run(attempt, feature, s(0.8, hip=0.45, contacts={Limb.LF: 1, Limb.RF: 1}))
     run(
         attempt,
         feature,
@@ -352,7 +374,7 @@ def test_holding_the_top_does_not_start_new_attempts():
     )
     kp = {f"{side}_{part}": (0.5, y, 1.0) for side in ("left", "right") for part, y in parts}
     none = {limb: None for limb in Limb}
-    on_top = {Limb.LH: 3, Limb.RH: 3, Limb.LF: 2, Limb.RF: 2}
+    on_top = {Limb.LH: 3, Limb.RH: 3, Limb.LF: 1, Limb.RF: 1}
     kinds, t = [], 0.0
     # 30 fps: stand 1 s, climb and hold the top 4 s, back on the floor 2 s, top again
     for frames, hip_y, contacts in (

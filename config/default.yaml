@@ -39,6 +39,10 @@ perception:
 holds:
   detector_model: hold-detector-rnvkl/1  # Roboflow model id (Climb AI hold detector; picked in experiment 2)
   hue_tolerance: 12         # OpenCV hue units, 0-179
+  colour_min_value: 45      # ignore deep shadows when measuring coloured holds
+  colour_max_value: 248     # ignore clipped specular highlights
+  colour_saturation_tolerance: 70 # allow lighting/chalk changes while rejecting beige/cream
+  colour_value_tolerance: 160 # broad exposure tolerance; hue and saturation separate colours
   min_saturation: 60
   pale_min_saturation: 35    # pale holds (light teal, saturation ~40) count at this lower floor...
   pale_min_fraction: 0.4     # ...when too few of their pixels reach min_saturation; this share must reach the floor
@@ -81,6 +85,7 @@ brain:
   feet_low_s: 0.8           # feet_low: the stretched-out posture has to last this long
   search_near_ratio: 0.5    # hand_searching: the hand is within this x arm length of the hold it's after
   on_wall_margin: 0.15      # hip rise above standing height / leg length
+  start_hold_settle_s: 0.5  # at least one foot must stay on a start hold this long
 
   # Features + attempts (B3)
   move_speed_eps: 0.02      # normalised units/s; below this a limb/hip counts as static
@@ -88,7 +93,8 @@ brain:
   contact_stable_s: 0.25    # a contact change counts for the cues once it has held this long (features.stable_contacts)
   leg_length_default: 0.3   # normalised leg length until a real one is measured
   on_wall_settle_s: 0.5     # hip must stay raised this long to confirm ON_WALL
-  top_hold_s: 1.0           # both hands on the top hold this long = top
+  top_hold_s: 0.0           # both hands on the top hold = immediate successful climb
+  top_hand_margin: 0.04     # finish-only fallback for hands just outside a detector box
   fall_speed: 0.6           # downward hip velocity (norm units/s) above this = falling
   ground_settle_s: 1.0      # back on the ground this long before the attempt is closed
 
@@ -128,8 +134,21 @@ brain:
     told_you_so: 2
 
 arbiter:
-  global_gap_s: 3
-  cooldown_s: 15
+  global_gap_s: 0.0           # experiment: different cue kinds may speak close together
+  cooldown_s: 3.0             # fallback for cue kinds not listed below
+  cooldown_by_kind:            # per-kind repeat suppression; priority-0 events bypass this
+    hand_searching: 1.0        # frequent directional guidance
+    feet_low: 3.0
+    quiet_feet: 3.0
+    arms_bent: 3.0
+    weight_shift: 3.0
+    feet_cut: 5.0
+    stalling: 5.0
+    crux_warning: 8.0
+    route_preview: 10.0
+    told_you_so: 10.0
+  preference_by_kind:           # same-priority tie-breaker; higher value wins
+    hand_searching: 10.0        # prefer actionable directional guidance
   budget_lines: 6
   budget_window_s: 30
   ttl_s: {p0: 2.0, p1: 1.2, p2: 4.0}

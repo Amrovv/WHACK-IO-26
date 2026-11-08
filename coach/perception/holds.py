@@ -77,23 +77,40 @@ def sample_colour(image_bgr: np.ndarray, point: tuple[int, int], cfg: dict) -> t
     A wider configured patch helps when a hand or shadow covers part of a hold. Hue uses the
     circular median.
     """
+    hue, saturation, _ = sample_colour_hsv(image_bgr, point, cfg)
+    return hue, saturation
+
+
+def sample_colour_hsv(
+    image_bgr: np.ndarray, point: tuple[int, int], cfg: dict
+) -> tuple[float, float, float]:
+    """HSV reference at a click with robust value filtering; adds value to legacy sampling."""
     x, y = point
     r = cfg["patch_radius_px"]
     h, w = image_bgr.shape[:2]
     patch = image_bgr[max(y - r, 0) : min(y + r + 1, h), max(x - r, 0) : min(x + r + 1, w)]
     hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV).reshape(-1, 3)
     sat = hsv[:, 1]
-    keep = hsv[sat >= cfg["min_saturation"]]
+    value = hsv[:, 2]
+    usable_value = (value >= cfg["colour_min_value"]) & (value <= cfg["colour_max_value"])
+    keep = hsv[(sat >= cfg["min_saturation"]) & usable_value]
     if len(keep) == 0:
-        pale = hsv[sat >= cfg["pale_min_saturation"]]
+        pale = hsv[(sat >= cfg["pale_min_saturation"]) & usable_value]
         if len(pale) >= cfg["pale_min_fraction"] * len(hsv):  # a pale hold (e.g. light teal)
-            return circular_median_hue(pale[:, 0]), float(np.median(pale[:, 1]))
-        value = hsv[:, 2]
+            return (
+                circular_median_hue(pale[:, 0]),
+                float(np.median(pale[:, 1])),
+                float(np.median(pale[:, 2])),
+            )
         white = (sat <= cfg["white_max_saturation"]) & (value >= cfg["white_min_value"])
         if np.any(white):
-            return -1.0, float(np.median(value[white]))
+            return -1.0, float(np.median(sat[white])), float(np.median(value[white]))
         raise ValueError(f"no coloured or white pixels near {point}: click on a hold")
-    return circular_median_hue(keep[:, 0]), float(np.median(keep[:, 1]))
+    return (
+        circular_median_hue(keep[:, 0]),
+        float(np.median(keep[:, 1])),
+        float(np.median(keep[:, 2])),
+    )
 
 
 def circular_median_hue(hues: np.ndarray) -> float:
@@ -116,6 +133,14 @@ def box_hue(
     hold the lower `pale_min_saturation` is used instead; if even that is not met by enough of
     the hold, the hold has no usable colour (None).
     """
+    measured = box_hsv(image_bgr, box, cfg, polygon)
+    return measured[0] if measured is not None else None
+
+
+def box_hsv(
+    image_bgr: np.ndarray, box: Box, cfg: dict, polygon: PixelPolygon | None = None
+) -> tuple[float, float, float] | None:
+    """Robust median HSV from hold pixels; polygons exclude wall pixels in the bounding box."""
     x0, y0, x1, y1 = box
     x0, y0 = max(x0, 0), max(y0, 0)
     crop = image_bgr[y0:y1, x0:x1]
@@ -128,13 +153,24 @@ def box_hue(
         hsv = hsv[mask.reshape(-1) > 0]
     if len(hsv) == 0:
         return None
-    strong = hsv[hsv[:, 1] >= cfg["min_saturation"]]
+    valid = hsv[
+        (hsv[:, 1] >= cfg["pale_min_saturation"])
+        & (hsv[:, 2] >= cfg["colour_min_value"])
+        & (hsv[:, 2] <= cfg["colour_max_value"])
+    ]
+    strong = valid[valid[:, 1] >= cfg["min_saturation"]]
     if len(strong) >= cfg["pale_min_fraction"] * len(hsv):
-        return circular_median_hue(strong[:, 0])
+        valid = strong
     pale = hsv[hsv[:, 1] >= cfg["pale_min_saturation"]]
-    if len(pale) >= cfg["pale_min_fraction"] * len(hsv):
-        return circular_median_hue(pale[:, 0])
-    return circular_median_hue(strong[:, 0]) if len(strong) else None
+    if not len(valid) and len(pale) >= cfg["pale_min_fraction"] * len(hsv):
+        valid = pale
+    if len(valid) == 0:
+        return None
+    return (
+        circular_median_hue(valid[:, 0]),
+        float(np.median(valid[:, 1])),
+        float(np.median(valid[:, 2])),
+    )
 
 
 def detected_hold_at(
@@ -312,12 +348,30 @@ def match_colour(
     return kept
 
 
+def detected_hold_colour(image_bgr, point, boxes, polygons, cfg):
+    """Median HSV of the detected hold under the click; white retains sentinel hue -1."""
+    hit = detected_hold_at(point, boxes, polygons)
+    if hit is None:
+        return None
+    color = box_hsv(image_bgr, hit, cfg, polygons.get(hit))
+    if color is not None:
+        return color
+    region = image_bgr[max(hit[1], 0) : hit[3], max(hit[0], 0) : hit[2]]
+    hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV).reshape(-1, 3)
+    white = (hsv[:, 1] <= cfg["white_max_saturation"]) & (hsv[:, 2] >= cfg["white_min_value"])
+    if len(hsv) and white.mean() >= cfg["white_min_fraction"]:
+        return (-1.0, float(np.median(hsv[white, 1])), float(np.median(hsv[white, 2])))
+    return None
+
+
 def filter_by_colour(
     image_bgr: np.ndarray,
     boxes: list[Box],
     ref_hue: float,
     cfg: dict,
     polygons: dict[Box, PixelPolygon] | None = None,
+    ref_saturation: float | None = None,
+    ref_value: float | None = None,
 ) -> list[Box]:
     """Keep boxes whose median hue is within `hue_tolerance` of ref_hue (wrap-around aware).
     A white reference (hue < 0) keeps boxes where at least `white_min_fraction` of the hold
@@ -342,8 +396,15 @@ def filter_by_colour(
             if len(pixels) and white.mean() >= cfg["white_min_fraction"]:
                 kept.append(box)
             continue
-        hue = box_hue(image_bgr, box, cfg, (polygons or {}).get(box))
-        if hue is not None and hue_distance(hue, ref_hue) <= cfg["hue_tolerance"]:
+        measured = box_hsv(image_bgr, box, cfg, (polygons or {}).get(box))
+        if measured is None:
+            continue
+        hue, sat, val = measured
+        hue_ok = hue_distance(hue, ref_hue) <= cfg["hue_tolerance"]
+        if ref_saturation is not None and ref_value is not None:
+            hue_ok &= sat >= ref_saturation - cfg["colour_saturation_tolerance"]
+            hue_ok &= abs(val - ref_value) <= cfg["colour_value_tolerance"]
+        if hue_ok:
             kept.append(box)
     return kept
 
