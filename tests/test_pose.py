@@ -268,8 +268,8 @@ def test_a_brief_person_loss_does_not_make_a_hidden_limb_follow_a_bad_guess():
         assert s.limbs[Limb.RH] == pytest.approx((0.60, 0.14), abs=0.01)  # held, not the bad guess
 
 
-def test_frozen_limb_point_is_withheld_after_dip_and_returns_when_pose_resumes():
-    cfg = {**CFG, "contact_dip_frames": 3, "freeze_max_frames": 15}
+def test_frozen_limb_point_is_kept_up_to_the_cap_then_withheld_and_returns_on_resume():
+    cfg = {**CFG, "freeze_max_frames": 3}
     tracker = PoseTracker(cfg, detector=lambda _frame, _ts: [])
     good = hands_pose((0.4, 0.5), (0.6, 0.3))
     for i in range(6):
@@ -280,7 +280,9 @@ def test_frozen_limb_point_is_withheld_after_dip_and_returns_when_pose_resumes()
         hidden[f"right_{part}"] = (0.9, 0.9, 0.3)
     early = [tracker._smooth_limbs((6 + i) / 30, hidden).get(Limb.RH) for i in range(3)]
     assert all(point is not None for point in early)
-    assert Limb.RH not in tracker._smooth_limbs(9 / 30, hidden)  # left out, never None
+    assert Limb.RH not in tracker._smooth_limbs(
+        9 / 30, hidden
+    )  # over the cap: left out, never None
     assert Limb.RH not in tracker._smooth_limbs(10 / 30, hidden)
 
     visible = dict(good)
@@ -320,3 +322,20 @@ def test_after_resuming_the_lookback_uses_fresh_points_not_the_old_frozen_one():
     tracker = PoseTracker(CFG, detector=lambda f, ts: [_rh_pose(*next(it))])  # lookback = 4
     states = [tracker.process(i / 30, i, FRAME) for i in range(len(frames))]
     assert states[-1].limbs[Limb.RH][1] == pytest.approx(0.40, abs=0.1)  # not near 0.10 or 0.90
+
+
+def test_a_hidden_limb_keeps_its_point_for_the_default_three_seconds():
+    """A hand hidden by the body while resting on a hold must still count (top-out detection)."""
+    cfg = {**CFG, "freeze_max_frames": 90}
+    tracker = PoseTracker(cfg, detector=lambda _frame, _ts: [])
+    good = hands_pose((0.4, 0.5), (0.6, 0.3))
+    for i in range(6):
+        tracker._smooth_limbs(i / 30, good)
+    lost, murky = dict(good), dict(good)
+    for part in SWAP_GROUPS["hand"]:
+        lost[f"right_{part}"] = (0.9, 0.9, 0.3)  # visibility under 0.4: the limb freezes
+        murky[f"right_{part}"] = (0.9, 0.9, 0.5)  # 0.4-0.7: still frozen, but counts as visible
+    assert Limb.RH in tracker._smooth_limbs(6 / 30, lost)
+    for i in range(1, 90):
+        assert Limb.RH in tracker._smooth_limbs((6 + i) / 30, murky)
+    assert Limb.RH not in tracker._smooth_limbs(96 / 30, murky)  # frame 91 frozen: over the cap
