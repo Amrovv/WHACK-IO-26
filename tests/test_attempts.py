@@ -89,7 +89,7 @@ def test_both_feet_start_and_top_summary():
     assert attempt.finished_attempts[-1].duration_s == 1.5
 
 
-def test_start_requires_both_feet_on_start_holds_for_settle_time():
+def test_start_requires_one_foot_on_start_hold_for_settle_time():
     config = {**CONFIG, "brain": {**CONFIG["brain"], "start_hold_settle_s": 0.5}}
     holds = [
         Hold(1, (0.2, 0.8), (0, 0, 0, 0), "start"),
@@ -101,9 +101,9 @@ def test_start_requires_both_feet_on_start_holds_for_settle_time():
     run(attempt, feature, s(0))
     assert run(attempt, feature, s(1, contacts={Limb.LF: 1})) == []
     assert run(attempt, feature, s(2, contacts={Limb.LF: 3, Limb.RF: 3})) == []
-    assert run(attempt, feature, s(2.1, contacts={Limb.LF: 1, Limb.RF: 2})) == []
-    assert run(attempt, feature, s(2.5, contacts={Limb.LF: 1, Limb.RF: 2})) == []
-    events = run(attempt, feature, s(2.6, contacts={Limb.LF: 1, Limb.RF: 2}))
+    assert run(attempt, feature, s(2.1, contacts={Limb.LF: 1, Limb.RF: 3})) == []
+    assert run(attempt, feature, s(2.5, contacts={Limb.LF: 1, Limb.RF: 3})) == []
+    events = run(attempt, feature, s(2.6, contacts={Limb.LF: 1, Limb.RF: 3}))
     assert [event.kind for event in events] == ["attempt_start"]
 
 

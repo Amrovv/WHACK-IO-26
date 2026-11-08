@@ -121,7 +121,7 @@ class AttemptTracker:
         start_ids = self._start_ids()
         if not start_ids:
             return False
-        return all(state.contacts.get(limb) in start_ids for limb in (Limb.LF, Limb.RF))
+        return any(state.contacts.get(limb) in start_ids for limb in (Limb.LF, Limb.RF))
 
     def _finish(self, state: ClimberState, outcome: str) -> AttemptSummary:
         summary = AttemptSummary(
