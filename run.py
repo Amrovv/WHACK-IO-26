@@ -926,6 +926,10 @@ async def main(args: argparse.Namespace) -> int:
     tasks = [asyncio.create_task(bus_log.run(), name="bus-log")]
     if transcript is not None:
         tasks.append(asyncio.create_task(transcript.run(), name="transcript"))
+    tasks.append(asyncio.create_task(_log_bus_topic(bus, "event", "CUE"), name="cue-log"))
+    tasks.append(
+        asyncio.create_task(_log_bus_topic(bus, "suppressed", "SUPPRESSED"), name="suppressed-log")
+    )
     if server:
         tasks.append(asyncio.create_task(server.serve(), name="server"))
         log.info("dashboard at %s", server.url)
@@ -955,6 +959,16 @@ async def main(args: argparse.Namespace) -> int:
         transcript.close()
     bus.close()
     return 0
+
+
+async def _log_bus_topic(bus, topic: str, label: str) -> None:
+    """Print every message on a bus topic, not just the one line PrintVoice speaks: "event" is
+    every cue the brain's detectors suggested (whether or not the arbiter chose to speak it),
+    "suppressed" is every one the arbiter turned down, with its reason."""
+    queue = bus.subscribe(topic)
+    while True:
+        payload = await queue.get()
+        log.info("%s: %s", label, payload)
 
 
 def _wait_all(workers) -> None:
