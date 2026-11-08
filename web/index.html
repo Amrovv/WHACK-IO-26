@@ -149,6 +149,14 @@
   /* Clip progress: a thin bar along the bottom of the video. Its words live in the source bar, outside the picture. */
   #clip-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 5px; background: rgba(238, 240, 234, 0.18); pointer-events: none; }
   #clip-bar span { display: block; height: 100%; width: 0; background: var(--ink); }
+  /* The clip played to its end: the last frame dims and Replay sits in the middle of it. */
+  #frame.ended::after { content: ""; position: absolute; inset: 0; background: rgba(11, 12, 13, 0.4); pointer-events: none; }
+  #replay { position: absolute; z-index: 1; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    display: flex; align-items: center; gap: 0.45em; font-size: var(--m); padding: 0.3em 0.85em; }
+  #replay[hidden] { display: none; }
+  #replay svg { width: 0.95em; height: 0.95em; fill: none; stroke: currentColor; stroke-width: 2.6;
+    stroke-linecap: square; stroke-linejoin: miter; }
+  #replay:disabled { cursor: progress; }
 
   /* Source bar: what's being analysed and the picker to change it. Its own grid row: under a landscape
      picture, across the top of the data beside a portrait one. */
@@ -474,6 +482,7 @@
     <img id="video" alt="Live camera view of the climber">
     <canvas id="overlay"></canvas>
     <div id="clip-bar" hidden><span></span></div>
+    <button type="button" class="btn primary" id="replay" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v5h5"/></svg>Replay</button>
   </div>
 </section>
 
@@ -688,10 +697,11 @@ function handle(msg) {
 }
 
 function onHello(d) {
-  // A new source, or a looping clip starting a replayed pass ("pass"): start the page fresh.
+  // A new source, or a clip's replay starting ("pass"): start the page fresh.
   const run = d.session != null ? `${d.session}.${d.pass ?? 1}` : null;
   if (run != null && S.session != null && run !== S.session) resetSession();
   if (run != null) S.session = run;
+  showEnded(!!d.ended);
   $("offline").hidden = !(d.no_llm || d.offline || params.has("offline"));
   if (d.problem_id) showProblem(d.problem_id);
   if (d.mode) setMode(d.mode, d.source || null);
@@ -1432,6 +1442,27 @@ async function pickSource(spec) {
   }
 }
 $("source").addEventListener("change", (e) => pickSource(e.target.value));
+
+// ---- Replay: a clip plays once and holds its last frame (the coach finishes what it's saying).
+// Replay plays it again: the server replays the live pass, so it looks and sounds the same.
+function showEnded(ended) {
+  $("replay").hidden = !ended || DEMO;
+  $("frame").classList.toggle("ended", ended && !DEMO);
+}
+
+$("replay").addEventListener("click", async () => {
+  const btn = $("replay");
+  btn.disabled = true;
+  try {
+    const r = await fetch(`${HTTP_BASE}/api/replay`, { method: "POST" });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    // The replay's first frame brings a new hello ("pass"), which starts the page fresh.
+  } catch (err) {
+    srcNote(`Couldn't replay: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 // ---- Hold map editor ---------------------------------------------------------------
 // Builds data/holdmaps/<problem>.json from a still of the empty wall, with A's Roboflow

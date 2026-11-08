@@ -284,9 +284,9 @@ def shift_times(obj, dt: float, d_idx: int = 0):
 
 
 class LoopReplay:
-    """A looping clip is analysed live once, then replayed.
+    """A clip is analysed live once; the dashboard's Replay button plays that pass again.
 
-    A clip loops so the demo keeps going, but the climber walking back to the start isn't a new
+    Replaying through the brain again would count the climber back at the start as a new
     attempt. So the first pass runs live and everything the coach does is recorded, each at its
     time from the start of the pass: what perception and the brain publish (through TapBus) and
     what the brain asks the voice to do (through TapVoice). On later passes perception and the
@@ -324,7 +324,7 @@ class LoopReplay:
                 self._t0, self.recording = now, True
             elif self.passes == 1:
                 self.recording = False
-                log.info("clip looped: replaying the live pass (%d items)", len(self.items))
+                log.info("replaying the live pass (%d items)", len(self.items))
             self.passes += 1
             number = self.passes
         for item in leftover:  # what the coach did after the last frame of the clip
@@ -417,10 +417,12 @@ class PoseThreads:
     A reader thread puts frames into A's 1-slot LatestQueue (so a slow pose step drops old
     frames instead of falling behind); a pose thread runs PoseTracker on the newest frame and
     publishes "state" (to the bus and the brain's queue) and "frame" (~FRAME_FPS, for the
-    dashboard). The hold map is published once at start. Files loop unless fast=True, which
-    runs everything on one thread, drops nothing and stops at the end of the file. With a
-    LoopReplay, only a file's first pass is analysed; later passes show the video and play
-    the recording back (the reader thread does that; the pose thread rests).
+    dashboard). The hold map is published once at start. A file plays once and holds its last
+    frame (the coach keeps going, so the cues and debrief at the end aren't cut off); on_ended
+    is called then, and request_replay() plays it again. With a LoopReplay, only the first
+    pass is analysed; a replayed pass shows the video and plays the recording back (the reader
+    thread does that, including what the coach did after the clip ended; the pose thread
+    rests). fast=True runs everything on one thread, drops nothing and stops at the end.
     """
 
     def __init__(
@@ -449,6 +451,9 @@ class PoseThreads:
         self._last_frame_t = -float("inf")
         self.latest_frame = None  # newest BGR frame, for building a hold map from it
         self._threads: list[threading.Thread] = []
+        self.ended = threading.Event()  # a file played to its end and waits for a replay
+        self._again = threading.Event()  # play it again (the dashboard's Replay button)
+        self.on_ended = None  # called (reader thread) when a file reaches its end
 
     def start(self) -> None:
         if self.holdmap is not None:
@@ -478,8 +483,31 @@ class PoseThreads:
             if target is not self._read:
                 self.done.set()
 
+    def request_replay(self) -> bool:
+        """Play the clip again (only once it has ended). False if it's not a finished file."""
+        if not self.ended.is_set():
+            return False
+        self._again.set()
+        return True
+
+    def _wait_for_replay(self) -> bool:
+        """At the end of a file: hold until a replay is asked for (True) or we stop (False).
+        Meanwhile a replayed pass plays out what the coach did after the clip ended."""
+        self.ended.set()
+        if self.on_ended is not None:
+            self.on_ended()
+        while not self._stop.is_set():
+            if self.replay is not None:
+                self.replay.advance()
+            if self._again.wait(FRAME_POLL_S):
+                self._again.clear()
+                self.ended.clear()
+                return True
+        return False
+
     def _frames(self):
-        """(t, frame_idx, bgr) from the source; files restart at the end unless fast."""
+        """(t, frame_idx, bgr) from the source; a file plays again when a replay is asked for,
+        unless fast (then it just ends)."""
         offset = 0
         while not self._stop.is_set():
             if self.custom is not None:
@@ -502,7 +530,9 @@ class PoseThreads:
                 source.close()
             if self.fast or not self.is_file or last < 0:
                 return
-            offset += last + 1  # keep frame_idx growing so the dashboard can count loops
+            offset += last + 1  # keep frame_idx growing so the dashboard can count replays
+            if not self._wait_for_replay():
+                return
 
     def _read(self) -> None:
         try:
@@ -551,7 +581,7 @@ class PoseThreads:
 
 def build_perception(args, cfg, bus, states, parts=None, replay=None):
     """The workers that feed states (and frames) for this combination of flags. A LoopReplay
-    makes a looping clip analysed once and replayed after (PoseThreads only)."""
+    makes a clip analysed once and replayed after (PoseThreads only)."""
     common = dict(problem_id=args.problem, cfg=cfg, bus=bus, out=states, fast=args.fast)
     if args.replay_pose:
         workers = [stubs.PoseReplay(args.replay_pose, **common)]
@@ -660,7 +690,7 @@ class Session:
         self.camera = args.source if isinstance(args.source, BrowserCamera) else None
         loop = self._loop = asyncio.get_running_loop()
         states = stubs.AsyncLatestQueue(loop)
-        # A clip loops: its first pass is analysed live and recorded, later passes replay that.
+        # A clip: its first pass is analysed live and recorded; Replay plays that back.
         bus, voice, self.replay = self.bus, self.voice, None
         if isinstance(args.source, str) and not args.fast and not args.replay_pose:
             self.replay = LoopReplay(self.bus, self.voice, loop, on_pass=self._replayed_pass)
@@ -678,8 +708,39 @@ class Session:
             on_hello(self.hello)
         self.workers = workers
         for w in workers:
+            if hasattr(w, "on_ended"):  # a clip that played to its end: dashboards offer Replay
+                w.on_ended = self._clip_ended
             w.start()
         log.info("analysing %s (problem %s)", self.hello["spec"], args.problem)
+
+    def _clip_ended(self) -> None:
+        """A clip reached its end (perception's reader thread): over to the loop."""
+        workers = self.workers
+        self._loop.call_soon_threadsafe(self._announce_end, workers)
+
+    def _announce_end(self, workers: list) -> None:
+        """Dashboards show a Replay button: a hello with "ended", then the hold map again (a
+        hello makes the server forget it)."""
+        if workers is not self.workers:  # the source changed meanwhile
+            return
+        self.hello = {**self.hello, "ended": True}
+        self._send_hello()
+        log.info("clip ended: the dashboard offers Replay")
+
+    async def replay_clip(self) -> dict:
+        """The dashboard's Replay button: play the ended clip again (its recorded live pass).
+        ValueError when nothing has ended."""
+        async with self._lock:
+            if not any(getattr(w, "request_replay", lambda: False)() for w in self.workers):
+                raise ValueError("there's no ended clip to replay")
+            return self.hello
+
+    def _send_hello(self) -> None:
+        for on_hello in self._listeners:
+            on_hello(self.hello)
+        holdmap = next((w.holdmap for w in self.workers if getattr(w, "holdmap", None)), None)
+        if holdmap is not None:
+            self.bus.publish("holdmap", holdmap)
 
     def _replayed_pass(self, number: int) -> None:
         """A clip started a replayed pass (perception's reader thread): over to the loop."""
@@ -691,12 +752,9 @@ class Session:
         number) clears their attempts and timeline, then the hold map goes out again."""
         if replay is not self.replay:  # the source changed meanwhile
             return
-        self.hello = {**self.hello, "pass": number}
-        for on_hello in self._listeners:
-            on_hello(self.hello)
-        holdmap = next((w.holdmap for w in self.workers if getattr(w, "holdmap", None)), None)
-        if holdmap is not None:
-            self.bus.publish("holdmap", holdmap)
+        hello = {k: v for k, v in self.hello.items() if k != "ended"}
+        self.hello = {**hello, "pass": number}
+        self._send_hello()
 
     async def _stop(self) -> None:
         self.camera = None  # webcam frames that arrive from now on are ignored
