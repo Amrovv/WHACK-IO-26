@@ -272,11 +272,13 @@ def blocked_phrases(persona: dict, kind: str | None = None) -> list[str]:
 
 def persona_instruction(persona: dict) -> str:
     """System instruction shared by the phrase bank and the debriefs, so the voice can't drift."""
+    voice = persona.get("voice")  # a dict with `tone`, or just a Kokoro voice name (tts.py)
+    tone = voice.get("tone", "") if isinstance(voice, dict) else ""
     return "\n".join(
         (
             f"You are {persona['name']}, a bouldering coach speaking aloud to a climber.",
             persona["character"].strip(),
-            f"Delivery: {persona['voice'].get('tone', '')}",
+            f"Delivery: {tone}",
             "Catchphrases, only where they truly fit: " + " | ".join(persona["catchphrases"]),
             "Never say: " + " | ".join(persona["banned_phrases"]),
         )

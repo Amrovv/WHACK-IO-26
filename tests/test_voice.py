@@ -170,6 +170,20 @@ def test_late_request_does_not_use_up_a_line() -> None:
     assert rig.voice._decks == {}
 
 
+def test_a_failing_clip_load_returns_false_instead_of_raising(caplog) -> None:
+    # say() runs inside the brain's frame loop: an exception there would stop the coach.
+    rig = Rig(bank_of(["Feet up."]))
+
+    def broken(_text: str) -> np.ndarray:
+        raise RuntimeError("disk gone")
+
+    rig.tts.cached = broken
+    with caplog.at_level(logging.ERROR):
+        assert rig.voice.say(rig.request()) is False
+    assert "say() failed" in caplog.text
+    assert rig.speaker.played == []
+
+
 def test_spoken_line_is_published_with_the_audio_start_time() -> None:
     rig = Rig(bank_of(["Feet up."]))
     req = rig.request()
@@ -472,6 +486,15 @@ def test_make_voice_matches_what_run_py_calls(monkeypatch: pytest.MonkeyPatch) -
     voice = built(cfg, Bus(), no_llm=True, bank={})
     assert warmed == [voice]
     voice.close()
+
+
+def test_make_voice_without_a_phrase_bank_says_how_to_build_one(monkeypatch, tmp_path) -> None:
+    import coach.voice.voice as voice_module
+
+    monkeypatch.setattr(voice_module, "BANK_PATH", tmp_path / "phrasebank.json")
+    cfg = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
+    with pytest.raises(FileNotFoundError, match="scripts.build_phrasebank"):
+        make_voice(cfg, Bus(), no_llm=True)
 
 
 def test_holds_are_spoken_by_position_once_the_hold_map_arrives() -> None:

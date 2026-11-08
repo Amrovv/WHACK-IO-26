@@ -248,7 +248,7 @@ class TTS:
             return None
         try:
             return np.load(path)
-        except (OSError, ValueError):
+        except (OSError, ValueError, EOFError):  # EOFError: an empty file, e.g. a part-copied cache
             log.warning("corrupt cache entry %s, resynthesising", path)
             return None
 

@@ -138,6 +138,14 @@ def test_cached_treats_a_corrupt_file_as_missing(tmp_path: Path) -> None:
     assert tts.cached("Feet up.") is None
 
 
+def test_cached_treats_an_empty_file_as_missing(tmp_path: Path) -> None:
+    # np.load raises EOFError, not ValueError, on an empty file (e.g. a part-copied cache).
+    params = TTSParams(cache_dir=tmp_path)
+    tts = TTS(KokoroTTS(params, pipeline=FakePipeline()), params)
+    tts.cache_path("Feet up.").write_bytes(b"")
+    assert tts.cached("Feet up.") is None
+
+
 def test_warmup_runs_a_real_inference_without_touching_the_cache(tmp_path: Path) -> None:
     pipeline = FakePipeline()
     params = TTSParams(cache_dir=tmp_path)
