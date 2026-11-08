@@ -377,18 +377,29 @@ class RoutePreview(Detector):
     def __init__(self) -> None:
         super().__init__()
         self._fired = False
+        self._ground_since: float | None = None
 
     def update(
         self, features: Features, state: ClimberState, ctx: DetectorContext
     ) -> list[CoachEvent]:
         if ctx.on_wall:
             self._fired = False
+            self._ground_since = None
+        elif self._ground_since is None:
+            self._ground_since = state.t
         return super().update(features, state, ctx)
 
     def _update(
         self, features: Features, state: ClimberState, ctx: DetectorContext
     ) -> list[CoachEvent]:
         if self._fired:
+            return []
+        # RoutePreview fires the instant the phase becomes GROUND, which is the same
+        # frame the attempt summary reaches Memory and the debrief starts; Voice stays
+        # "speaking" for the whole debrief, so the arbiter suppressed this as "busy"
+        # almost every time after the first attempt. Wait out a typical debrief first.
+        delay = float(_brain(ctx, "route_preview_delay_s"))
+        if self._ground_since is None or state.t - self._ground_since < delay:
             return []
         if ctx.holdmap is None or len(ctx.holdmap.holds) < 2:
             return []
