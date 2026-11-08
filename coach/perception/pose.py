@@ -214,11 +214,13 @@ class PoseTracker:
         self._min_visibility = cfg["min_visibility"]
         self._resume_visibility = cfg["resume_visibility"]
         self._resume_frames = cfg["resume_frames"]
+        self._freeze_max_frames = cfg.get("freeze_max_frames", 15)
         self._good_run = {limb: 0 for limb in Limb}  # consecutive clearly-visible frames
         self._lost_memory = cfg["lost_memory_frames"]
         self._lost_frames = 0
         self._recent = {limb: deque(maxlen=cfg["hold_lookback_frames"]) for limb in Limb}
         self._hidden = {limb: False for limb in Limb}
+        self._hidden_frames = {limb: 0 for limb in Limb}
         self._frozen: dict[Limb, tuple[float, float]] = {}
 
     def _timestamp_ms(self, t: float) -> int:
@@ -284,12 +286,19 @@ class PoseTracker:
             self._good_run[limb] = self._good_run[limb] + 1 if vis >= self._resume_visibility else 0
             if self._hidden[limb] and self._good_run[limb] >= self._resume_frames:
                 self._hidden[limb] = False
+                self._hidden_frames[limb] = 0
                 recent.clear()  # the filter is still catching up from the frozen point: start fresh
             elif not self._hidden[limb] and vis < self._min_visibility and recent:
                 self._hidden[limb] = True
+                self._hidden_frames[limb] = 0
                 self._frozen[limb] = recent[0]  # oldest of the last few visible frames
             if self._hidden[limb]:
-                limbs[limb] = self._frozen[limb]
+                self._hidden_frames[limb] += 1
+                # Keep the frozen point through the configured short visibility dip, then stop
+                # exposing it as a usable contact point while the pose remains hidden.
+                if self._hidden_frames[limb] <= self._freeze_max_frames:
+                    limbs[limb] = self._frozen[limb]
+                # else: leave the limb out of `limbs` (the contract has no "missing" point)
             else:
                 limbs[limb] = self._filters[limb](t, point)
                 if vis >= self._min_visibility:  # never remember a low-visibility guess as reliable

@@ -176,7 +176,30 @@ def test_prompt_carries_every_rule_and_the_data() -> None:
     assert "exactly one actionable tip" in prompt
     assert "in character" in prompt
     assert "No greetings" in prompt
-    assert json.dumps(payload, separators=(",", ":")) in prompt
+    without_places = {key: value for key, value in payload.items() if key != "places"}
+    assert json.dumps(without_places, separators=(",", ":")) in prompt
+
+
+PLACES = {4: "middle hold", 6: "high hold", 8: "top hold"}
+
+
+def test_with_places_the_prompt_has_no_hold_numbers() -> None:
+    history = [attempt(1, high=4, stalls=[(4, 6.5)]), attempt(2, high=6)]
+    prompt = debrief_prompt(debrief_payload(history, {}, 6, PLACES), 20)
+    assert "never say a hold number" in prompt
+    assert '"high_point":"high hold"' in prompt
+    assert '"crux":"high hold"' in prompt
+    assert "high_hold_id" not in prompt and "crux_hold" not in prompt
+
+
+def test_with_places_the_template_names_holds_by_position() -> None:
+    history = [attempt(1, high=4), attempt(2, high=6, stalls=[(6, 3.0)])]
+    sentences = template_sentences(debrief_payload(history, {}, None, PLACES))
+    assert sentences == [
+        "Attempt 2, you fell at the high hold.",
+        "That's higher than attempt 1.",
+        "Next go, plan your move before you reach the high hold.",
+    ]
 
 
 @pytest.mark.parametrize("history", [[], [attempt()]])

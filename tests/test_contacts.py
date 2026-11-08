@@ -10,6 +10,7 @@ CFG = {
     "contact_settle_ms": 150,
     "contact_release_ratio": 1.3,
     "contact_still_speed": 0.2,
+    "contact_dip_frames": 3,
     "min_visibility": 0.5,
     "resume_visibility": 0.7,
     "resume_frames": 2,
@@ -102,17 +103,28 @@ def test_two_qualifying_holds_nearest_centre_wins():
 def test_low_visibility_reports_none_but_a_brief_dip_keeps_the_hold_memory():
     tr = ContactTracker(CFG, HOLDMAP)
     assert hold_still(tr, (0.45, 0.45), 0.3)[-1][1] == 1
-    assert tr.update(make_state(0.31, {Limb.RH: (0.45, 0.45)}, vis=0.3))[Limb.RH] is None
+    assert tr.update(make_state(0.31, {Limb.RH: (0.45, 0.45)}, vis=0.3))[Limb.RH] == 1
     assert tr.update(make_state(0.34, {Limb.RH: (0.45, 0.45)}))[Limb.RH] == 1  # straight back
+
+
+def test_three_frozen_frames_keep_contact_then_hidden_point_reports_none_and_resumes():
+    tr = ContactTracker(CFG, HOLDMAP)
+    assert hold_still(tr, (0.45, 0.45), 0.3)[-1][1] == 1
+    for i in range(1, 4):
+        assert tr.update(make_state(0.30 + i * DT, {Limb.RH: (0.45, 0.45)}))[Limb.RH] == 1
+    assert tr.update(make_state(0.30 + 4 * DT, {Limb.RH: None}))[Limb.RH] is None
+    assert tr.update(make_state(0.30 + 5 * DT, {Limb.RH: None}))[Limb.RH] is None
+    # A clearly resumed limb can establish a fresh contact after settling again.
+    resumed = hold_still(tr, (0.45, 0.45), 0.3, t0=0.30 + 6 * DT)
+    assert resumed[0][1] is None and resumed[-1][1] == 1
 
 
 def test_a_long_low_visibility_stretch_clears_the_hold_and_needs_a_new_settle():
     tr = ContactTracker(CFG, HOLDMAP)
     assert hold_still(tr, (0.45, 0.45), 0.3)[-1][1] == 1
-    for i in range(8):  # 8 low-vis frames > lost_memory_frames (5)
-        assert (
-            tr.update(make_state(0.31 + i * DT, {Limb.RH: (0.45, 0.45)}, vis=0.3))[Limb.RH] is None
-        )
+    for i in range(8):  # brief dip is retained; the long stretch clears the hold
+        contact = tr.update(make_state(0.31 + i * DT, {Limb.RH: (0.45, 0.45)}, vis=0.3))[Limb.RH]
+        assert contact == (1 if i < CFG["contact_dip_frames"] else None)
     after = hold_still(tr, (0.45, 0.45), 0.4, t0=0.6)
     assert after[0][1] is None and after[-1][1] == 1
 

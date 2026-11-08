@@ -38,6 +38,7 @@ from coach.voice.phrasebank import (  # noqa: F401  fallback_keys is re-exported
     NEUTRAL,
     LinePicker,
     fallback_keys,
+    hold_places,
     slot_values,
     stitch,
 )
@@ -64,6 +65,7 @@ class Voice:
         rng: random.Random | None = None,
         pool: Executor | None = None,
         debrief_llm: DebriefLLM | None = None,
+        hold_bands: Sequence[Sequence] = (),
     ) -> None:
         self._tts = tts
         self._speaker = speaker
@@ -76,6 +78,8 @@ class Voice:
         self._decks = self._lines.decks
         self._holdmaps: asyncio.Queue[HoldMap] = bus.subscribe("holdmap")
         self._route_colour: str | None = None
+        self._hold_bands = hold_bands  # persona hold_places; empty: holds spoken by number
+        self._places: dict[int, str] = {}
         self._lock = threading.Lock()  # makes "still current?" and starting playback one step
         self._generation = 0  # bumped by every say/stop/debrief; older pending lines are dropped
         self._debrief_llm = debrief_llm  # None: template debriefs only
@@ -84,9 +88,8 @@ class Voice:
     def say(self, req: SpeakRequest) -> bool:
         if self._clock() > req.deadline:
             return False
-        while not self._holdmaps.empty():
-            self._route_colour = self._holdmaps.get_nowait().colour
-        values = slot_values(req.event.data, self._route_colour)
+        self._read_holdmaps()
+        values = slot_values(req.event.data, self._route_colour, self._places)
         line = self._lines.pick(req.event.kind, req.level, req.mood, values)
         if line is None:
             log.warning("no usable line for %s L%d %s", req.event.kind, req.level, req.mood)
@@ -112,7 +115,8 @@ class Voice:
         self, history: list[AttemptSummary], habits: dict, crux_hold: int | None
     ) -> None:
         """Speak a debrief, returning when it ends or say()/stop() cuts it. Never raises."""
-        payload = debrief_payload(history, habits, crux_hold)
+        self._read_holdmaps()
+        payload = debrief_payload(history, habits, crux_hold, self._places)
         with self._lock:
             generation = self._next_generation()
             task = self._debrief = asyncio.create_task(self._run_debrief(payload, generation))
@@ -131,6 +135,12 @@ class Voice:
             with self._lock:
                 if self._debrief is task:
                     self._debrief = None
+
+    def _read_holdmaps(self) -> None:
+        while not self._holdmaps.empty():
+            holdmap = self._holdmaps.get_nowait()
+            self._route_colour = holdmap.colour
+            self._places = hold_places(holdmap, self._hold_bands)
 
     def warm_up(self) -> None:
         """Load the TTS engine on the worker, so the first on-demand line can make its deadline."""
@@ -256,6 +266,7 @@ def make_voice(cfg: dict, bus: Bus, no_llm: bool = False, bank: dict | None = No
         bus,
         fillers=persona["fillers"],
         debrief_llm=None if no_llm else make_debrief_llm(voice_cfg, persona),
+        hold_bands=persona.get("hold_places", ()),
     )
     voice.warm_up()
     return voice

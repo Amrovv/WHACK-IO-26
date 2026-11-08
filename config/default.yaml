@@ -9,6 +9,7 @@ perception:
   contact_settle_ms: 150
   contact_release_ratio: 1.6   # release box = margin x this (hysteresis)
   contact_dip_frames: 3        # keep a contact through a visibility dip this short
+  freeze_max_frames: 90        # a hidden limb keeps its frozen point (and contact) this many frames (3 s), then it is dropped; sweep on climb_1 clean send: 15 loses the top, 60 keeps 1.6 s on top, 90 matches the old code (2.0 s)
   contact_still_speed: 0.4     # limb is 'still' below this speed (normalised units per second)
   min_visibility: 0.4          # landmarks below this give no contact and freeze the limb point
   resume_visibility: 0.7       # a frozen limb follows the pose again only above this...
@@ -81,7 +82,7 @@ brain:
   mood_exasperated_attempts: 3      # same habit firing in this many attempts = exasperated
 
   priorities:               # event kind -> arbiter priority (0 big moment, 1 cue, 2 banter)
-    attempt_start: 2
+    attempt_start: 0         # interrupts a running debrief (arbiter.py) instead of queuing behind it
     hand_searching: 1
     feet_low: 1
     arms_bent: 1
