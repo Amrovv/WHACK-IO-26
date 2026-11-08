@@ -103,10 +103,13 @@ class Rig:
         fillers=(),
         debrief_llm=None,
         speaker_type=None,
+        tts=None,
     ) -> None:
         self.clock = FakeClock()
         self.speaker = (speaker_type or FakeSpeaker)(self.clock)
-        self.tts = FakeTTS(render_texts(bank, [], []) if rendered is None else rendered)
+        if tts is None:
+            tts = FakeTTS(render_texts(bank, [], []) if rendered is None else rendered)
+        self.tts = tts
         self.bus = Bus()
         self.spoken = self.bus.subscribe("spoken")
         self.pool = ThreadPoolExecutor(max_workers=1)

@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -157,3 +158,24 @@ def test_warmup_runs_a_real_inference_without_touching_the_cache(tmp_path: Path)
 def test_warmup_is_a_no_op_for_engines_without_one(tmp_path: Path) -> None:
     params = TTSParams(cache_dir=tmp_path)
     TTS(SimpleNamespace(), params).warmup()
+
+
+def test_kokoro_exiting_while_it_loads_raises_an_ordinary_error_and_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """spaCy calls sys.exit() when misaki's download of en_core_web_sm fails."""
+    loads = []
+
+    def kpipeline(lang_code: str) -> FakePipeline:
+        loads.append(lang_code)
+        if len(loads) == 1:
+            sys.exit(1)
+        return FakePipeline()
+
+    monkeypatch.setitem(sys.modules, "kokoro", SimpleNamespace(KPipeline=kpipeline))
+    params = TTSParams(cache_dir=tmp_path)
+    tts = TTS(KokoroTTS(params), params)
+    with pytest.raises(RuntimeError, match="en_core_web_sm"):
+        tts.synth("Feet up.")
+    assert tts.synth("Feet up.").size > 0  # once the model loads, speech comes back
+    assert loads == ["a", "a"]
