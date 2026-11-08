@@ -36,12 +36,12 @@ from coach.perception.holds import (
     colour_name,
     detect_hold_polygons,
     detect_holds,
-    detected_hold_hue,
+    detected_hold_colour,
     filter_by_colour,
     load_holdmap_with_shapes,
     load_holds_config,
     read_frame,
-    sample_colour,
+    sample_colour_hsv,
     save_holdmap,
 )
 from coach.perception.shapes import (
@@ -110,6 +110,8 @@ class EditorState:
         self.image, self.cfg = image, cfg
         self.colour_override = colour
         self.ref_hue: float | None = None
+        self.ref_saturation: float | None = None
+        self.ref_value: float | None = None
         self.detector_used = False
         self.auto: list[Box] = []
         self.excluded: set[Box] = set()  # auto boxes switched off (shown dim, click to restore)
@@ -125,7 +127,7 @@ class EditorState:
     def pick_colour(self, point: tuple[int, int]) -> None:
         hue = None
         try:  # the colour of the whole detected hold under the click (robust on pale holds)
-            hue = detected_hold_hue(
+            colour = detected_hold_colour(
                 self.image,
                 point,
                 detect_holds(self.image, self.cfg),
@@ -134,11 +136,16 @@ class EditorState:
             )
         except Exception as e:  # no key / network: the small patch below still works
             log.info("Roboflow not available to read the clicked hold's colour: %s", e)
+            colour = None
+        hue = colour[0] if colour is not None else None
         if hue is not None:
             self.ref_hue = hue
+            self.ref_saturation, self.ref_value = colour[1], colour[2]
         else:
             try:
-                self.ref_hue, _ = sample_colour(self.image, point, self.cfg)
+                self.ref_hue, self.ref_saturation, self.ref_value = sample_colour_hsv(
+                    self.image, point, self.cfg
+                )
             except ValueError as e:
                 self.message = f"{e}; manual placement is available with r"
                 return
@@ -163,7 +170,15 @@ class EditorState:
         try:
             found = detect_holds(self.image, self.cfg)
             outlines = detect_hold_polygons(self.image, self.cfg)
-            self.auto = filter_by_colour(self.image, found, self.ref_hue, self.cfg, outlines)
+            self.auto = filter_by_colour(
+                self.image,
+                found,
+                self.ref_hue,
+                self.cfg,
+                outlines,
+                self.ref_saturation,
+                self.ref_value,
+            )
             self.polygons.update({box: outlines[box] for box in self.auto if box in outlines})
             self.detector_used = True
         except Exception as e:
@@ -184,6 +199,7 @@ class EditorState:
         """Start from a saved map (every hold becomes an editable manual hold)."""
         h, w = self.image.shape[:2]
         self.ref_hue = None
+        self.ref_saturation = self.ref_value = None
         self.detector_used = False
         self.manual, self.polygons = [], {}
         self.start, self.top = set(), set()

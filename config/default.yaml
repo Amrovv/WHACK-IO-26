@@ -30,6 +30,10 @@ perception:
 holds:
   detector_model: hold-detector-rnvkl/1  # Roboflow model id (Climb AI hold detector; picked in experiment 2)
   hue_tolerance: 12         # OpenCV hue units, 0-179
+  colour_min_value: 45      # ignore deep shadows when measuring coloured holds
+  colour_max_value: 248     # ignore clipped specular highlights
+  colour_saturation_tolerance: 70 # allow lighting/chalk changes while rejecting beige/cream
+  colour_value_tolerance: 160 # broad exposure tolerance; hue and saturation separate colours
   min_saturation: 60
   pale_min_saturation: 35    # pale holds (light teal, saturation ~40) count at this lower floor...
   pale_min_fraction: 0.4     # ...when too few of their pixels reach min_saturation; this share must reach the floor
