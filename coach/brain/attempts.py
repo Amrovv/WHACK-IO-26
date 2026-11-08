@@ -77,10 +77,15 @@ class AttemptTracker:
         Contact tracking is deliberately conservative for ordinary coaching cues.  At the
         finish, however, a hand can be visibly on a large top hold while its smoothed point
         lands just outside Roboflow's axis-aligned box.  Treat both hands as matching when
-        they are inside the configured expanded top-hold region.
+        they are inside the configured expanded top-hold region, but require one confirmed
+        top contact so a climber hovering near the top cannot send from the second-to-last
+        hold.
         """
         top_ids = self._top_ids()
         if not top_ids or self.holdmap is None:
+            return False
+        hand_contacts = (state.contacts.get(Limb.LH), state.contacts.get(Limb.RH))
+        if not any(value in top_ids for value in hand_contacts):
             return False
         margin = float(cfg(self.config, "brain", "top_hand_margin"))
         top_boxes = [hold.bbox for hold in self.holdmap.holds if hold.id in top_ids]
