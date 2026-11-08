@@ -55,17 +55,51 @@ class AttemptTracker:
         feet_off = state.contacts.get(Limb.LF) is None and state.contacts.get(Limb.RF) is None
         return feet_off and not self._raised(state, features)
 
+    def _top_ids(self) -> set[int]:
+        if self.holdmap is None or not self.holdmap.holds:
+            return set()
+        top_ids = {hold.id for hold in self.holdmap.holds if hold.role == "top"}
+        return top_ids or {max(hold.id for hold in self.holdmap.holds)}
+
     def _is_top(self, state: ClimberState) -> bool:
         hand_ids = [state.contacts.get(Limb.LH), state.contacts.get(Limb.RH)]
         if any(value is None for value in hand_ids):
             return False
-        if self.holdmap is None or not self.holdmap.holds:
+        top_ids = self._top_ids()
+        if not top_ids:
             top_id = max(value for value in hand_ids if value is not None)
             return hand_ids[0] == hand_ids[1] == top_id
-        top_ids = {hold.id for hold in self.holdmap.holds if hold.role == "top"}
-        if not top_ids:
-            top_ids = {max(hold.id for hold in self.holdmap.holds)}
         return all(value in top_ids for value in hand_ids)
+
+    def _hands_match_top(self, state: ClimberState) -> bool:
+        """Allow a top match when pose points straddle a detector's tight box.
+
+        Contact tracking is deliberately conservative for ordinary coaching cues.  At the
+        finish, however, a hand can be visibly on a large top hold while its smoothed point
+        lands just outside Roboflow's axis-aligned box.  Treat both hands as matching when
+        they are inside the configured expanded top-hold region, but require one confirmed
+        top contact so a climber hovering near the top cannot send from the second-to-last
+        hold.
+        """
+        top_ids = self._top_ids()
+        if not top_ids or self.holdmap is None:
+            return False
+        hand_contacts = (state.contacts.get(Limb.LH), state.contacts.get(Limb.RH))
+        if any(value is not None and value not in top_ids for value in hand_contacts):
+            return False
+        margin = float(cfg(self.config, "brain", "top_hand_margin"))
+        top_boxes = [hold.bbox for hold in self.holdmap.holds if hold.id in top_ids]
+        for limb in (Limb.LH, Limb.RH):
+            point = state.limbs.get(limb)
+            if point is None:
+                return False
+            x, y = point
+            if not any(
+                x0 - margin <= x <= x1 + margin and y0 - margin <= y <= y1 + margin
+                for x0, y0, x1, y1 in top_boxes
+            ):
+                return False
+        return True
 
     def _enter_wall(self, state: ClimberState) -> CoachEvent:
         self.phase = "ON_WALL"
@@ -76,6 +110,18 @@ class AttemptTracker:
         self._top_since = None
         self._fall_seen = False
         return make_event("attempt_start", state.t, {"attempt_no": self._attempt_no}, self.config)
+
+    def _start_ids(self) -> set[int]:
+        if self.holdmap is None:
+            return set()
+        start_ids = {hold.id for hold in self.holdmap.holds if hold.role == "start"}
+        return start_ids or {min(hold.id for hold in self.holdmap.holds)}
+
+    def _on_start_holds(self, state: ClimberState) -> bool:
+        start_ids = self._start_ids()
+        if not start_ids:
+            return False
+        return any(state.contacts.get(limb) in start_ids for limb in (Limb.LF, Limb.RF))
 
     def _finish(self, state: ClimberState, outcome: str) -> AttemptSummary:
         summary = AttemptSummary(
@@ -102,12 +148,10 @@ class AttemptTracker:
             features.add_calibration_sample(state)
             if not self._standing_hips or not self._raised(state, features):
                 self._standing_hips.append(state.hip[1])
-            if state.contacts.get(Limb.LF) is not None and state.contacts.get(Limb.RF) is not None:
-                events.append(self._enter_wall(state))
-            elif self._raised(state, features):
+            if self._on_start_holds(state):
                 self._raised_since = self._raised_since or state.t
                 if state.t - self._raised_since >= float(
-                    cfg(self.config, "brain", "on_wall_settle_s")
+                    cfg(self.config, "brain", "start_hold_settle_s")
                 ):
                     events.append(self._enter_wall(state))
             else:
@@ -135,11 +179,14 @@ class AttemptTracker:
                 )
 
         fall_speed = float(cfg(self.config, "brain", "fall_speed"))
-        # A frozen/hidden-limb contact (coach/perception/pose.py) can keep both hands
-        # reporting the top hold for a while after the climber has actually let go, so
-        # _is_top() alone isn't enough: require the climber not be mid-fall (fast
-        # downward hip velocity) for the hold to count towards the top-hold timer.
-        if self._is_top(state) and features.hip_velocity_y <= fall_speed:
+        # A two-hand match on the top hold is an immediate send.  Do not wait for a
+        # dwell timer: on the demo footage the climber matches, then jumps down before
+        # the next frame can satisfy a one-second timer.  A frozen/hidden-limb contact
+        # can still report both hands after release, so keep the velocity guard.
+        immediate_top = float(cfg(self.config, "brain", "top_hold_s")) <= 0
+        if (self._is_top(state) or (immediate_top and self._hands_match_top(state))) and (
+            features.hip_velocity_y <= fall_speed
+        ):
             self._top_since = self._top_since or state.t
             if state.t - self._top_since >= float(cfg(self.config, "brain", "top_hold_s")):
                 events.append(

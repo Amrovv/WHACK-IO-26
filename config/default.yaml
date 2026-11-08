@@ -62,11 +62,13 @@ brain:
                                # suppressed as "busy" by the debrief that starts the same frame
   weight_shift_ratio: 0.25  # sideways hip-to-foot gap / leg length
   on_wall_margin: 0.15      # hip rise above standing height / leg length
+  start_hold_settle_s: 0.5  # at least one foot must stay on a start hold this long
 
   # Features + attempts (B3)
   move_speed_eps: 0.02      # normalised units/s; below this a limb/hip counts as static
   on_wall_settle_s: 0.5     # hip must stay raised this long to confirm ON_WALL
-  top_hold_s: 1.0           # both hands on the top hold this long = top
+  top_hold_s: 0.0           # both hands on the top hold = immediate successful climb
+  top_hand_margin: 0.04     # finish-only fallback for hands just outside a detector box
   fall_speed: 0.6           # downward hip velocity (norm units/s) above this = falling
   ground_settle_s: 1.0      # back on the ground this long before the attempt is closed
 
@@ -104,8 +106,21 @@ brain:
     told_you_so: 2
 
 arbiter:
-  global_gap_s: 3
-  cooldown_s: 15
+  global_gap_s: 0.0           # experiment: different cue kinds may speak close together
+  cooldown_s: 3.0             # fallback for cue kinds not listed below
+  cooldown_by_kind:            # per-kind repeat suppression; priority-0 events bypass this
+    hand_searching: 1.0        # frequent directional guidance
+    feet_low: 3.0
+    quiet_feet: 3.0
+    arms_bent: 3.0
+    weight_shift: 3.0
+    feet_cut: 5.0
+    stalling: 5.0
+    crux_warning: 8.0
+    route_preview: 10.0
+    told_you_so: 10.0
+  preference_by_kind:           # same-priority tie-breaker; higher value wins
+    hand_searching: 10.0        # prefer actionable directional guidance
   budget_lines: 6
   budget_window_s: 30
   ttl_s: {p0: 2.0, p1: 1.2, p2: 4.0}

@@ -67,7 +67,7 @@ class Arbiter:
                     self._suppress(event, "cooldown")
                     continue
                 last_kind = self._last_spoken_kind.get(event.kind)
-                if last_kind is not None and now - last_kind < self._value("cooldown_s"):
+                if last_kind is not None and now - last_kind < self._cooldown_for(event.kind):
                     self._suppress(event, "cooldown")
                     continue
                 self._trim_budget(now)
@@ -105,6 +105,12 @@ class Arbiter:
         "arbiter") or a flat dict of just the arbiter settings, as the tests do."""
         section = self._config.get("arbiter", self._config)
         return float(section[name])
+
+    def _cooldown_for(self, kind: str) -> float:
+        """Return the cooldown for a cue kind, falling back to the default."""
+        section = self._config.get("arbiter", self._config)
+        overrides = section.get("cooldown_by_kind", {})
+        return float(overrides.get(kind, section["cooldown_s"]))
 
     def _trim_budget(self, now: float) -> None:
         cutoff = now - self._value("budget_window_s")
