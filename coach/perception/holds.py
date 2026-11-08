@@ -29,7 +29,7 @@ from dotenv import load_dotenv
 
 from coach.contracts import Hold, HoldMap
 from coach.perception.config import REPO_ROOT, load_config
-from coach.perception.shapes import polygon_centroid
+from coach.perception.shapes import point_in_polygon, polygon_centroid
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +85,9 @@ def sample_colour(image_bgr: np.ndarray, point: tuple[int, int], cfg: dict) -> t
     sat = hsv[:, 1]
     keep = hsv[sat >= cfg["min_saturation"]]
     if len(keep) == 0:
+        pale = hsv[sat >= cfg["pale_min_saturation"]]
+        if len(pale) >= cfg["pale_min_fraction"] * len(hsv):  # a pale hold (e.g. light teal)
+            return circular_median_hue(pale[:, 0]), float(np.median(pale[:, 1]))
         value = hsv[:, 2]
         white = (sat <= cfg["white_max_saturation"]) & (value >= cfg["white_min_value"])
         if np.any(white):
@@ -106,7 +109,13 @@ def circular_median_hue(hues: np.ndarray) -> float:
 def box_hue(
     image_bgr: np.ndarray, box: Box, cfg: dict, polygon: PixelPolygon | None = None
 ) -> float | None:
-    """Median hue in the hold pixels inside a box or supplied polygon."""
+    """Median hue in the hold pixels inside a box or supplied polygon.
+
+    Pixels count when they are saturated enough (`min_saturation`). A pale hold (light teal,
+    median saturation ~40) has too few of those, so when they are under `pale_min_fraction` of the
+    hold the lower `pale_min_saturation` is used instead; if even that is not met by enough of
+    the hold, the hold has no usable colour (None).
+    """
     x0, y0, x1, y1 = box
     x0, y0 = max(x0, 0), max(y0, 0)
     crop = image_bgr[y0:y1, x0:x1]
@@ -117,8 +126,41 @@ def box_hue(
         pts = np.array([[(x - x0, y - y0) for x, y in polygon]], dtype=np.int32)
         cv2.fillPoly(mask, pts, 255)
         hsv = hsv[mask.reshape(-1) > 0]
-    hsv = hsv[hsv[:, 1] >= cfg["min_saturation"]]
-    return circular_median_hue(hsv[:, 0]) if len(hsv) else None
+    if len(hsv) == 0:
+        return None
+    strong = hsv[hsv[:, 1] >= cfg["min_saturation"]]
+    if len(strong) >= cfg["pale_min_fraction"] * len(hsv):
+        return circular_median_hue(strong[:, 0])
+    pale = hsv[hsv[:, 1] >= cfg["pale_min_saturation"]]
+    if len(pale) >= cfg["pale_min_fraction"] * len(hsv):
+        return circular_median_hue(pale[:, 0])
+    return circular_median_hue(strong[:, 0]) if len(strong) else None
+
+
+def detected_hold_hue(
+    image_bgr: np.ndarray,
+    point: tuple[int, int],
+    boxes: list[Box],
+    polygons: dict[Box, PixelPolygon],
+    cfg: dict,
+) -> float | None:
+    """Hue of the detected hold under a click, measured on the whole hold (its polygon pixels).
+
+    A small click patch is unreliable on pale or chalky holds (saturation can drop to the wall's
+    level); the hold's own pixels are not. The smallest detection containing the point is used.
+    None if no detection is under the click or it has no usable hue (white, grey, black).
+    """
+    x, y = point
+    hits = [
+        b
+        for b in boxes
+        if (point_in_polygon(point, polygons[b]) if b in polygons else b[0] <= x <= b[2])
+        and b[1] <= y <= b[3]
+    ]
+    if not hits:
+        return None
+    hit = min(hits, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+    return box_hue(image_bgr, hit, cfg, polygons.get(hit))
 
 
 def filter_by_colour(

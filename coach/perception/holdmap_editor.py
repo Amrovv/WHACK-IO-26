@@ -36,6 +36,7 @@ from coach.perception.holds import (
     colour_name,
     detect_hold_polygons,
     detect_holds,
+    detected_hold_hue,
     filter_by_colour,
     load_holdmap_with_shapes,
     load_holds_config,
@@ -122,11 +123,25 @@ class EditorState:
 
     # -- colour selection ---------------------------------------------------------------------
     def pick_colour(self, point: tuple[int, int]) -> None:
-        try:
-            self.ref_hue, _ = sample_colour(self.image, point, self.cfg)
-        except ValueError as e:
-            self.message = f"{e}; manual placement is available with r"
-            return
+        hue = None
+        try:  # the colour of the whole detected hold under the click (robust on pale holds)
+            hue = detected_hold_hue(
+                self.image,
+                point,
+                detect_holds(self.image, self.cfg),
+                detect_hold_polygons(self.image, self.cfg),
+                self.cfg,
+            )
+        except Exception as e:  # no key / network: the small patch below still works
+            log.info("Roboflow not available to read the clicked hold's colour: %s", e)
+        if hue is not None:
+            self.ref_hue = hue
+        else:
+            try:
+                self.ref_hue, _ = sample_colour(self.image, point, self.cfg)
+            except ValueError as e:
+                self.message = f"{e}; manual placement is available with r"
+                return
         self.detector_used = False
         self.recompute()
 

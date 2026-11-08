@@ -26,6 +26,8 @@ CFG = {
     "min_saturation": 60,
     "white_min_value": 210,
     "white_max_saturation": 55,
+    "pale_min_saturation": 35,
+    "pale_min_fraction": 0.4,
     "white_min_fraction": 0.15,
     "patch_radius_px": 12,
     "morph_kernel_px": 5,
