@@ -214,7 +214,6 @@ class PoseTracker:
         self._min_visibility = cfg["min_visibility"]
         self._resume_visibility = cfg["resume_visibility"]
         self._resume_frames = cfg["resume_frames"]
-        self._contact_dip_frames = cfg.get("contact_dip_frames", cfg.get("freeze_max_frames", 15))
         self._freeze_max_frames = cfg.get("freeze_max_frames", 15)
         self._good_run = {limb: 0 for limb in Limb}  # consecutive clearly-visible frames
         self._lost_memory = cfg["lost_memory_frames"]
@@ -297,10 +296,7 @@ class PoseTracker:
                 self._hidden_frames[limb] += 1
                 # Keep the frozen point through the configured short visibility dip, then stop
                 # exposing it as a usable contact point while the pose remains hidden.
-                if (
-                    self._hidden_frames[limb] <= self._contact_dip_frames
-                    and self._hidden_frames[limb] <= self._freeze_max_frames
-                ):
+                if self._hidden_frames[limb] <= self._freeze_max_frames:
                     limbs[limb] = self._frozen[limb]
                 # else: leave the limb out of `limbs` (the contract has no "missing" point)
             else:
