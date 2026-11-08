@@ -399,3 +399,17 @@ def test_only_regenerates_several_kinds(cache_tts, tmp_path, monkeypatch) -> Non
     monkeypatch.setattr(sys, "argv", argv)
     build_phrasebank.main()
     assert seen["kinds"] == ("quiet_feet", "told_you_so")
+
+
+def test_bank_file_has_one_row_per_group_and_round_trips(tmp_path) -> None:
+    from scripts.build_phrasebank import write_bank
+
+    bank = {
+        "fall": {"0": {"neutral": ["Off again.", "Rest."], "impressed": ["Close. Rest up."]}},
+        "top": {"0": {"neutral": ["Sent. Well done."]}},
+    }
+    path = tmp_path / "phrasebank.json"
+    write_bank(bank, path)
+    text = path.read_text(encoding="utf-8")
+    assert json.loads(text) == bank
+    assert '      "neutral": ["Off again.", "Rest."],' in text.splitlines()

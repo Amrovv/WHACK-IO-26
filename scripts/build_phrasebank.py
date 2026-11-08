@@ -42,7 +42,7 @@ CONFIG_PATH = Path("config/default.yaml")
 BANK_PATH = Path("data/phrasebank.json")
 MODEL_PLACEHOLDER = "CURRENT-FLASH-LITE-MODEL"
 CANDIDATES = 10
-KEEP = 6
+KEEP = 3  # lines kept per (kind, level, mood); Voice cycles through them without repeats
 LEVELS = (0, 1, 2)
 MOODS = ("neutral", "impressed", "exasperated")
 RETRY_ATTEMPTS = 6  # the free tier rate-limits a run of 126 requests
@@ -236,10 +236,29 @@ def count_table(bank: dict) -> tuple[str, int]:
     return "\n".join(rows), short
 
 
+def format_bank(bank: dict) -> str:
+    """The bank as JSON with each (kind, level, mood) group's lines on one row, so it reads as a
+    table instead of one line per phrase."""
+
+    def block(items: list[tuple[str, str]], indent: str) -> str:
+        rows = [f"{indent}  {json.dumps(key)}: {value}" for key, value in items]
+        return "{\n" + ",\n".join(rows) + f"\n{indent}}}"
+
+    def moods(groups: dict) -> str:
+        return block(
+            [(m, json.dumps(lines, ensure_ascii=False)) for m, lines in groups.items()], "    "
+        )
+
+    def levels(kind_levels: dict) -> str:
+        return block([(level, moods(groups)) for level, groups in kind_levels.items()], "  ")
+
+    return block([(kind, levels(kind_levels)) for kind, kind_levels in bank.items()], "") + "\n"
+
+
 def write_bank(bank: dict, path: Path = BANK_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(bank, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.write_text(format_bank(bank), encoding="utf-8")
     tmp.replace(path)
 
 
