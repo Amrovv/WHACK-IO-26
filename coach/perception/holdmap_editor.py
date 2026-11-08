@@ -36,10 +36,14 @@ from coach.perception.holds import (
     colour_name,
     detect_hold_polygons,
     detect_holds,
+    detected_hold_at,
     detected_hold_hue,
     filter_by_colour,
+    hold_lab,
     load_holdmap_with_shapes,
     load_holds_config,
+    match_colour,
+    patch_lab,
     read_frame,
     sample_colour,
     save_holdmap,
@@ -109,7 +113,9 @@ class EditorState:
     def __init__(self, image: np.ndarray, cfg: dict, colour: str | None = None) -> None:
         self.image, self.cfg = image, cfg
         self.colour_override = colour
-        self.ref_hue: float | None = None
+        self.ref_hue: float | None = None  # names the colour; hue matching without a Lab colour
+        self.ref_lab: np.ndarray | None = None  # the route colour in Lab (match_colour)
+        self.ref_box: Box | None = None  # the detected hold that was clicked
         self.detector_used = False
         self.auto: list[Box] = []
         self.excluded: set[Box] = set()  # auto boxes switched off (shown dim, click to restore)
@@ -123,30 +129,35 @@ class EditorState:
 
     # -- colour selection ---------------------------------------------------------------------
     def pick_colour(self, point: tuple[int, int]) -> None:
-        hue = None
-        try:  # the colour of the whole detected hold under the click (robust on pale holds)
-            hue = detected_hold_hue(
-                self.image,
-                point,
-                detect_holds(self.image, self.cfg),
-                detect_hold_polygons(self.image, self.cfg),
-                self.cfg,
-            )
+        """The route colour is the colour of the whole detected hold under the click (robust on
+        pale or chalky holds): its Lab colour for matching, its hue for naming. A click on a
+        hold the detector missed falls back to the patch around the click."""
+        hue, ref_lab, ref_box = None, None, None
+        try:
+            boxes = detect_holds(self.image, self.cfg)
+            outlines = detect_hold_polygons(self.image, self.cfg)
+            ref_box = detected_hold_at(point, boxes, outlines)
+            if ref_box is not None:
+                hue = detected_hold_hue(self.image, point, boxes, outlines, self.cfg)
+                ref_lab = hold_lab(self.image, ref_box, self.cfg, outlines.get(ref_box))
         except Exception as e:  # no key / network: the small patch below still works
             log.info("Roboflow not available to read the clicked hold's colour: %s", e)
-        if hue is not None:
-            self.ref_hue = hue
-        else:
+        if hue is None:
             try:
-                self.ref_hue, _ = sample_colour(self.image, point, self.cfg)
+                hue, _ = sample_colour(self.image, point, self.cfg)
             except ValueError as e:
-                self.message = f"{e}; manual placement is available with r"
-                return
+                if ref_lab is None:  # not on a hold at all
+                    self.message = f"{e}; manual placement is available with r"
+                    return
+                hue = -1.0  # a detected hold with no hue: white, grey or black
+        self.ref_hue = hue
+        self.ref_lab = ref_lab if ref_lab is not None else patch_lab(self.image, point, self.cfg)
+        self.ref_box = ref_box
         self.detector_used = False
         self.recompute()
 
     def clear_colour(self) -> None:
-        self.ref_hue = None
+        self.ref_hue, self.ref_lab, self.ref_box = None, None, None
         self.detector_used = False
         self.message = "click a hold to pick a route colour"
 
@@ -163,7 +174,12 @@ class EditorState:
         try:
             found = detect_holds(self.image, self.cfg)
             outlines = detect_hold_polygons(self.image, self.cfg)
-            self.auto = filter_by_colour(self.image, found, self.ref_hue, self.cfg, outlines)
+            if self.ref_lab is not None:  # Lab matching (holds.match_colour)
+                self.auto = match_colour(
+                    self.image, found, self.ref_lab, self.cfg, outlines, self.ref_box
+                )
+            else:  # no Lab reference (set from outside): hue matching
+                self.auto = filter_by_colour(self.image, found, self.ref_hue, self.cfg, outlines)
             self.polygons.update({box: outlines[box] for box in self.auto if box in outlines})
             self.detector_used = True
         except Exception as e:

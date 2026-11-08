@@ -1,8 +1,20 @@
+import pytest
+
 from coach.brain.features import FeatureTracker
 from coach.contracts import ClimberState, Limb
 
 
-def state(t=0.0, *, x=0.2, hip_x=0.3, hip_y=0.6, contacts=None, keypoints=None, person_found=True):
+def state(
+    t=0.0,
+    *,
+    x=0.2,
+    lh_y=0.4,
+    hip_x=0.3,
+    hip_y=0.6,
+    contacts=None,
+    keypoints=None,
+    person_found=True,
+):
     points = {
         "left_shoulder": (0.2, 0.2, 1),
         "left_elbow": (0.2, 0.3, 1),
@@ -23,7 +35,7 @@ def state(t=0.0, *, x=0.2, hip_x=0.3, hip_y=0.6, contacts=None, keypoints=None, 
         int(t * 10),
         person_found,
         points,
-        {Limb.LH: (x, 0.4), Limb.RH: (0.4, 0.4), Limb.LF: (0.25, 0.9), Limb.RF: (0.35, 0.9)},
+        {Limb.LH: (x, lh_y), Limb.RH: (0.4, 0.4), Limb.LF: (0.25, 0.9), Limb.RF: (0.35, 0.9)},
         contacts or {limb: None for limb in Limb},
         (hip_x, hip_y),
     )
@@ -54,15 +66,51 @@ def test_calibration_highest_hold_and_hand_search():
     tracker = FeatureTracker(0.02)
     a = tracker.update(state())
     a.add_calibration_sample(state())
-    tracker.update(state(1, contacts={Limb.LH: 3, Limb.RH: None, Limb.LF: None, Limb.RF: None}))
-    moving = tracker.update(state(2, x=0.4, contacts={limb: None for limb in Limb}))
-    assert moving.highest_hold_id == 3
-    assert moving.hand_moving_no_contact_s[Limb.LH] == 1
-    reset = tracker.update(
-        state(3, x=0.4, contacts={Limb.LH: 3, Limb.RH: None, Limb.LF: None, Limb.RF: None})
-    )
-    assert reset.hand_moving_no_contact_s[Limb.LH] == 0
+    on_hold_3 = {Limb.LH: 3, Limb.RH: None, Limb.LF: None, Limb.RF: None}
+    off = {limb: None for limb in Limb}
+    tracker.update(state(1, contacts=on_hold_3))
+    held = tracker.update(state(1.5, contacts=on_hold_3))  # held past contact_stable_s: steady
+    assert held.stable_contacts[Limb.LH] == 3
+    # Let go, hand up above the shoulder (y 0.2): searching once that's steady, not before.
+    let_go = tracker.update(state(2, x=0.4, lh_y=0.1, contacts=off))
+    assert let_go.highest_hold_id == 3
+    assert let_go.hand_moving_no_contact_s[Limb.LH] == 0  # one frame off: maybe a flicker
+    searching = tracker.update(state(3, x=0.4, lh_y=0.1, contacts=off))
+    assert searching.hand_moving_no_contact_s[Limb.LH] == 1
+    # Not reset by the hand pausing as it pats around (same point again).
+    paused = tracker.update(state(3.5, x=0.4, lh_y=0.1, contacts=off))
+    assert paused.hand_moving_no_contact_s[Limb.LH] == 1.5
+    # A hand down by the side (shaking out, chalking) isn't searching.
+    down = tracker.update(state(4, x=0.4, lh_y=0.5, contacts=off))
+    assert down.hand_moving_no_contact_s[Limb.LH] == 0
     assert a.arm_length > 0 and a.leg_length > 0
+
+
+def test_a_still_hip_stays_still_through_jitter_and_a_stall_adds_up():
+    """A hip jittering a little (landmark noise) is still: hip_static_s keeps counting. The old
+    frame-to-frame speed test reset on every jiggle, so a 12 s stall never added up."""
+    tracker = FeatureTracker(0.02)
+    jitter = (0.0, 0.004, -0.003, 0.005, -0.004, 0.002)
+    last = None
+    for i in range(61):  # 2 s at 30 fps
+        last = tracker.update(state(i / 30, hip_x=0.3 + jitter[i % len(jitter)]))
+    assert last.hip_static_s == pytest.approx(2.0, abs=0.04)
+    moved = tracker.update(state(61 / 30, hip_x=0.4))  # a real move (0.1, over 0.12 x leg)
+    assert moved.hip_static_s == 0
+
+
+def test_a_contact_flicker_does_not_change_the_stable_contacts():
+    tracker = FeatureTracker(0.02, contact_stable_s=0.25)
+    on = {Limb.LH: None, Limb.RH: None, Limb.LF: 2, Limb.RF: 1}
+    flicker = {**on, Limb.LF: None}
+    tracker.update(state(0.0, contacts=on))
+    blip = tracker.update(state(1 / 30, contacts=flicker))  # one frame off
+    assert blip.stable_contacts[Limb.LF] == 2 and blip.contacts(state()) == blip.stable_contacts
+    back = tracker.update(state(2 / 30, contacts=on))
+    assert back.stable_contacts[Limb.LF] == 2
+    for i in range(3, 15):  # really off for 0.4 s: now it counts
+        gone = tracker.update(state(i / 30, contacts=flicker))
+    assert gone.stable_contacts[Limb.LF] is None
 
 
 def test_highest_hold_resets_between_attempts():

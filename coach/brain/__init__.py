@@ -30,7 +30,13 @@ class Brain:
         self._holdmap_queue = bus.subscribe("holdmap")
         self._spoken_queue = bus.subscribe("spoken")
 
-        self.features = FeatureTracker(float(config["brain"]["move_speed_eps"]))
+        brain = config["brain"]
+        self.features = FeatureTracker(
+            float(brain["move_speed_eps"]),
+            float(brain["static_radius_ratio"]),
+            float(brain["contact_stable_s"]),
+            float(brain["leg_length_default"]),
+        )
         self.attempts = AttemptTracker(None, config)
         self.detectors = mvp_detectors(config) + good_tier_detectors(config)
         self.memory = Memory(voice, config)

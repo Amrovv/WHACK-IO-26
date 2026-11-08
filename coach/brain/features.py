@@ -61,7 +61,14 @@ class Features:
     leg_length: float = 0.0
     highest_hold_id: int | None = None
     hand_moving_no_contact_s: dict[Limb, float] = field(default_factory=dict)
+    # Contacts that have held for `contact_stable_s` (a one-frame flicker doesn't change them).
+    # Empty when the tracker has none yet: detectors then use the state's raw contacts.
+    stable_contacts: dict[Limb, int | None] = field(default_factory=dict)
     _calibrate: Callable[[ClimberState], None] | None = field(default=None, repr=False)
+
+    def contacts(self, state: ClimberState) -> dict[Limb, int | None]:
+        """The steady contacts when known, else the state's raw ones."""
+        return self.stable_contacts or state.contacts
 
     def add_calibration_sample(self, state: ClimberState) -> None:
         """Forward a standing sample to the tracker that produced this snapshot."""
@@ -70,12 +77,34 @@ class Features:
 
 
 class FeatureTracker:
-    """Keep the small amount of history needed by the attempt and cue logic."""
+    """Keep the small amount of history needed by the attempt and cue logic.
 
-    def __init__(self, move_speed_eps: float = 0.02) -> None:
+    The cue detectors need signals that are steady over time, like attempt detection's:
+      * `hip_static_s`: how long the hip has stayed within `static_radius_ratio` x leg length of
+        where it settled. A frame-to-frame speed test reset on every pixel of landmark jitter, so
+        a 12 s stall never added up and arms_bent / weight_shift (which need a still hip) rarely
+        fired;
+      * `stable_contacts`: a contact change counts once it has held for `contact_stable_s`;
+      * `hand_moving_no_contact_s`: how long a hand has been off any hold and up above its
+        shoulder (reaching), not reset by a hand pausing as it pats around for the next hold.
+    """
+
+    def __init__(
+        self,
+        move_speed_eps: float = 0.02,
+        static_radius_ratio: float = 0.12,
+        contact_stable_s: float = 0.25,
+        leg_length_default: float = 0.3,
+    ) -> None:
         self.move_speed_eps = float(move_speed_eps)
+        self.static_radius_ratio = float(static_radius_ratio)
+        self.contact_stable_s = float(contact_stable_s)
+        self.leg_length_default = float(leg_length_default)
         self._previous: ClimberState | None = None
         self._hip_static_s = 0.0
+        self._hip_anchor: tuple[float, float] | None = None
+        self._stable: dict[Limb, int | None] | None = None
+        self._pending_contact: dict[Limb, tuple[int | None, float]] = {}
         self._hand_search_s = {Limb.LH: 0.0, Limb.RH: 0.0}
         self._highest_hold_id: int | None = None
         self._arm_samples: list[float] = []
@@ -119,17 +148,28 @@ class FeatureTracker:
         hip_speed = 0.0
         if continuous and dt > 0:
             hip_speed = _distance(state.hip, previous.hip) / dt
-        if previous is not None and dt > 0 and hip_speed < self.move_speed_eps:
-            self._hip_static_s += dt
-        elif hip_speed >= self.move_speed_eps:
-            self._hip_static_s = 0.0
 
+        current_leg = _chain_length(state, ("left_hip", "left_knee", "left_ankle"))
+        if current_leg is None:
+            current_leg = _chain_length(state, ("right_hip", "right_knee", "right_ankle"))
+        leg = median(self._leg_samples) if self._leg_samples else (current_leg or 0.0)
+
+        # Still while the hip stays near where it settled (jitter and slow drift stay inside).
+        radius = self.static_radius_ratio * (leg or self.leg_length_default)
+        if not continuous or self._hip_anchor is None:
+            self._hip_anchor, self._hip_static_s = state.hip, 0.0
+        elif _distance(state.hip, self._hip_anchor) > radius:
+            self._hip_anchor, self._hip_static_s = state.hip, 0.0
+        elif dt > 0:
+            self._hip_static_s += dt
+
+        stable = self._steady_contacts(state)
         for hand in (Limb.LH, Limb.RH):
-            if previous is not None and dt > 0 and speeds[hand] > self.move_speed_eps:
-                if state.contacts.get(hand) is None:
-                    self._hand_search_s[hand] += dt
-                else:
-                    self._hand_search_s[hand] = 0.0
+            side = "left" if hand == Limb.LH else "right"
+            point, shoulder = state.limbs.get(hand), _keypoint(state, f"{side}_shoulder")
+            reaching = point is not None and shoulder is not None and point[1] < shoulder[1]
+            if previous is not None and dt > 0 and stable.get(hand) is None and reaching:
+                self._hand_search_s[hand] += dt
             else:
                 self._hand_search_s[hand] = 0.0
 
@@ -142,9 +182,6 @@ class FeatureTracker:
         current_arm = _chain_length(state, ("left_shoulder", "left_elbow", "left_wrist"))
         if current_arm is None:
             current_arm = _chain_length(state, ("right_shoulder", "right_elbow", "right_wrist"))
-        current_leg = _chain_length(state, ("left_hip", "left_knee", "left_ankle"))
-        if current_leg is None:
-            current_leg = _chain_length(state, ("right_hip", "right_knee", "right_ankle"))
         self._previous = state
         return Features(
             limb_speed=speeds,
@@ -156,11 +193,30 @@ class FeatureTracker:
             hip_speed=hip_speed,
             hip_static_s=self._hip_static_s,
             arm_length=median(self._arm_samples) if self._arm_samples else (current_arm or 0.0),
-            leg_length=median(self._leg_samples) if self._leg_samples else (current_leg or 0.0),
+            leg_length=leg,
             highest_hold_id=self._highest_hold_id,
             hand_moving_no_contact_s=dict(self._hand_search_s),
+            stable_contacts=dict(stable),
             _calibrate=self.add_calibration_sample,
         )
+
+    def _steady_contacts(self, state: ClimberState) -> dict[Limb, int | None]:
+        """Each limb's contact, changing only once a new value has held `contact_stable_s`."""
+        if self._stable is None:  # the first state: nothing to be steady against yet
+            self._stable = {limb: state.contacts.get(limb) for limb in Limb}
+            return self._stable
+        for limb in Limb:
+            raw = state.contacts.get(limb)
+            if raw == self._stable[limb]:
+                self._pending_contact.pop(limb, None)
+                continue
+            pending = self._pending_contact.get(limb)
+            if pending is None or pending[0] != raw:
+                self._pending_contact[limb] = (raw, state.t)
+            elif state.t - pending[1] >= self.contact_stable_s:
+                self._stable[limb] = raw
+                self._pending_contact.pop(limb)
+        return self._stable
 
 
 if __name__ == "__main__":

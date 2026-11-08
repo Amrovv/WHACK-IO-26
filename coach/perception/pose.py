@@ -73,6 +73,105 @@ LIMB_COLOURS = {  # BGR
 Landmarks = list[tuple[float, float, float]]  # 33 x (x, y, visibility), normalised
 Detector = Callable[[np.ndarray, int], list[Landmarks]]  # (rgb, timestamp_ms) -> poses
 
+HAND_SIDES = {Limb.LH: "left", Limb.RH: "right"}
+Point = tuple[float, float]
+
+
+def _rotate(v: np.ndarray, angle: float) -> np.ndarray:
+    c, s = np.cos(angle), np.sin(angle)
+    return np.array([c * v[0] - s * v[1], s * v[0] + c * v[1]])
+
+
+def _angle(a: np.ndarray, b: np.ndarray) -> float:
+    """Signed angle from a to b."""
+    return float(np.arctan2(a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1]))
+
+
+class ArmModel:
+    """One arm's shape, learnt while its hand is in view, to place the hand while it isn't.
+
+    A hand behind the chest (or the head) vanishes, but MediaPipe still sees that shoulder and
+    elbow. While the hand is in view the model keeps the forearm's length and its angle to the
+    upper arm (medians over `arm_model_frames`). While it's hidden:
+      * the hand stays where it was (it's usually gripping a hold) as long as that point is still
+        within reach: forearm length from the elbow and arm length from the shoulder, each with
+        `hand_reach_slack`;
+      * once it's out of reach the arm has moved, so the hand follows the elbow: forearm length
+        from it, at the learnt angle to the upper arm.
+    Lengths and angles use x scaled by the frame's aspect ratio (the real shape, not the
+    normalised one).
+    """
+
+    def __init__(self, cfg: dict) -> None:
+        self.mode = cfg["hidden_hand"]  # "freeze" | "keep_or_rotate" | "keep_or_project" | ...
+        self.slack = cfg["hand_reach_slack"]
+        self.length_percentile = cfg["arm_length_percentile"]
+        self._forearm: deque[float] = deque(maxlen=cfg["arm_model_frames"])
+        self._upper: deque[float] = deque(maxlen=cfg["arm_model_frames"])
+        self._bend: deque[float] = deque(maxlen=cfg["arm_model_frames"])
+        self.aspect = 1.0  # frame width / height
+        self.following = False  # out of reach once: the hand follows the elbow until it's seen
+
+    @property
+    def known(self) -> bool:
+        return len(self._forearm) > 0
+
+    @property
+    def forearm(self) -> float:
+        """The forearm's length: a high percentile, since a forearm pointing at the camera only
+        ever looks shorter than it is."""
+        return float(np.percentile(self._forearm, self.length_percentile))
+
+    def _iso(self, p: Point) -> np.ndarray:
+        return np.array([p[0] * self.aspect, p[1]])
+
+    def distance(self, a: Point, b: Point) -> float:
+        """Distance in frame heights (x scaled by the aspect ratio)."""
+        return float(np.linalg.norm(self._iso(a) - self._iso(b)))
+
+    def _norm(self, v: np.ndarray) -> Point:
+        return float(v[0] / self.aspect), float(v[1])
+
+    def learn(self, shoulder: Point, elbow: Point, hand: Point) -> None:
+        s, e, h = self._iso(shoulder), self._iso(elbow), self._iso(hand)
+        upper, fore = e - s, h - e
+        if np.linalg.norm(upper) < 1e-6 or np.linalg.norm(fore) < 1e-6:
+            return
+        self._forearm.append(float(np.linalg.norm(fore)))
+        self._upper.append(float(np.linalg.norm(upper)))
+        self._bend.append(_angle(upper, fore))
+        self.following = False
+
+    def reachable(self, hand: Point, shoulder: Point, elbow: Point) -> bool:
+        """Could the hand be at this point, given where the shoulder and elbow are?"""
+        s, e, h = self._iso(shoulder), self._iso(elbow), self._iso(hand)
+        arm = float(np.percentile(self._upper, self.length_percentile)) + self.forearm
+        return (
+            np.linalg.norm(h - e) <= self.forearm * self.slack
+            and np.linalg.norm(h - s) <= arm * self.slack
+        )
+
+    def place(self, frozen: Point, shoulder: Point, elbow: Point) -> Point:
+        """Where the hidden hand is, from where it was last seen and where the arm is now."""
+        if self.mode == "freeze" or not self.known:
+            return frozen
+        keep = self.mode.startswith("keep_or_")
+        if keep and not self.following and self.reachable(frozen, shoulder, elbow):
+            return frozen
+        self.following = True
+        s, e, f = self._iso(shoulder), self._iso(elbow), self._iso(frozen)
+        how = self.mode.removeprefix("keep_or_")
+        if how == "project":  # forearm length from the elbow, as near the old point as can be
+            v = f - e
+            n = np.linalg.norm(v)
+            return self._norm(e + v / n * self.forearm) if n > 1e-6 else frozen
+        upper = e - s  # "rotate": the learnt bend, carried round with the upper arm
+        n = np.linalg.norm(upper)
+        if n < 1e-6:
+            return frozen
+        bend = float(np.median(self._bend))
+        return self._norm(e + _rotate(upper / n, bend) * self.forearm)
+
 
 def load_perception_config(path: str | Path | None = None) -> dict:
     return load_config(path)["perception"]
@@ -222,6 +321,13 @@ class PoseTracker:
         self._hidden = {limb: False for limb in Limb}
         self._hidden_frames = {limb: 0 for limb in Limb}
         self._frozen: dict[Limb, tuple[float, float]] = {}
+        self._arms = {limb: ArmModel(cfg) for limb in HAND_SIDES}  # hidden hands, from the elbow
+        self._hand_max_frames = cfg["hand_estimate_max_frames"]
+        self._hand_max_speed = cfg["hand_estimate_max_speed"]
+        self._resume_reach = cfg["hand_resume_reach"]
+        self._resume_patience = cfg["hand_resume_patience_frames"]
+        self._resume_snap = cfg["hand_resume_snap"]
+        self._shown: dict[Limb, tuple[float, Point]] = {}  # each limb's last output (t, point)
 
     def _timestamp_ms(self, t: float) -> int:
         self._t0 = t if self._t0 is None else self._t0
@@ -230,6 +336,9 @@ class PoseTracker:
         return self._last_ts
 
     def process(self, t: float, frame_idx: int, frame_bgr: np.ndarray) -> ClimberState:
+        h, w = frame_bgr.shape[:2]
+        for arm in self._arms.values():
+            arm.aspect = w / h if h else 1.0
         pose = pick_climber(self._detector(frame_bgr, self._timestamp_ms(t)))
         if pose is None:
             self._stabilizer.reset()
@@ -278,32 +387,102 @@ class PoseTracker:
         row (so flickering visibility, or one confident-but-wrong frame, doesn't unfreeze it).
         It freezes at the position from `hold_lookback_frames` visible frames ago, because the
         guess usually starts drifting a little before visibility falls.
+
+        A hidden hand is placed by its ArmModel from the shoulder and elbow while those are in
+        view (kept where it was while that's within reach, otherwise following the elbow), for
+        up to `hand_estimate_max_frames`. A hand only comes back into view at a point within
+        `hand_resume_reach` forearm lengths of the elbow: MediaPipe's first guesses as a hand
+        reappears can be anywhere.
         """
         limbs = {}
         for limb, point in raw_limb_points(kp).items():
             vis = min(kp[name][2] for name in LIMB_LANDMARKS[limb])
             recent = self._recent[limb]
+            arm, shoulder, elbow = self._arm(limb, kp)
             self._good_run[limb] = self._good_run[limb] + 1 if vis >= self._resume_visibility else 0
-            if self._hidden[limb] and self._good_run[limb] >= self._resume_frames:
+            # A reappearing hand out of its elbow's reach waits; one that stays in view anyway is
+            # believed after `hand_resume_patience_frames` more (the arm model can be wrong).
+            patient = self._good_run[limb] >= self._resume_frames + self._resume_patience
+            if (
+                self._hidden[limb]
+                and self._good_run[limb] >= self._resume_frames
+                and (patient or self._plausible(arm, point, elbow))
+            ):
                 self._hidden[limb] = False
                 self._hidden_frames[limb] = 0
                 recent.clear()  # the filter is still catching up from the frozen point: start fresh
+                shown = self._shown.get(limb)
+                if (
+                    arm is not None
+                    and shown is not None
+                    and arm.distance(shown[1], point) > (self._resume_snap)
+                ):
+                    # Back in view far from where it was placed: the hand is where MediaPipe
+                    # sees it (within reach, checked above), so go there now rather than lag.
+                    self._filters[limb].reset()
             elif not self._hidden[limb] and vis < self._min_visibility and recent:
                 self._hidden[limb] = True
                 self._hidden_frames[limb] = 0
                 self._frozen[limb] = recent[0]  # oldest of the last few visible frames
             if self._hidden[limb]:
                 self._hidden_frames[limb] += 1
-                # Keep the frozen point through the configured short visibility dip, then stop
-                # exposing it as a usable contact point while the pose remains hidden.
-                if self._hidden_frames[limb] <= self._freeze_max_frames:
-                    limbs[limb] = self._frozen[limb]
+                n = self._hidden_frames[limb]
+                estimating = arm is not None and elbow is not None and arm.mode != "freeze"
+                if estimating and n <= self._hand_max_frames:
+                    target = arm.place(self._frozen[limb], shoulder, elbow)
+                    # Through the same smoothing as a hand in view, and no faster than
+                    # `hand_estimate_max_speed`: elbow jitter (and the switch from kept to
+                    # following) mustn't make the hand jump, and when the hand reappears the
+                    # filter has already caught up with it.
+                    limbs[limb] = self._filters[limb](t, self._step_towards(arm, limb, t, target))
+                elif n <= self._freeze_max_frames:
+                    # Keep the frozen point through the configured short visibility dip, then
+                    # stop exposing it as a usable contact point while the pose remains hidden.
+                    # A hand that was following its elbow stays where it was last shown while
+                    # the elbow drops out of view (rather than jumping back to the frozen point).
+                    following = arm is not None and arm.following and limb in self._shown
+                    limbs[limb] = self._shown[limb][1] if following else self._frozen[limb]
                 # else: leave the limb out of `limbs` (the contract has no "missing" point)
             else:
                 limbs[limb] = self._filters[limb](t, point)
                 if vis >= self._min_visibility:  # never remember a low-visibility guess as reliable
                     recent.append(limbs[limb])
+                if arm is not None and elbow is not None and vis >= self._resume_visibility:
+                    arm.learn(shoulder, elbow, point)  # clearly in view: learn the arm's shape
+            if limb in limbs:
+                self._shown[limb] = (t, limbs[limb])
         return limbs
+
+    def _step_towards(self, arm: ArmModel, limb: Limb, t: float, target: Point) -> Point:
+        """Move the shown hand towards `target` no faster than `hand_estimate_max_speed` (frame
+        heights per second, in the real aspect)."""
+        shown = self._shown.get(limb)
+        if shown is None:
+            return target
+        t0, p0 = shown
+        a, b = arm._iso(p0), arm._iso(target)
+        step = np.linalg.norm(b - a)
+        reach = self._hand_max_speed * max(t - t0, 0.0)
+        if step <= reach or step < 1e-9:
+            return target
+        return arm._norm(a + (b - a) * (reach / step))
+
+    def _arm(self, limb: Limb, kp: dict) -> tuple[ArmModel | None, Point | None, Point | None]:
+        """A hand's ArmModel, with its shoulder and elbow when both are in view (else None)."""
+        side = HAND_SIDES.get(limb)
+        if side is None:
+            return None, None, None
+        shoulder, elbow = kp[f"{side}_shoulder"], kp[f"{side}_elbow"]
+        if min(shoulder[2], elbow[2]) < self._min_visibility:
+            return self._arms[limb], None, None
+        return self._arms[limb], shoulder[:2], elbow[:2]
+
+    def _plausible(self, arm: ArmModel | None, point: Point, elbow: Point | None) -> bool:
+        """A returning hand must be within reach of the elbow (when that can be checked)."""
+        if arm is None or elbow is None or not arm.known:
+            return True
+        reach = np.linalg.norm(arm._iso(point) - arm._iso(elbow))
+        return bool(reach <= arm.forearm * self._resume_reach)
 
     def _finish(self, state: ClimberState) -> ClimberState:
         """Fill in hold contacts when a hold map is loaded (otherwise they stay None)."""

@@ -137,6 +137,20 @@ def box_hue(
     return circular_median_hue(strong[:, 0]) if len(strong) else None
 
 
+def detected_hold_at(
+    point: tuple[int, int], boxes: list[Box], polygons: dict[Box, PixelPolygon]
+) -> Box | None:
+    """The smallest detection under a click (its outline when it has one), or None."""
+    x, y = point
+    hits = [
+        b
+        for b in boxes
+        if (point_in_polygon(point, polygons[b]) if b in polygons else b[0] <= x <= b[2])
+        and b[1] <= y <= b[3]
+    ]
+    return min(hits, key=lambda b: (b[2] - b[0]) * (b[3] - b[1])) if hits else None
+
+
 def detected_hold_hue(
     image_bgr: np.ndarray,
     point: tuple[int, int],
@@ -150,17 +164,152 @@ def detected_hold_hue(
     level); the hold's own pixels are not. The smallest detection containing the point is used.
     None if no detection is under the click or it has no usable hue (white, grey, black).
     """
-    x, y = point
-    hits = [
-        b
-        for b in boxes
-        if (point_in_polygon(point, polygons[b]) if b in polygons else b[0] <= x <= b[2])
-        and b[1] <= y <= b[3]
-    ]
-    if not hits:
+    hit = detected_hold_at(point, boxes, polygons)
+    return box_hue(image_bgr, hit, cfg, polygons.get(hit)) if hit is not None else None
+
+
+# ---- Colour matching in CIE Lab --------------------------------------------------------------
+# Hue alone throws away lightness and saturation, so pale yellows sink into the beige wall and
+# reds, pinks and oranges (neighbouring hues) run together. Each hold's colour is instead its own
+# dominant colour in Lab, and holds are compared with CIEDE2000 (a perceptual colour difference)
+# with lightness weighted down, since the same hold is lighter or darker across the wall.
+# Measured on A's 14 hold maps (click every route hold): F1 0.756 with hue -> 0.896.
+
+
+def _lab(pixels_bgr: np.ndarray) -> np.ndarray:
+    """(n, 3) BGR uint8 -> (n, 3) Lab floats (L 0-100, a and b about -128..127)."""
+    px = pixels_bgr.reshape(-1, 1, 3).astype(np.float32) / 255.0
+    return cv2.cvtColor(px, cv2.COLOR_BGR2LAB).reshape(-1, 3)
+
+
+def _core_colour(lab: np.ndarray, cfg: dict) -> np.ndarray | None:
+    """The median of the most colourful `colour_core_fraction` of the pixels: chalk, shadow and
+    bits of wall are greyer than the hold, so they drop out."""
+    if len(lab) == 0:
         return None
-    hit = min(hits, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
-    return box_hue(image_bgr, hit, cfg, polygons.get(hit))
+    chroma = np.hypot(lab[:, 1], lab[:, 2])
+    core = lab[chroma >= np.quantile(chroma, 1 - cfg["colour_core_fraction"])]
+    return np.median(core, axis=0)
+
+
+def hold_lab(
+    image_bgr: np.ndarray, box: Box, cfg: dict, polygon: PixelPolygon | None = None
+) -> np.ndarray | None:
+    """A hold's own colour in Lab: the core colour of the pixels inside its outline (or, for a
+    plain box, the ellipse inside it), less `colour_erode_px` at the edge, which is often wall.
+    None for an empty region."""
+    x0, y0, x1, y1 = box
+    x0, y0 = max(x0, 0), max(y0, 0)
+    crop = image_bgr[y0:y1, x0:x1]
+    if crop.size == 0:
+        return None
+    mask = np.zeros(crop.shape[:2], np.uint8)
+    if polygon:
+        cv2.fillPoly(mask, np.array([[(x - x0, y - y0) for x, y in polygon]], np.int32), 255)
+    else:
+        h, w = mask.shape
+        cv2.ellipse(mask, (w // 2, h // 2), (max(w // 2, 1), max(h // 2, 1)), 0, 0, 360, 255, -1)
+    k = 2 * cfg["colour_erode_px"] + 1
+    eroded = cv2.erode(mask, np.ones((k, k), np.uint8))
+    if eroded.any():  # a tiny hold keeps its uneroded pixels
+        mask = eroded
+    return _core_colour(_lab(crop[mask > 0]), cfg)
+
+
+def patch_lab(image_bgr: np.ndarray, point: tuple[int, int], cfg: dict) -> np.ndarray | None:
+    """The core colour around a click (`patch_radius_px`), for a hold the detector missed."""
+    x, y = point
+    r = cfg["patch_radius_px"]
+    h, w = image_bgr.shape[:2]
+    patch = image_bgr[max(y - r, 0) : min(y + r + 1, h), max(x - r, 0) : min(x + r + 1, w)]
+    return _core_colour(_lab(patch), cfg) if patch.size else None
+
+
+def ciede2000(ref: np.ndarray, labs: np.ndarray, k_l: float = 1.0) -> np.ndarray:
+    """CIEDE2000 colour difference from one Lab colour to each row of `labs` (Sharma et al.
+    2005). k_l > 1 makes lightness count less than chroma and hue."""
+    labs = np.atleast_2d(labs).astype(float)
+    l1, a1, b1 = (float(v) for v in ref)
+    l2, a2, b2 = labs[:, 0], labs[:, 1], labs[:, 2]
+    c_bar = (np.hypot(a1, b1) + np.hypot(a2, b2)) / 2
+    g = 0.5 * (1 - np.sqrt(c_bar**7 / (c_bar**7 + 25.0**7)))
+    a1p, a2p = (1 + g) * a1, (1 + g) * a2
+    c1p, c2p = np.hypot(a1p, b1), np.hypot(a2p, b2)
+    h1p = np.degrees(np.arctan2(b1, a1p)) % 360
+    h2p = np.degrees(np.arctan2(b2, a2p)) % 360
+    both = c1p * c2p != 0
+    dh = h2p - h1p
+    dh = np.where(dh > 180, dh - 360, np.where(dh < -180, dh + 360, dh))
+    dh = np.where(both, dh, 0.0)
+    d_l, d_c = l2 - l1, c2p - c1p
+    d_h = 2 * np.sqrt(c1p * c2p) * np.sin(np.radians(dh / 2))
+    l_bar, cp_bar = (l1 + l2) / 2, (c1p + c2p) / 2
+    h_sum = h1p + h2p
+    h_bar = np.where(
+        ~both,
+        h_sum,
+        np.where(
+            np.abs(h1p - h2p) <= 180,
+            h_sum / 2,
+            np.where(h_sum < 360, (h_sum + 360) / 2, (h_sum - 360) / 2),
+        ),
+    )
+    t = (
+        1
+        - 0.17 * np.cos(np.radians(h_bar - 30))
+        + 0.24 * np.cos(np.radians(2 * h_bar))
+        + 0.32 * np.cos(np.radians(3 * h_bar + 6))
+        - 0.20 * np.cos(np.radians(4 * h_bar - 63))
+    )
+    d_theta = 30 * np.exp(-(((h_bar - 275) / 25) ** 2))
+    r_c = 2 * np.sqrt(cp_bar**7 / (cp_bar**7 + 25.0**7))
+    s_l = 1 + 0.015 * (l_bar - 50) ** 2 / np.sqrt(20 + (l_bar - 50) ** 2)
+    s_c = 1 + 0.045 * cp_bar
+    s_h = 1 + 0.015 * cp_bar * t
+    r_t = -np.sin(np.radians(2 * d_theta)) * r_c
+    tl, tc, th = d_l / (k_l * s_l), d_c / s_c, d_h / s_h
+    return np.sqrt(tl**2 + tc**2 + th**2 + r_t * tc * th)
+
+
+def match_colour(
+    image_bgr: np.ndarray,
+    boxes: list[Box],
+    ref_lab: np.ndarray,
+    cfg: dict,
+    polygons: dict[Box, PixelPolygon] | None = None,
+    ref_box: Box | None = None,
+) -> list[Box]:
+    """The detections the colour of `ref_lab` (the clicked hold's), in two steps:
+
+    1. holds within `colour_match_delta` (CIEDE2000, lightness weight `colour_match_kl`) of the
+       clicked hold;
+    2. `colour_refine_rounds` times: holds within `colour_refine_delta` of the median colour of
+       what matched. One hold may be shadowed or chalky; the route's typical colour isn't, so
+       this picks up the route holds the first step missed and drops near misses.
+
+    The clicked detection (`ref_box`) is always kept.
+    """
+    polygons = polygons or {}
+    colours = {b: hold_lab(image_bgr, b, cfg, polygons.get(b)) for b in boxes}
+    keys = [b for b, c in colours.items() if c is not None]
+    if not keys:
+        return []
+    labs = np.array([colours[b] for b in keys])
+    k_l = cfg["colour_match_kl"]
+
+    def within(ref: np.ndarray, delta: float) -> list[Box]:
+        kept = [b for b, d in zip(keys, ciede2000(ref, labs, k_l), strict=True) if d <= delta]
+        if ref_box is not None and ref_box in colours and ref_box not in kept:
+            kept.append(ref_box)
+        return kept
+
+    kept = within(ref_lab, cfg["colour_match_delta"])
+    for _ in range(cfg["colour_refine_rounds"]):
+        if not kept:
+            break
+        typical = np.median(np.array([colours[b] for b in kept]), axis=0)
+        kept = within(typical, cfg["colour_refine_delta"])
+    return kept
 
 
 def filter_by_colour(

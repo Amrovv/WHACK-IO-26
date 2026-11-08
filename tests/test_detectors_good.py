@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 from coach.brain.detectors import (
     CruxWarning,
@@ -14,16 +17,22 @@ from coach.brain.detectors import (
 from coach.brain.features import Features
 from coach.contracts import ClimberState, Hold, HoldMap, Limb
 
+BRAIN = yaml.safe_load((Path(__file__).parents[1] / "config" / "default.yaml").read_text())["brain"]
 CONFIG = {
     "brain": {
+        **BRAIN,  # the real settings (so new keys are there), this test's on top
         "debounce_ms": 400,
         "move_speed_eps": 0.02,
         "cue_mute_after_fall_s": 1.0,
         "cue_mute_hip_speed": 0.6,
         "route_preview_ratio": 0.8,
         "route_preview_delay_s": 1.0,
-        "weight_shift_ratio": 0.25,
+        "weight_shift_ratio": 0.05,
+        "weight_shift_reach_ratio": 0.6,
+        "weight_shift_s": 0.4,
+        "reach_min_visibility": 0.8,
         "quiet_feet_window_s": 1.0,
+        "quiet_feet_repeats": 1,  # these tests: one re-placement is enough (see the repeats test)
         "feet_cut_ms": 300,
         "priorities": {
             "crux_warning": 1,
@@ -259,62 +268,65 @@ def test_feet_cut_timing_and_reset():
     assert detector.update(feature(), state(1.35, contacts=c_cut), context) == []
 
 
-def test_weight_shift_conditions_and_debouncing():
-    detector = WeightShift()
-    context = ctx()
+REACH_KP = {"left_shoulder": (0.45, 0.4, 1.0), "right_shoulder": (0.55, 0.4, 1.0)}
+FEET = {Limb.LF: (0.4, 0.8), Limb.RF: (0.6, 0.8)}
+BOTH_FEET_ON = {Limb.LF: 1, Limb.RF: 2, Limb.LH: None, Limb.RH: 5}
 
-    # weight_shift_ratio = 0.25, leg_length = 0.4 -> threshold = 0.1
-    f_static = feature(leg_length=0.4, hip_speed=0.01)
-    f_moving = feature(leg_length=0.4, hip_speed=0.05)
 
-    # LF is supporting foot at x=0.2. Hip is at x=0.4 -> dx = 0.2 > 0.1
-    limbs = {Limb.LF: (0.2, 0.8), Limb.RF: (0.7, 0.8)}
-    c_one_foot = {Limb.LF: 1, Limb.RF: None, Limb.LH: 4, Limb.RH: 5}
+def reach_left(t, *, hip=(0.55, 0.5), wrist_vis=0.95, hand_x=0.2, contacts=BOTH_FEET_ON):
+    """The left hand out at hand_x (shoulder at 0.45), both feet on holds at x 0.4 and 0.6."""
+    kp = {**REACH_KP, "left_wrist": (hand_x, 0.4, wrist_vis)}
+    limbs = {**FEET, Limb.LH: (hand_x, 0.4), Limb.RH: (0.55, 0.3)}
+    return state(t, contacts=contacts, limbs=limbs, keypoints=kp, hip=hip)
 
-    # t=0.0: static, 1 foot on, hip far -> debounce starts (debounce_ms=400)
-    assert (
-        detector.update(
-            f_static, state(0.0, contacts=c_one_foot, limbs=limbs, hip=(0.4, 0.5)), context
-        )
-        == []
-    )
 
-    # t=0.4: debounced time elapsed -> fires!
-    events = detector.update(
-        f_static, state(0.4, contacts=c_one_foot, limbs=limbs, hip=(0.4, 0.5)), context
-    )
-    assert len(events) == 1
-    assert events[0].kind == "weight_shift"
-    assert events[0].data["foot"] == "left_foot"
-    assert events[0].data["hold_id"] == 1
+def run_weight_shift(states):
+    detector, events = WeightShift(), []
+    for s in states:
+        events += detector.update(feature(), s, ctx())
+    return events
 
-    # Hip directly over foot (dx <= threshold) -> does not trigger
-    det_centered = WeightShift()
-    assert (
-        det_centered.update(
-            f_static, state(0.0, contacts=c_one_foot, limbs=limbs, hip=(0.22, 0.5)), context
-        )
-        == []
-    )
 
-    # Two feet on hold -> does not trigger
-    c_two_feet = {Limb.LF: 1, Limb.RF: 2, Limb.LH: 4, Limb.RH: 5}
-    det_two = WeightShift()
-    assert (
-        det_two.update(
-            f_static, state(0.0, contacts=c_two_feet, limbs=limbs, hip=(0.4, 0.5)), context
-        )
-        == []
-    )
+def test_weight_shift_fires_on_a_sideways_reach_with_the_hips_held_back():
+    # The left hand reaches 0.25 left (0.6 x arm 0.25 = 0.15 needed) with both feet on, but
+    # the hips stay right of the feet's middle (0.5): not shifted. After weight_shift_s it fires,
+    # naming the foot to get over: the left one, towards the reach.
+    events = run_weight_shift([reach_left(0.0), reach_left(0.2), reach_left(0.4)])
+    assert len(events) == 1 and events[0].kind == "weight_shift"
+    assert events[0].data == {"foot": "left_foot", "hold_id": 1}
+    assert run_weight_shift([reach_left(t) for t in (0.0, 0.2, 0.4, 0.6, 0.8)]) == events  # once
 
-    # Moving hip (not static) -> does not trigger
-    det_moving = WeightShift()
-    assert (
-        det_moving.update(
-            f_moving, state(0.0, contacts=c_one_foot, limbs=limbs, hip=(0.4, 0.5)), context
-        )
-        == []
-    )
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        dict(hip=(0.4, 0.5)),  # hips moved over towards the reach: shifted
+        dict(hand_x=0.4),  # no sideways reach (0.05 from the shoulder)
+        dict(wrist_vis=0.3),  # a hand MediaPipe isn't sure of can't cue
+        dict(contacts={Limb.LF: None, Limb.RF: None, Limb.LH: None, Limb.RH: 5}),  # no feet on
+    ],
+)
+def test_weight_shift_stays_quiet_when_the_weight_is_fine_or_unsure(case):
+    assert run_weight_shift([reach_left(t, **case) for t in (0.0, 0.2, 0.4, 0.6)]) == []
+
+
+def test_weight_shift_needs_the_posture_to_last():
+    assert run_weight_shift([reach_left(0.0), reach_left(0.2)]) == []  # under weight_shift_s
+
+
+def test_quiet_feet_needs_repeated_re_placements_by_default():
+    """One deliberate re-adjustment isn't fidgeting; two on the same hold are."""
+    config = {**CONFIG, "brain": {**CONFIG["brain"], "quiet_feet_repeats": 2}}
+    context = DetectorContext(config, None, True, None, None)
+    detector = QuietFeet()
+    on = {Limb.LF: 4, Limb.RF: 2, Limb.LH: 5, Limb.RH: 6}
+    off = {**on, Limb.LF: None}
+    events = []
+    for t, contacts in ((0, on), (0.2, off), (0.5, on), (1.0, off), (1.3, on)):
+        events += detector.update(feature(), state(t, contacts=contacts), context)
+        if t == 0.5:
+            assert events == []  # the first re-placement: not yet
+    assert [e.kind for e in events] == ["quiet_feet"]
 
 
 def test_gates_ground_vs_on_wall():

@@ -8,6 +8,7 @@ from coach.perception.one_euro import OneEuroFilter, OneEuroPoint
 from coach.perception.pose import (
     LANDMARK_NAMES,
     SWAP_GROUPS,
+    ArmModel,
     LeftRightStabilizer,
     PoseTracker,
     load_perception_config,
@@ -16,6 +17,7 @@ from coach.perception.pose import (
 from coach.perception.serialize import state_from_line, state_to_line
 
 CFG = {
+    **load_perception_config(),  # the real settings (so new keys are there), this test's on top
     "num_poses": 2,
     "lr_swap_frames": 5,
     "lr_min_x_gap": 0.03,
@@ -269,7 +271,8 @@ def test_a_brief_person_loss_does_not_make_a_hidden_limb_follow_a_bad_guess():
 
 
 def test_frozen_limb_point_is_kept_up_to_the_cap_then_withheld_and_returns_on_resume():
-    cfg = {**CFG, "freeze_max_frames": 3}
+    # The freeze cap (hands placed from the elbow have their own: see the ArmModel tests).
+    cfg = {**CFG, "freeze_max_frames": 3, "hidden_hand": "freeze"}
     tracker = PoseTracker(cfg, detector=lambda _frame, _ts: [])
     good = hands_pose((0.4, 0.5), (0.6, 0.3))
     for i in range(6):
@@ -326,7 +329,7 @@ def test_after_resuming_the_lookback_uses_fresh_points_not_the_old_frozen_one():
 
 def test_a_hidden_limb_keeps_its_point_for_the_default_three_seconds():
     """A hand hidden by the body while resting on a hold must still count (top-out detection)."""
-    cfg = {**CFG, "freeze_max_frames": 90}
+    cfg = {**CFG, "freeze_max_frames": 90, "hidden_hand": "freeze"}
     tracker = PoseTracker(cfg, detector=lambda _frame, _ts: [])
     good = hands_pose((0.4, 0.5), (0.6, 0.3))
     for i in range(6):
@@ -339,3 +342,100 @@ def test_a_hidden_limb_keeps_its_point_for_the_default_three_seconds():
     for i in range(1, 90):
         assert Limb.RH in tracker._smooth_limbs((6 + i) / 30, murky)
     assert Limb.RH not in tracker._smooth_limbs(96 / 30, murky)  # frame 91 frozen: over the cap
+
+
+# ---- Hidden hands placed from the elbow (ArmModel) ------------------------------------------
+
+
+def test_arm_model_keeps_a_reachable_hand_and_follows_the_elbow_once_it_is_not():
+    arm = ArmModel(CFG)  # aspect 1: the normalised shape is the real one
+    for _ in range(5):  # upper arm straight down, forearm out to the right: bent 90 degrees
+        arm.learn((0.5, 0.2), (0.5, 0.35), (0.65, 0.35))
+    assert arm.forearm == pytest.approx(0.15)
+
+    gripping = (0.65, 0.35)
+    assert arm.place(gripping, (0.5, 0.2), (0.5, 0.36)) == gripping  # still in reach: kept
+
+    # The body swings 0.2 left: the old point is out of reach, so the hand follows the elbow at
+    # the learnt 90 degree bend (forearm out to the right of the upper arm again).
+    x, y = arm.place(gripping, (0.3, 0.2), (0.3, 0.35))
+    assert (x, y) == pytest.approx((0.45, 0.35), abs=1e-6)
+    assert arm.following
+    assert arm.place(gripping, (0.3, 0.2), (0.3, 0.35)) == pytest.approx((0.45, 0.35))
+
+    arm.learn((0.3, 0.2), (0.3, 0.35), (0.45, 0.35))  # seen again: back to keeping
+    assert not arm.following
+
+
+def test_freeze_mode_and_an_unknown_arm_keep_the_frozen_point():
+    assert ArmModel({**CFG, "hidden_hand": "freeze"}).place((0.1, 0.1), (0.5, 0.2), (0.5, 0.3)) == (
+        0.1,
+        0.1,
+    )
+    assert ArmModel(CFG).place((0.1, 0.1), (0.5, 0.2), (0.5, 0.3)) == (0.1, 0.1)  # nothing learnt
+
+
+def arm_pose(shoulder, elbow, hand, hand_vis=0.9):
+    """A pose with the right arm at these points (left arm and the rest at defaults)."""
+    lms = dict(zip(LANDMARK_NAMES, make_pose(), strict=True))
+    lms["right_shoulder"], lms["right_elbow"] = (*shoulder, 0.9), (*elbow, 0.9)
+    for part in SWAP_GROUPS["hand"]:
+        lms[f"right_{part}"] = (*hand, hand_vis)
+    return lms
+
+
+def test_a_hand_hidden_behind_the_body_follows_its_elbow_without_jumping():
+    tracker = PoseTracker(CFG, detector=lambda _frame, _ts: [])
+    t = 0.0
+    for _ in range(10):  # in view: the arm's shape is learnt
+        tracker._smooth_limbs(t, arm_pose((0.6, 0.2), (0.6, 0.35), (0.75, 0.35)))
+        t += 1 / 30
+    hidden_at = tracker._smooth_limbs(t, arm_pose((0.6, 0.2), (0.6, 0.35), (0.5, 0.5), 0.1))
+    assert hidden_at[Limb.RH] == pytest.approx((0.75, 0.35), abs=0.01)  # not the bad guess
+
+    # The climber moves 0.25 left with the hand still hidden: the hand goes with the elbow,
+    # gliding (never more than the speed limit per frame), to forearm length right of it.
+    points = []
+    for _ in range(40):
+        t += 1 / 30
+        out = tracker._smooth_limbs(t, arm_pose((0.35, 0.2), (0.35, 0.35), (0.5, 0.5), 0.1))
+        points.append(np.array(out[Limb.RH]))
+    steps = [np.linalg.norm(b - a) for a, b in zip(points, points[1:], strict=False)]
+    assert max(steps) <= CFG["hand_estimate_max_speed"] / 30 + 1e-6
+    assert points[-1] == pytest.approx((0.50, 0.35), abs=0.02)
+
+
+def test_a_reappearing_hand_out_of_reach_of_its_elbow_is_not_believed():
+    tracker = PoseTracker(CFG, detector=lambda _frame, _ts: [])
+    t = 0.0
+    for _ in range(10):
+        tracker._smooth_limbs(t, arm_pose((0.6, 0.2), (0.6, 0.35), (0.75, 0.35)))
+        t += 1 / 30
+    tracker._smooth_limbs(t, arm_pose((0.6, 0.2), (0.6, 0.35), (0.5, 0.5), 0.1))
+    for _ in range(5):  # "clearly visible" again, but 0.4 from an elbow with a 0.15 forearm
+        t += 1 / 30
+        out = tracker._smooth_limbs(t, arm_pose((0.6, 0.2), (0.6, 0.35), (0.2, 0.35)))
+        assert tracker._hidden[Limb.RH] and out[Limb.RH][0] > 0.6
+    for _ in range(3):  # back where a hand can be: it's believed
+        t += 1 / 30
+        tracker._smooth_limbs(t, arm_pose((0.6, 0.2), (0.6, 0.35), (0.72, 0.3)))
+    assert not tracker._hidden[Limb.RH]
+
+
+def test_a_hand_that_stays_in_view_is_believed_even_if_the_arm_model_disagrees():
+    """The arm model can be wrong (a forearm learnt foreshortened): a hand MediaPipe keeps seeing
+    clearly must come back after resume_frames + hand_resume_patience_frames, not stay lost."""
+    tracker = PoseTracker(CFG, detector=lambda _frame, _ts: [])
+    t = 0.0
+    for _ in range(10):
+        tracker._smooth_limbs(t, arm_pose((0.6, 0.2), (0.6, 0.35), (0.75, 0.35)))
+        t += 1 / 30
+    tracker._smooth_limbs(t, arm_pose((0.6, 0.2), (0.6, 0.35), (0.5, 0.5), 0.1))
+    frames = 0
+    while tracker._hidden[Limb.RH] and frames < 30:
+        t += 1 / 30
+        frames += 1
+        out = tracker._smooth_limbs(t, arm_pose((0.6, 0.2), (0.6, 0.35), (0.2, 0.35)))
+    assert frames == CFG["resume_frames"] + CFG["hand_resume_patience_frames"]
+    # ...and it's shown where it's seen right away, not dragged across by the smoothing.
+    assert out[Limb.RH] == pytest.approx((0.2, 0.35), abs=0.01)

@@ -16,7 +16,7 @@ from coach.perception.holds import (
     load_holdmap_with_shapes,
     save_holdmap,
 )
-from coach.perception.pose import LANDMARK_NAMES, PoseTracker
+from coach.perception.pose import LANDMARK_NAMES, PoseTracker, load_perception_config
 from coach.perception.shapes import polygon_bounds
 
 CFG_HOLDS = {"start_count": 2}
@@ -106,6 +106,7 @@ def test_draw_holds_draws_a_polygon_outline_not_its_box():
 
 # ---- contacts against shapes --------------------------------------------------------------
 CFG = {
+    **load_perception_config(),  # the real settings (so new keys are there), this test's on top
     "contact_margin": 0.15,
     "contact_settle_ms": 150,
     "contact_release_ratio": 1.3,

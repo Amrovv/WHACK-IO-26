@@ -3,9 +3,10 @@ import pytest
 
 from coach.contracts import ClimberState, Hold, HoldMap, Limb
 from coach.perception.contacts import ContactTracker
-from coach.perception.pose import LANDMARK_NAMES, PoseTracker
+from coach.perception.pose import LANDMARK_NAMES, PoseTracker, load_perception_config
 
 CFG = {
+    **load_perception_config(),  # the real settings (so new keys are there), this test's on top
     "contact_margin": 0.15,
     "contact_settle_ms": 150,
     "contact_release_ratio": 1.3,

@@ -9,7 +9,16 @@ perception:
   contact_settle_ms: 150
   contact_release_ratio: 1.6   # release box = margin x this (hysteresis)
   contact_dip_frames: 3        # keep a contact through a visibility dip this short
-  freeze_max_frames: 90        # a hidden limb keeps its frozen point (and contact) this many frames (3 s), then it is dropped; sweep on climb_1 clean send: 15 loses the top, 60 keeps 1.6 s on top, 90 matches the old code (2.0 s)
+  hidden_hand: keep_or_rotate  # a hidden hand: freeze | keep_or_rotate | keep_or_project | rotate | project (pose.ArmModel)
+  hand_reach_slack: 1.05       # a kept hand must stay within this x forearm (elbow) and x arm length (shoulder)
+  arm_model_frames: 30         # clearly visible frames the forearm length and bend are learnt over
+  hand_estimate_max_frames: 150  # a hidden hand is placed from its elbow this many frames (5 s) at most
+  hand_estimate_max_speed: 1.5   # ...moving no faster than this (frame heights per second): no jumps
+  hand_resume_reach: 1.6       # a reappearing hand counts only within this x forearm of the elbow...
+  hand_resume_patience_frames: 6  # ...or once it has stayed clearly in view this many frames more
+  hand_resume_snap: 0.05       # a hand back in view this far (frame heights) from where it was placed goes there at once
+  arm_length_percentile: 90    # forearm/upper-arm length = this percentile of what's seen (foreshortening only shortens)
+  freeze_max_frames: 90       # a hidden limb keeps its frozen point (and contact) this many frames (3 s), then it is dropped; sweep on climb_1 clean send: 15 loses the top, 60 keeps 1.6 s on top, 90 matches the old code (2.0 s)
   contact_still_speed: 0.4     # limb is 'still' below this speed (normalised units per second)
   min_visibility: 0.4          # landmarks below this give no contact and freeze the limb point
   resume_visibility: 0.7       # a frozen limb follows the pose again only above this...
@@ -46,21 +55,38 @@ holds:
   split_peak_ratio: 0.75    # watershed seeds for splitting touching holds: fraction of the blob's max thickness
   drag_min_px: 6            # editor: a mouse move shorter than this is a click, longer draws a box
   start_count: 2            # lowest N holds are marked start
+  # Colour matching in CIE Lab (holds.match_colour), tuned on A's 14 hold maps by clicking every
+  # route hold: F1 0.896 (hue matching: 0.756; yellows and reds were the worst).
+  colour_core_fraction: 0.3 # a hold's colour: median of its most colourful 30% of pixels (chalk/shadow are greyer)
+  colour_erode_px: 2        # pixels at a hold outline's edge left out (often wall)
+  colour_match_kl: 1.75     # CIEDE2000 lightness weight: >1 so shade and lighting count less than hue/chroma
+  colour_match_delta: 10    # step 1: holds within this CIEDE2000 distance of the clicked hold...
+  colour_refine_delta: 10   # ...step 2: holds within this of the median colour of what matched
+  colour_refine_rounds: 2   # step 2 repeats this many times
 
 brain:
   debounce_ms: 400
   stall_s: [4, 7, 10]       # escalating stall cues
   arms_bent_deg: 140
-  feet_low_ratio: 0.9       # hip-to-lowest-foot height / leg length
-  search_ms: 400
+  feet_low_ratio: 1.15      # hip-to-lowest-foot height / leg length (standing on straight legs is ~1.0)
+  search_ms: 800             # a hand off its hold and reaching up this long = searching (normal reaches are shorter)
   route_preview_ratio: 0.8  # hold gap / arm span
   route_preview_delay_s: 5.0  # wait this long grounded before route_preview, so it isn't
                                # suppressed as "busy" by the debrief that starts the same frame
-  weight_shift_ratio: 0.25  # sideways hip-to-foot gap / leg length
+  weight_shift_ratio: 0.05  # hips no more than this x leg length towards a sideways reach (from the feet's middle) = not shifted
+  weight_shift_reach_ratio: 0.6  # a hand off its hold this x arm length sideways of its shoulder is reaching sideways
+  weight_shift_s: 1.5       # ...and it has to last this long
+  reach_min_visibility: 0.8 # ...with its wrist clearly seen (not a hidden hand's estimate)
+  static_hold_s: 0.5        # arms_bent / feet_low need the hip still (features.hip_static_s) this long
+  feet_low_s: 0.8           # feet_low: the stretched-out posture has to last this long
+  search_near_ratio: 0.5    # hand_searching: the hand is within this x arm length of the hold it's after
   on_wall_margin: 0.15      # hip rise above standing height / leg length
 
   # Features + attempts (B3)
   move_speed_eps: 0.02      # normalised units/s; below this a limb/hip counts as static
+  static_radius_ratio: 0.12 # the hip is still while it stays within this x leg length of where it settled (features.hip_static_s)
+  contact_stable_s: 0.25    # a contact change counts for the cues once it has held this long (features.stable_contacts)
+  leg_length_default: 0.3   # normalised leg length until a real one is measured
   on_wall_settle_s: 0.5     # hip must stay raised this long to confirm ON_WALL
   top_hold_s: 1.0           # both hands on the top hold this long = top
   fall_speed: 0.6           # downward hip velocity (norm units/s) above this = falling
@@ -72,7 +98,9 @@ brain:
   next_hold_distance_penalty: 0.5   # weight on distance when scoring HandSearching's next hold
 
   # Good-tier detectors (B6)
-  quiet_feet_window_s: 1.0          # foot leaves and re-touches the same hold within this = fidgety
+  quiet_feet_window_s: 1.0          # foot leaves and re-touches the same hold within this = a re-placement...
+  quiet_feet_repeats: 2             # ...this many on one hold...
+  quiet_feet_repeat_window_s: 6.0   # ...within this = fidgety
   feet_cut_ms: 300                  # both feet off while both hands on, longer than this = feet cut
 
   # Memory + compliance (B5)

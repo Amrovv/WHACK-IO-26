@@ -257,3 +257,90 @@ def test_detect_holds_reads_the_key_from_dot_env(monkeypatch, tmp_path):
     assert detect_holds(blob_image([(10, 10, 3, 30)]), CFG) == []
     assert seen == ["from-dotenv"]
     monkeypatch.delenv("ROBOFLOW_API_KEY", raising=False)  # do not leak into other tests
+
+
+# ---- Colour matching in Lab (match_colour) ---------------------------------------------------
+
+LAB_CFG = {**load_holds_config(), **CFG}  # the Lab settings come from the real config
+
+
+@pytest.mark.parametrize(
+    ("lab1", "lab2", "expected"),
+    [  # reference pairs from Sharma, Wu & Dalal (2005), the CIEDE2000 test data
+        ((50.0, 2.6772, -79.7751), (50.0, 0.0, -82.7485), 2.0425),
+        ((50.0, 0.0, 0.0), (50.0, -1.0, 2.0), 2.3669),
+        ((50.0, 2.5, 0.0), (73.0, 25.0, -18.0), 27.1492),
+        ((63.0109, -31.0961, -5.8663), (62.8187, -29.7946, -4.0864), 1.2630),
+        ((2.0776, 0.0795, -1.1350), (0.9033, -0.0636, -0.5514), 0.9082),
+    ],
+)
+def test_ciede2000_matches_the_published_reference_values(lab1, lab2, expected):
+    got = holds.ciede2000(np.array(lab1), np.array([lab2]))[0]
+    assert got == pytest.approx(expected, abs=1e-4)
+
+
+def test_ciede2000_with_a_higher_lightness_weight_counts_shade_for_less():
+    ref, darker = np.array([60.0, 0.0, 50.0]), np.array([[45.0, 0.0, 50.0]])
+    assert holds.ciede2000(ref, darker, k_l=2.0)[0] < holds.ciede2000(ref, darker)[0] / 1.8
+
+
+def route_wall():
+    """A beige wall with a yellow route (one hold in shadow, one chalky) among the colours hue
+    matching confused with it: orange-yellow, pale beige-yellow; and a red next to a pink."""
+    img = np.full((240, 400, 3), (180, 200, 215), np.uint8)  # beige wall (BGR)
+    named_colours = {
+        "yellow": (40, 60, bgr(28, 210, 235)),
+        "yellow shadow": (100, 60, bgr(28, 210, 185)),  # ~20% darker (far darker turns olive)
+        "yellow chalky": (160, 60, bgr(28, 150, 240)),
+        "orange-yellow": (220, 60, bgr(19, 220, 235)),
+        "pale beige": (280, 60, bgr(25, 55, 225)),
+        "red": (60, 170, bgr(178, 220, 200)),
+        "red shadow": (140, 170, bgr(178, 220, 130)),
+        "pink": (220, 170, bgr(165, 150, 230)),
+        "orange": (300, 170, bgr(10, 230, 235)),
+    }
+    boxes = {}
+    for name, (cx, cy, colour) in named_colours.items():
+        cv2.circle(img, (cx, cy), 22, colour, -1)
+        boxes[name] = (cx - 22, cy - 22, cx + 23, cy + 23)
+    return img, boxes
+
+
+@pytest.mark.parametrize(
+    ("clicked", "route"),
+    [
+        ("yellow", {"yellow", "yellow shadow", "yellow chalky"}),
+        ("yellow shadow", {"yellow", "yellow shadow", "yellow chalky"}),
+        ("red", {"red", "red shadow"}),
+    ],
+)
+def test_match_colour_keeps_the_route_through_shade_and_drops_near_colours(clicked, route):
+    img, named = route_wall()
+    ref = holds.hold_lab(img, named[clicked], LAB_CFG)
+    kept = holds.match_colour(img, list(named.values()), ref, LAB_CFG, ref_box=named[clicked])
+    assert {name for name, box in named.items() if box in kept} == route
+
+
+def test_hue_matching_confused_the_yellow_route_with_orange_yellow():
+    """Why match_colour exists: hue alone keeps the orange-yellow hold."""
+    img, named = route_wall()
+    kept = filter_by_colour(img, list(named.values()), 28.0, LAB_CFG)
+    assert named["orange-yellow"] in kept
+
+
+def test_hold_lab_reads_the_hold_inside_its_outline_not_the_wall_in_its_box():
+    img, named = route_wall()
+    x0, y0, x1, y1 = named["yellow"]
+    outline = [(x0 + 6, y0 + 6), (x1 - 6, y0 + 6), (x1 - 6, y1 - 6), (x0 + 6, y1 - 6)]
+    measured = holds.hold_lab(img, named["yellow"], LAB_CFG, outline)
+    painted = holds._lab(np.uint8([[bgr(28, 210, 235)]]))[0]
+    assert holds.ciede2000(painted, np.array([measured]))[0] < 1.0
+    assert holds.hold_lab(img, (0, 0, 0, 0), LAB_CFG) is None  # an empty region
+
+
+def test_patch_lab_reads_a_click_on_a_hold_the_detector_missed():
+    img, named = route_wall()
+    x0, y0, x1, y1 = named["red"]
+    clicked = holds.patch_lab(img, ((x0 + x1) // 2, (y0 + y1) // 2), LAB_CFG)
+    whole = holds.hold_lab(img, named["red"], LAB_CFG)
+    assert holds.ciede2000(clicked, np.array([whole]))[0] < 1.0

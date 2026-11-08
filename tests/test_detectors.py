@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 from coach.brain.detectors import (
     ArmsBent,
@@ -13,8 +16,12 @@ from coach.brain.detectors import (
 from coach.brain.features import Features
 from coach.contracts import ClimberState, Hold, HoldMap, Limb
 
+BRAIN = yaml.safe_load((Path(__file__).parents[1] / "config" / "default.yaml").read_text())["brain"]
 CONFIG = {
     "brain": {
+        **BRAIN,  # the real settings (so new keys are there), this test's on top
+        "feet_low_s": 0.4,  # these tests time feet_low by the debounce
+        "search_near_ratio": 2.0,  # candidate scoring tests: any hold in reach is near enough
         "debounce_ms": 400,
         "stall_s": [4, 7, 10],
         "arms_bent_deg": 140,
@@ -78,16 +85,38 @@ def test_stalling_escalates_and_resets():
     assert not detector.still_valid(events[-1], state(8))
 
 
+HANGING = {Limb.LH: 1, Limb.RH: 2, Limb.LF: None, Limb.RF: None}  # both hands on holds
+
+
+def hanging(**kwargs):
+    """Features of a climber hanging still off both hands."""
+    return feature(**{"hip_static_s": 1.0, "stable_contacts": HANGING, **kwargs})
+
+
 def test_arms_bent_requires_both_and_hysteresis():
     detector = ArmsBent()
-    f = feature(elbow_angle={"left": 100, "right": 100})
+    f = hanging(elbow_angle={"left": 100, "right": 100})
     assert detector.update(f, state(0), ctx()) == []
     assert detector.update(f, state(0.4), ctx())[0].kind == "arms_bent"
-    detector.update(feature(elbow_angle={"left": 142, "right": 100}), state(1), ctx())
+    detector.update(hanging(elbow_angle={"left": 142, "right": 100}), state(1), ctx())
     assert detector.update(f, state(1.4), ctx()) == []
-    assert detector.update(feature(elbow_angle={"left": 150, "right": 100}), state(2), ctx()) == []
+    assert detector.update(hanging(elbow_angle={"left": 150, "right": 100}), state(2), ctx()) == []
 
 
+def test_arms_bent_needs_a_settled_hip_and_both_hands_on_holds():
+    bent = {"left": 100, "right": 100}
+    moving = ArmsBent()  # pulling through a move: the hip hasn't settled
+    for t in (0, 0.4, 0.8):
+        assert moving.update(hanging(elbow_angle=bent, hip_static_s=0.1), state(t), ctx()) == []
+    one_hand = ArmsBent()  # a hand off: reaching, not hanging
+    reaching = feature(
+        elbow_angle=bent, hip_static_s=1.0, stable_contacts={**HANGING, Limb.RH: None}
+    )
+    for t in (0, 0.4, 0.8):
+        assert one_hand.update(reaching, state(t), ctx()) == []
+
+
+ON_HOLDS = {Limb.LH: 4, Limb.RH: 4, Limb.LF: None, Limb.RF: None}  # hanging off both hands
 FEET_LOW_HOLDMAP = HoldMap("p", "red", [Hold(4, (0.5, 0.2), (0, 0, 0, 0))], (100, 100), "manual")
 
 
@@ -100,7 +129,7 @@ def test_feet_low_requires_high_hands():
     }
     limbs = {Limb.LF: (0.4, 0.9), Limb.RF: (0.6, 0.8)}
     detector = FeetLow()
-    f = feature(leg_length=0.3)
+    f = feature(leg_length=0.3, stable_contacts=ON_HOLDS)
     holdmap_ctx = ctx(holdmap=FEET_LOW_HOLDMAP)
     assert detector.update(f, state(0, limbs=limbs, keypoints=kp), holdmap_ctx) == []
     event = detector.update(
@@ -173,7 +202,7 @@ def test_feet_low_release_band_suppresses_refiring():
     # At 94% → 0.9*0.3*0.94 = 0.254; height 0.254 / 0.3 = 0.847 < 0.9 (below trigger)
     # but > 0.855 (above release), so _active should stay True and NOT re-fire.
     detector = FeetLow()
-    f = feature(leg_length=0.3)
+    f = feature(leg_length=0.3, stable_contacts=ON_HOLDS)
     holdmap_ctx = ctx(holdmap=FEET_LOW_HOLDMAP)
     limbs_fire = {Limb.LF: (0.4, 0.9), Limb.RF: (0.6, 0.9)}  # low
     # Debounce fires after 0.4 s.

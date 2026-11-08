@@ -12,9 +12,11 @@ from coach.perception.holds import (
     load_hold_shapes,
     load_holdmap,
     load_holdmap_with_shapes,
+    load_holds_config,
 )
 
 CFG = {
+    **load_holds_config(),  # the real settings (so new keys are there), this test's on top
     "detector_model": "fake/1",
     "api_url": "https://example.invalid",
     "hue_tolerance": 12,
