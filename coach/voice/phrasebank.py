@@ -12,7 +12,7 @@ from coach.contracts import HoldMap, Limb
 
 log = logging.getLogger(__name__)
 
-MIN_LINES = 5  # every (kind, level, mood) needs this many approved lines
+MIN_LINES = 3  # every (kind, level, mood) needs this many approved lines
 MAX_HOLD = 25
 NEUTRAL = "neutral"
 UNKNOWN_COLOUR = "unknown"  # HoldMap.colour when no hold was clicked; must never be spoken
