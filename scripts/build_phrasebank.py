@@ -1,6 +1,6 @@
 """Generate data/phrasebank.json with Gemini and pre-render all audio.
 
-Run from the repo root: uv run python -m scripts.build_phrasebank [--only KIND] [--dry-run]
+Run from the repo root: uv run python -m scripts.build_phrasebank [--only KIND ...] [--dry-run]
 
 --check generates and renders nothing: it exits 1 if any clip Voice could need isn't on disk. Run
 it before a demo, because a line with a missing clip has to render live and can be lost.
@@ -48,7 +48,8 @@ MOODS = ("neutral", "impressed", "exasperated")
 RETRY_ATTEMPTS = 6  # the free tier rate-limits a run of 126 requests
 RETRY_INITIAL_DELAY_S = 5.0
 
-# Placeholder wording from TEST_CLIMBS.md; B can correct it when the detectors land.
+# What each event means at the moment B's brain fires it (coach/brain), so every line is true
+# when spoken. Where TEST_CLIMBS.md describes an event differently, the brain's behaviour wins.
 KIND_MEANINGS = {
     "attempt_start": "the climber is setting off on a new attempt",
     "hand_searching": "a hand is patting around near the next hold instead of grabbing it",
@@ -58,14 +59,21 @@ KIND_MEANINGS = {
     "fall": "the climber has just fallen and is off the wall; give no move to make now",
     "top": "the climber has topped out and the climb is over: celebrate warmly, ask what's next, "
     "and give no move to make",
-    "high_point": "the climber has just got higher than on any earlier attempt",
-    "quiet_feet": "praise: feet are being placed slowly and precisely with no re-adjusting",
+    # Also fires on the first attempt, so it can't claim to beat an earlier one.
+    "high_point": "the climber has just reached their highest hold of the session so far",
+    # QuietFeet fires on a fidget: a foot leaves a hold and goes straight back onto it.
+    "quiet_feet": "a foot came off its hold and went straight back onto the same one: fidgety, "
+    "noisy footwork; tell them to place each foot once, precisely, and leave it",
     "feet_cut": "the feet have swung off the wall",
     "weight_shift": "the climber is reaching sideways with the hips still over the other foot",
     "crux_warning": "the climber is approaching the move that beat them on earlier attempts",
-    "route_preview": "a big reach near full arm span is coming up next",
-    "told_you_so": "the climber ignored an earlier cue and fell on that same move; they are off "
-    "the wall",
+    # RoutePreview fires on the ground, before the attempt starts.
+    "route_preview": "the climber is on the ground before an attempt; the route has a reach near "
+    "full arm span, to the hold the {hold} slot names; warn them before they set off",
+    # Memory fires it once a spoken cue is followed and the climber then gets higher.
+    "told_you_so": "mid-climb, the climber just did what an earlier cue told them and it worked: "
+    "they have reached a higher hold, the one the {hold} slot names; a brief, dry 'told you', "
+    "then back to climbing",
 }
 LEVEL_RULES = {
     0: "Generic: no limb, no hold, no reference to earlier attempts.",
@@ -265,7 +273,9 @@ def check_clips(bank: dict, persona: dict, tts: TTS) -> int:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--only", choices=EVENT_KINDS, metavar="KIND", help="regenerate one kind")
+    ap.add_argument(
+        "--only", nargs="+", choices=EVENT_KINDS, metavar="KIND", help="regenerate these kinds"
+    )
     ap.add_argument("--dry-run", action="store_true", help="show the lines, write nothing")
     ap.add_argument("--model", help="override voice.llm_model")
     ap.add_argument("--check", action="store_true", help="only check every clip is on disk")
@@ -275,11 +285,16 @@ def main() -> None:
 
     voice_cfg = load_yaml(CONFIG_PATH)["voice"]
     persona = load_yaml(voice_cfg["persona"])
-    bank = json.loads(BANK_PATH.read_text(encoding="utf-8")) if BANK_PATH.exists() else {}
-    bank, pruned = prune_bank(bank, persona)
+    on_disk = json.loads(BANK_PATH.read_text(encoding="utf-8")) if BANK_PATH.exists() else {}
+    bank, pruned = prune_bank(on_disk, persona)
 
     if args.check:
-        raise SystemExit(check_clips(bank, persona, make_tts(voice_cfg, persona)))
+        # Voice loads the file as it is, pruned or not, so check every line in it.
+        if pruned:
+            log.warning(
+                "%d lines in %s break today's rules; --render drops them", pruned, BANK_PATH
+            )
+        raise SystemExit(check_clips(on_disk, persona, make_tts(voice_cfg, persona)))
 
     api_key = os.environ.get("GEMINI_API_KEY")
     model = args.model or voice_cfg.get("llm_model")
@@ -288,7 +303,7 @@ def main() -> None:
         log.warning("skipping line generation: %s", missing)
     else:
         ask = make_ask(api_key, model, persona_instruction(persona))
-        kinds = (args.only,) if args.only else EVENT_KINDS
+        kinds = tuple(args.only) if args.only else EVENT_KINDS
         bank = build_bank(ask, persona, kinds, bank)
 
     texts = render_texts(

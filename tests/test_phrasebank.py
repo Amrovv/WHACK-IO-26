@@ -354,3 +354,48 @@ def test_persona_hold_bands_tell_climb2_holds_apart() -> None:
     ]
     assert len(set(places.values())) == 6  # 4-6 sit within 0.1 of each other: one name
     assert all(len(name.split()) <= 2 for name in places.values())
+
+
+def test_persona_instruction_accepts_a_plain_voice_name(persona: dict) -> None:
+    # tts.py allows `voice: af_heart`; the LLM instruction must not need a `tone` dict.
+    from coach.voice.phrasebank import persona_instruction
+
+    assert "low, flat" in persona_instruction(persona)
+    assert "Delivery: \n" in persona_instruction({**persona, "voice": "af_heart"})
+
+
+def test_check_covers_lines_the_rules_would_prune(cache_tts, tmp_path, monkeypatch, persona):
+    # Voice loads the bank file as it is, so --check must not skip a line prune_bank would drop.
+    bank = {"fall": {"0": {"neutral": ["Off again.", "Feet first."]}}}  # off_topic for fall
+    bank_path = tmp_path / "phrasebank.json"
+    bank_path.write_text(json.dumps(bank), encoding="utf-8")
+    pruned = {"fall": {"0": {"neutral": ["Off again."]}}}
+    places = [name for _, name in persona["hold_places"]]
+    for text in render_texts(pruned, persona["colours"], persona["fillers"], places):
+        cache_tts.synth(text)
+    monkeypatch.setattr(build_phrasebank, "BANK_PATH", bank_path)
+    monkeypatch.setattr(build_phrasebank, "make_tts", lambda *_args: cache_tts)
+    monkeypatch.setattr(build_phrasebank, "load_dotenv", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["build_phrasebank", "--check"])
+    with pytest.raises(SystemExit) as exit_:
+        build_phrasebank.main()
+    assert exit_.value.code == 1
+
+
+def test_only_regenerates_several_kinds(cache_tts, tmp_path, monkeypatch) -> None:
+    seen = {}
+
+    def fake_build_bank(_ask, _persona, kinds, previous):
+        seen["kinds"] = kinds
+        return previous
+
+    monkeypatch.setattr(build_phrasebank, "build_bank", fake_build_bank)
+    monkeypatch.setattr(build_phrasebank, "make_ask", lambda *_args: None)
+    monkeypatch.setattr(build_phrasebank, "BANK_PATH", tmp_path / "phrasebank.json")
+    monkeypatch.setattr(build_phrasebank, "make_tts", lambda *_args: cache_tts)
+    monkeypatch.setattr(build_phrasebank, "load_dotenv", lambda: None)
+    monkeypatch.setenv("GEMINI_API_KEY", "set")
+    argv = ["build_phrasebank", "--only", "quiet_feet", "told_you_so", "--dry-run", "--model", "m"]
+    monkeypatch.setattr(sys, "argv", argv)
+    build_phrasebank.main()
+    assert seen["kinds"] == ("quiet_feet", "told_you_so")

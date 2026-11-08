@@ -86,6 +86,14 @@ class Voice:
         self._debrief: asyncio.Task | None = None  # the running debrief, guarded by _lock
 
     def say(self, req: SpeakRequest) -> bool:
+        """Never raises: say() runs inside the brain's frame loop, which an exception would end."""
+        try:
+            return self._say(req)
+        except Exception:
+            log.exception("say() failed for %s", req.event.kind)
+            return False
+
+    def _say(self, req: SpeakRequest) -> bool:
         if self._clock() > req.deadline:
             return False
         self._read_holdmaps()
@@ -257,6 +265,11 @@ def make_voice(cfg: dict, bus: Bus, no_llm: bool = False, bank: dict | None = No
     voice_cfg = cfg["voice"]
     persona = yaml.safe_load(Path(voice_cfg["persona"]).read_text(encoding="utf-8"))
     if bank is None:
+        if not BANK_PATH.exists():  # data/ is gitignored, so a fresh checkout has no bank
+            raise FileNotFoundError(
+                f"{BANK_PATH} not found: build it with `uv run python -m scripts.build_phrasebank`"
+                " (or copy it from the shared drive), or run with --voice print"
+            )
         bank = json.loads(BANK_PATH.read_text(encoding="utf-8"))
     speaker = Speaker(device=voice_cfg.get("output_device"))
     voice = Voice(
