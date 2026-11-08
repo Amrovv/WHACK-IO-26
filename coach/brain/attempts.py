@@ -85,7 +85,7 @@ class AttemptTracker:
         if not top_ids or self.holdmap is None:
             return False
         hand_contacts = (state.contacts.get(Limb.LH), state.contacts.get(Limb.RH))
-        if not any(value in top_ids for value in hand_contacts):
+        if any(value is not None and value not in top_ids for value in hand_contacts):
             return False
         margin = float(cfg(self.config, "brain", "top_hand_margin"))
         top_boxes = [hold.bbox for hold in self.holdmap.holds if hold.id in top_ids]

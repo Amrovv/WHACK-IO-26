@@ -63,7 +63,7 @@ brain:
   move_speed_eps: 0.02      # normalised units/s; below this a limb/hip counts as static
   on_wall_settle_s: 0.5     # hip must stay raised this long to confirm ON_WALL
   top_hold_s: 0.0           # both hands on the top hold = immediate successful climb
-  top_hand_margin: 0.08     # finish-only fallback for hands just outside a detector box
+  top_hand_margin: 0.04     # finish-only fallback for hands just outside a detector box
   fall_speed: 0.6           # downward hip velocity (norm units/s) above this = falling
   ground_settle_s: 1.0      # back on the ground this long before the attempt is closed
 
@@ -114,6 +114,8 @@ arbiter:
     crux_warning: 8.0
     route_preview: 10.0
     told_you_so: 10.0
+  preference_by_kind:           # same-priority tie-breaker; higher value wins
+    hand_searching: 10.0        # prefer actionable directional guidance
   budget_lines: 6
   budget_window_s: 30
   ttl_s: {p0: 2.0, p1: 1.2, p2: 4.0}
