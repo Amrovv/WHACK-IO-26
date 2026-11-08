@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import yaml
 from test_voice import FakeSpeaker, FakeStream, FakeTTS, Rig, bank_of
@@ -30,6 +31,7 @@ from coach.voice.debrief import (
 )
 from coach.voice.phrasebank import reject_reason as phrase_reject_reason
 from coach.voice.phrasebank import word_count
+from coach.voice.tts import TTS, KokoroTTS, TTSParams
 from coach.voice.voice import Voice, make_voice
 
 FILLER = "Right. Listen."
@@ -581,6 +583,24 @@ async def test_failed_synthesis_loses_one_sentence_only(caplog) -> None:
 
     rig.tts.on_synth = boom
     assert await run(rig) == [FILLER, "Good one."]
+    assert "debrief synthesis failed" in caplog.text
+
+
+async def test_kokoro_exiting_while_it_loads_loses_sentences_not_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Seen live: spaCy's model download failed inside Kokoro's load and called sys.exit(), which
+    stopped run.py's event loop, so the dashboard froze before any debrief text reached it."""
+
+    def kpipeline(lang_code: str) -> None:
+        sys.exit(1)
+
+    monkeypatch.setitem(sys.modules, "kokoro", SimpleNamespace(KPipeline=kpipeline))
+    params = TTSParams(cache_dir=tmp_path)
+    tts = TTS(KokoroTTS(params), params)
+    np.save(tts.cache_path(FILLER), FakeTTS.clip(FILLER))  # fillers are pre-rendered
+    rig = rig_with(FakeLLM("Feet first. "), tts=tts)
+    assert await run(rig) == [FILLER]
     assert "debrief synthesis failed" in caplog.text
 
 

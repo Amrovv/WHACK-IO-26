@@ -144,7 +144,17 @@ class KokoroTTS:
         if self._pipeline is None:
             from kokoro import KPipeline
 
-            self._pipeline = KPipeline(lang_code=self.p.kokoro_lang)
+            try:
+                self._pipeline = KPipeline(lang_code=self.p.kokoro_lang)
+            except SystemExit as exc:
+                # misaki downloads spaCy's en_core_web_sm the first time if it isn't installed,
+                # and spaCy calls sys.exit() when that download fails. SystemExit isn't an
+                # Exception, so it would get past every handler in Voice and stop the event loop,
+                # taking the dashboard and the debrief with it. Left unset, the next call retries.
+                raise RuntimeError(
+                    f"Kokoro failed to load (exit status {exc.code}), most likely because "
+                    "spaCy's en_core_web_sm is missing and could not be downloaded"
+                ) from exc
         return self._pipeline
 
     def warmup(self) -> None:
