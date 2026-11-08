@@ -73,6 +73,7 @@ MATCH_MIN_INLIERS = 40  # fewer matches than this agree on one camera move: can'
 MATCH_RANSAC = 0.01  # a match agrees with the camera move to within this fraction of the width
 SAME_VIEW_MAX_SHIFT = 0.03  # same spot: no part of the wall moves further (fraction of width)
 FIT_ORDER = {True: 0, None: 1, False: 2}  # matching stills first, then unknown, then the rest
+PICK_PROMPT = "Click a hold of the route's colour."
 FEATURE_CACHE_MAX = 64  # stills' features kept (about 60 kB each)
 
 
@@ -442,22 +443,18 @@ class HoldMapBuilder:
             problem = self.control.problem_id
             ed = parts.EditorState(img, parts.load_cfg())
             h, w = img.shape[:2]
-            self.message = "Click a hold of the route's colour to find the route's holds."
+            self.message = PICK_PROMPT
             self.from_saved, self.fits, self.picking, self._replaced = False, fits, False, []
             if self._path(problem).exists():
                 holdmap, shapes = parts.load(problem, self.root)
                 if same_shape(tuple(holdmap.image_size), (w, h)):
                     ed.load_existing(holdmap, shapes)
                     self.from_saved = True
-                    self.message = (
-                        f"Editing the saved map ({len(holdmap.holds)} holds). "
-                        "Pick the colour again to start over."
-                    )
+                    self.message = f"Editing the saved map ({len(holdmap.holds)} holds)."
                 else:
                     mw, mh = holdmap.image_size
                     self.message = (
-                        f"The saved map was made from a {mw}×{mh} picture, which doesn't match "
-                        "this one, so this starts a new map. Click a hold of the route's colour."
+                        f"The saved map ({mw}×{mh}) doesn't fit this picture. {PICK_PROMPT}"
                     )
             self.jpeg = await asyncio.to_thread(encode_jpeg, img)
             self.editor, self.problem_id, self.still_key = ed, problem, still_key
@@ -496,16 +493,11 @@ class HoldMapBuilder:
                 # A reports success as "Roboflow found N holds"; judge by the message.
                 if not fresh.message.startswith("Roboflow found"):
                     reason = first_clause(fresh.message)
-                    return (
-                        f"Couldn't find holds: {reason}. Drag with Add box to place holds by hand."
-                    )
+                    return f"Couldn't find holds: {reason}."
                 self._replaced.append((ed, self.from_saved))
                 self.editor, self.from_saved, self.picking = fresh, False, False
                 found = f"{len(fresh.included())} {fresh.colour_label()} holds"
-                return (
-                    f"{'Started over with' if before else 'Found'} {found}. Click any that "
-                    "aren't on the route to leave them out."
-                )
+                return f"{'Started over with' if before else 'Found'} {found}."
             box = ed.box_at(p)
             if name == "toggle":
                 if box is None:
@@ -546,11 +538,11 @@ class HoldMapBuilder:
                 return "Undone."
             if self._replaced:  # back to the holds from before the last colour pick
                 self.editor, self.from_saved = self._replaced.pop()
-                return "Undone: the holds from before you picked the colour are back."
+                return "Undone: the earlier holds are back."
             return "Nothing to undo."
         if name == "recolour":
             self.picking = True
-            return "Click a hold of the route's colour to start over with its holds."
+            return PICK_PROMPT
         if name == "keep":
             self.picking = False
             return "Kept the holds you have."
@@ -572,7 +564,7 @@ class HoldMapBuilder:
         self.fits = self._still_fits(self.still_key, img, at)
         self._last[self.problem_id] = {"key": self.still_key, "at": at}
         self.version += 1
-        return f"Showing {at:.1f} s into the video. The holds stay where they are."
+        return f"At {at:.1f} s."
 
     def _keep_automatic_roles(self, marking: str) -> None:
         """A's rule: once any start or top is set by hand, every role is manual. So the first

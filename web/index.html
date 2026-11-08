@@ -345,20 +345,46 @@
   #ed-busy { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     background: rgba(11, 12, 13, 0.38); cursor: progress; }
   #ed-busy[hidden] { display: none; }
-  #ed-busy .box { display: flex; align-items: center; gap: 0.55em; background: var(--ink); color: var(--page);
+  #ed-busy .busy-box { display: flex; align-items: center; gap: 0.55em; background: var(--ink); color: var(--page);
     font-size: var(--m); font-weight: 800; padding: 0.3em 0.7em; white-space: nowrap; }
   /* The one spinner, added at the user's request; it stands still under reduced motion. */
   .spinner { flex: none; width: 0.78em; height: 0.78em; border: 0.14em solid currentColor;
     border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   #ed-fit { border: 2px solid var(--ink); padding: 0.25em 0.55em; color: var(--ink); font-weight: 600; }
-  /* Moment: a video still can be any frame of its clip. */
-  #ed-scrub { display: flex; align-items: center; gap: 0.7em; margin-top: 0.6em; font-size: var(--s);
-    font-weight: 700; color: var(--graphite); }
-  #ed-scrub[hidden] { display: none; }
-  #ed-time { flex: 1; min-width: 0; margin: 0; accent-color: var(--ink); cursor: pointer; }
-  #ed-time:disabled { cursor: progress; }
-  #ed-time-label { color: var(--ink); white-space: nowrap; }
+  /* Seek bar: a video still scrubs like a video player. At rest: a 7px track with its handle along the
+     bottom of the still and a small dark chip above it with the time and "drag to scrub", so it reads as
+     a control. Hovering, dragging or focusing it opens a dark band with a wider track, a bigger handle,
+     the time, and the time under the pointer. --p is the position, 0-1. */
+  #ed-seek { --p: 0; position: absolute; left: 0; right: 0; bottom: 0; height: 26px; cursor: pointer;
+    touch-action: none; user-select: none; }
+  #ed-seek[hidden] { display: none; }
+  #ed-seek.open { height: 72px; }
+  #ed-seek .band { position: absolute; inset: 0; background: rgba(11, 12, 13, 0.62); opacity: 0;
+    transition: opacity 0.12s; pointer-events: none; }
+  #ed-seek.open .band { opacity: 1; }
+  #ed-track { position: absolute; left: 10px; right: 10px; bottom: 8px; height: 7px; background: rgba(238, 240, 234, 0.6);
+    box-shadow: 0 0 0 1px rgba(11, 12, 13, 0.45); outline: none;
+    transition: left 0.12s, right 0.12s, bottom 0.12s, height 0.12s; }
+  #ed-seek.open #ed-track { left: 16px; right: 16px; bottom: 16px; height: 6px; background: rgba(238, 240, 234, 0.3); box-shadow: none; }
+  #ed-fill { position: absolute; left: 0; top: 0; bottom: 0; width: calc(var(--p) * 100%); background: #16181b; }
+  #ed-seek.open #ed-fill { background: #eef0ea; }
+  #ed-thumb { position: absolute; top: 50%; left: calc(var(--p) * 100%); width: 16px; height: 16px; margin: -8px 0 0 -8px;
+    border-radius: 50%; background: #eef0ea; border: 2px solid #16181b; box-sizing: border-box;
+    transform: scale(0.85); transition: transform 0.12s; }
+  #ed-seek.open #ed-thumb { transform: scale(1); border-color: #eef0ea; }
+  #ed-track:focus-visible { outline: 3px solid #eef0ea; outline-offset: 4px; }
+  /* The time: a chip above the track at rest, plain text on the band when open (with room above it). */
+  #ed-seek-time { position: absolute; left: 10px; bottom: 22px; color: #eef0ea; background: rgba(11, 12, 13, 0.7);
+    font-size: var(--s); font-weight: 700; line-height: 1.2; padding: 0.1em 0.45em; white-space: nowrap;
+    pointer-events: none; transition: bottom 0.12s; }
+  #ed-seek-time .how { font-family: var(--sans); font-weight: 600; color: #c9ced3; }
+  #ed-seek.open #ed-seek-time { left: 10px; bottom: 30px; background: none; }
+  #ed-seek.open #ed-seek-time .how { display: none; }
+  #ed-seek-tip { position: absolute; bottom: 32px; transform: translateX(-50%); background: #eef0ea; color: #16181b;
+    font-size: var(--s); font-weight: 700; line-height: 1.2; padding: 0.05em 0.4em; white-space: nowrap; pointer-events: none; }
+  #ed-seek-tip[hidden] { display: none; }
+  #ed-seek.off { cursor: progress; }
   /* The sections scroll if they must; the actions stay pinned to the bottom, always in reach. */
   #ed-panel { border-left: var(--rule-w) solid var(--rule-strong); display: flex; flex-direction: column;
     min-height: 0; overflow-y: auto; }
@@ -366,11 +392,9 @@
   #ed-panel .sect:last-of-type { border-bottom: 0; }
   #ed-panel h2#ed-title { display: block; margin: 0; font-size: var(--m); font-weight: 800; color: var(--ink);
     letter-spacing: -0.01em; line-height: 1.1; }
-  #ed-for { margin-top: 0.2em; font-size: var(--s); color: var(--graphite); }
-  #ed-for .num { color: var(--ink); font-weight: 700; }
-  #ed-message { margin: 0.5em 0 0; font-size: var(--s); line-height: 1.3; color: var(--ink); }
-  #ed-pic { display: flex; align-items: center; gap: 0.7em; font-size: var(--s); font-weight: 700; color: var(--graphite); }
-  #ed-pic .sel { flex: 1; min-width: 0; }
+  #ed-title .num { margin-left: 0.25em; font-size: 0.6em; font-weight: 700; color: var(--graphite); letter-spacing: 0; }
+  #ed-message { margin: 0.4em 0 0; font-size: var(--s); line-height: 1.3; color: var(--ink); }
+  #ed-pic { display: flex; width: 100%; }
   #ed-pic #ed-still-pick { width: 100%; max-width: 100%; }
   #ed-still-pick { appearance: none; -webkit-appearance: none; font: inherit; font-size: var(--s); font-weight: 700;
     color: var(--ink); background: var(--page-2); border: 2px solid var(--rule-strong); border-radius: 0;
@@ -399,6 +423,7 @@
   @media (prefers-reduced-motion: reduce) {
     .btn, .tool { transition: none; }
     #source { transition: none; }
+    #ed-seek .band, #ed-track, #ed-thumb, #ed-seek-time { transition: none; }
     #cap-text.arrive, .mark.fresh path, #mode.live .dot, .spinner { animation: none; stroke-dashoffset: 0; }
     .box path, .box:has(input:checked) path { transition: none; }
   }
@@ -497,25 +522,29 @@
     <div id="ed-frame">
       <img id="ed-still" alt="Still of the wall the hold map is built from">
       <canvas id="ed-canvas" aria-label="Holds on the still: click to edit"></canvas>
-      <div id="ed-busy" role="status" hidden><div class="box"><span class="spinner" aria-hidden="true"></span><span id="ed-busy-text">Finding holds…</span></div></div>
+      <div id="ed-seek" hidden>
+        <div class="band"></div>
+        <span id="ed-seek-time" class="num"></span>
+        <span id="ed-seek-tip" class="num" hidden></span>
+        <div id="ed-track" role="slider" tabindex="0" aria-label="Moment of the video" aria-valuemin="0"><div id="ed-fill"></div><div id="ed-thumb"></div></div>
+      </div>
+      <div id="ed-busy" role="status" hidden><div class="busy-box"><span class="spinner" aria-hidden="true"></span><span id="ed-busy-text">Finding holds…</span></div></div>
     </div>
   </div>
   <div id="ed-panel">
     <div class="sect">
-      <h2 id="ed-title">Hold map</h2>
-      <div id="ed-for">for problem <span class="num" id="ed-problem"></span></div>
+      <h2 id="ed-title">Hold map <span class="num" id="ed-problem"></span></h2>
       <p id="ed-message" aria-live="polite"></p>
     </div>
     <div class="sect">
-      <label id="ed-pic"><span>Picture</span><span class="sel"><select id="ed-still-pick"></select></span></label>
-      <label id="ed-scrub" hidden><span>Moment</span><input type="range" id="ed-time" min="0" step="0.04"><span id="ed-time-label" class="num"></span></label>
-      <p class="ed-hint"><button type="button" class="linkbtn" id="ed-own">Use your own picture</button></p>
-      <p class="ed-hint" id="ed-fit" hidden>This picture was filmed from a different spot than the video, so holds marked on it won't line up with the climber. Pick another picture.</p>
+      <h2>Picture <span class="aside"><button type="button" class="linkbtn" id="ed-own">Use your own</button></span></h2>
+      <span class="sel" id="ed-pic"><select id="ed-still-pick" aria-label="Picture to build the map from"></select></span>
+      <p class="ed-hint" id="ed-fit" hidden></p>
     </div>
     <div class="sect">
       <h2>Click a hold to <span class="aside"><button type="button" class="linkbtn" id="ed-undo">Undo</button></span></h2>
       <div id="ed-tools" role="radiogroup" aria-label="What a click does">
-        <label class="tool"><input type="radio" name="ed-tool" value="toggle" checked>Leave out or put back<span class="k">1</span></label>
+        <label class="tool" title="Drag across holds to erase them. Right-click a hold to delete it."><input type="radio" name="ed-tool" value="toggle" checked>Leave out or put back<span class="k">1</span></label>
         <label class="tool"><input type="radio" name="ed-tool" value="start">Mark as a start hold<span class="k">2</span></label>
         <label class="tool"><input type="radio" name="ed-tool" value="top">Mark as the top<span class="k">3</span></label>
         <label class="tool"><input type="radio" name="ed-tool" value="box">Add a missing hold (drag)<span class="k">4</span></label>
@@ -553,6 +582,8 @@ const NARROW_MAX_VH = 0.7;          // narrow screens: the picture is at most th
 const ED_DRAG_MIN_PX = 6;           // hold map editor: a pointer move shorter than this is a click
 const UPLOAD_MAX_SIDE = 2560;       // your own picture is sent at most this long on its longer side, px
 const UPLOAD_JPEG_QUALITY = 0.92;
+const SEEK_STEP_S = 0.5;            // seek bar: an arrow key moves this far through the clip
+const SEEK_BIG_STEP_S = 5;          // ...and this far with Shift
 const SAME_SHAPE_TOLERANCE = 0.02;  // aspect ratios this close line up (coach/server/holds.py)
 const BROWSER_SPEC = "browser";     // the source spec for this device's camera (coach/server/camera.py)
 const CAMERA_FPS = 15;              // webcam frames sent to the server per second
@@ -1408,12 +1439,6 @@ $("source").addEventListener("change", (e) => pickSource(e.target.value));
 const HOLDS = { status: null, checked: false };  // GET /api/holds, or null when this server can't build maps
 const ED = { view: null, tool: "toggle", busy: false, down: null, drag: null, hover: null, edits: 0 };
 const edCanvas = $("ed-canvas"), edCtx = edCanvas.getContext("2d"), edStill = $("ed-still");
-const ED_HINTS = {
-  toggle: "Drag across holds to erase them. Right-click a hold to delete it.",
-  start: "Click a kept hold again to unmark it.",
-  top: "Click a kept hold again to unmark it.",
-  box: "Drag a box around a hold the detector missed.",
-};
 
 async function loadHoldsStatus() {
   try {
@@ -1463,7 +1488,7 @@ function setEdBusy(busy, label = null) {
   $("editor").classList.toggle("busy", busy);
   $("ed-busy").hidden = !(busy && label);
   if (label) $("ed-busy-text").textContent = label;
-  for (const id of ["ed-undo", "ed-recolour", "ed-save", "ed-still-pick", "ed-time", "ed-own"]) $(id).disabled = busy;
+  for (const id of ["ed-undo", "ed-recolour", "ed-save", "ed-still-pick", "ed-own"]) $(id).disabled = busy;
   if (!busy) renderEdControls();
 }
 
@@ -1541,16 +1566,85 @@ async function usePicture(file) {
   renderEdControls();
 }
 
-// ---- Moment: drag through a video still. One request at a time; while one runs, only the
-// newest wanted moment is kept, so the picture follows the thumb without piling up requests.
-const SCRUB = { want: null, inflight: false };
-const timeLabel = (t, d) => `${t.toFixed(1)} s of ${d.toFixed(1)} s`;
+// ---- Seek bar: scrub a video still like a video player. One request at a time; while one runs,
+// only the newest wanted moment is kept, so the picture follows the handle without piling up.
+const SCRUB = { want: null, inflight: false, dragging: false };
+const seekEl = $("ed-seek"), trackEl = $("ed-track");
+const fmtMoment = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, "0")}`;
 
 function scrubTo(at) {
   SCRUB.want = at;
-  if (ED.view?.duration) $("ed-time-label").textContent = timeLabel(at, ED.view.duration);
   if (!SCRUB.inflight) scrubNext();
 }
+
+// Draw the bar at a moment (before the server answers, so dragging feels immediate).
+function renderSeek(at) {
+  const d = ED.view?.duration;
+  if (!d) return;
+  seekEl.style.setProperty("--p", Math.min(1, Math.max(0, at / d)));
+  $("ed-seek-time").innerHTML = `${fmtMoment(at)} / ${fmtMoment(d)}<span class="how"> · drag to scrub</span>`;
+  trackEl.setAttribute("aria-valuemax", d.toFixed(1));
+  trackEl.setAttribute("aria-valuenow", at.toFixed(1));
+  trackEl.setAttribute("aria-valuetext", `${at.toFixed(1)} seconds of ${d.toFixed(1)}`);
+}
+
+function seekTo(at) {
+  const d = ED.view?.duration;
+  if (!d || ED.busy) return;
+  at = Math.min(d, Math.max(0, at));
+  renderSeek(at);
+  scrubTo(at);
+}
+
+// The moment under the pointer, from its position along the track.
+function momentAt(e) {
+  const r = trackEl.getBoundingClientRect();
+  return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * (ED.view?.duration || 0);
+}
+
+function openSeek(open) {
+  seekEl.classList.toggle("open", open || SCRUB.dragging || document.activeElement === trackEl);
+}
+
+seekEl.addEventListener("pointerenter", () => openSeek(true));
+seekEl.addEventListener("pointerleave", () => { $("ed-seek-tip").hidden = true; openSeek(false); });
+seekEl.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0 || ED.busy || !ED.view?.duration) return;
+  e.preventDefault();  // no text selection, no focus jump
+  try { seekEl.setPointerCapture(e.pointerId); } catch {}
+  SCRUB.dragging = true;
+  openSeek(true);
+  seekTo(momentAt(e));
+});
+seekEl.addEventListener("pointermove", (e) => {
+  if (!ED.view?.duration) return;
+  const at = momentAt(e), tip = $("ed-seek-tip");
+  tip.hidden = false;
+  tip.textContent = fmtMoment(at);
+  const r = seekEl.getBoundingClientRect(), x = e.clientX - r.left, half = tip.offsetWidth / 2;
+  tip.style.left = `${Math.min(r.width - half, Math.max(half, x))}px`;
+  if (SCRUB.dragging) seekTo(at);
+});
+const endDrag = () => {
+  if (!SCRUB.dragging) return;
+  SCRUB.dragging = false;
+  openSeek(seekEl.matches(":hover"));
+};
+seekEl.addEventListener("pointerup", endDrag);
+seekEl.addEventListener("pointercancel", endDrag);
+trackEl.addEventListener("focus", () => openSeek(true));
+trackEl.addEventListener("blur", () => openSeek(seekEl.matches(":hover")));
+trackEl.addEventListener("keydown", (e) => {
+  const v = ED.view, now = SCRUB.want ?? v?.at ?? 0;
+  if (!v?.duration) return;
+  const step = e.shiftKey ? SEEK_BIG_STEP_S : SEEK_STEP_S;
+  const to = { ArrowLeft: now - step, ArrowDown: now - step, ArrowRight: now + step, ArrowUp: now + step,
+    Home: 0, End: v.duration }[e.key];
+  if (to == null) return;
+  e.preventDefault();
+  e.stopPropagation();
+  seekTo(to);
+});
 
 async function scrubNext() {
   if (SCRUB.want == null || !ED.view?.open) return;
@@ -1590,6 +1684,9 @@ function hideEditor() {
   ED.view = null;
   ED.hover = ED.down = ED.drag = null;
   edStill.removeAttribute("src");
+  SCRUB.want = null;
+  SCRUB.dragging = false;
+  seekEl.classList.remove("open");
 }
 
 // Clicks pick the route colour until there are holds to work on, and after "Pick the colour
@@ -1606,29 +1703,25 @@ function renderEdControls() {
   pick.innerHTML = stills.map((s) => `<option value="${esc(s.key)}">${esc(s.name)}` +
     `${s.fits === false ? " · doesn't match the video" : ""}</option>`).join("");
   pick.value = v.still;
-  $("ed-scrub").hidden = !v.duration;
-  if (v.duration) {
-    const range = $("ed-time");
-    range.max = v.duration;
-    if (SCRUB.want == null && !SCRUB.inflight) {  // don't pull the thumb back mid-drag
-      range.value = v.at ?? 0;
-      $("ed-time-label").textContent = timeLabel(v.at ?? 0, v.duration);
-    }
-  }
+  seekEl.hidden = !v.duration;
+  seekEl.classList.toggle("off", ED.busy);
+  // Don't pull the handle back while it's being dragged or a newer moment is on its way.
+  if (v.duration && SCRUB.want == null && !SCRUB.inflight && !SCRUB.dragging) renderSeek(v.at ?? 0);
   $("ed-fit").hidden = v.fits !== false;
   if (v.fits === false) {
     const [vw, vh] = pictureSize(), [w, h] = v.size;
     $("ed-fit").textContent = Math.abs(w / h - vw / vh) > SAME_SHAPE_TOLERANCE
-      ? `This picture is ${w}×${h}, a different shape from the video (${vw}×${vh}), so holds marked on it won't line up with the climber. Pick another picture.`
-      : "This picture was filmed from a different spot than the video, so holds marked on it won't line up with the climber. Pick another picture.";
+      ? `Different shape from the video (${w}×${h} vs ${vw}×${vh}): holds won't line up.`
+      : "Filmed from a different spot than the video: holds won't line up.";
   }
   const colour = choosingColour();
   for (const input of document.querySelectorAll('input[name="ed-tool"]')) {
     input.disabled = ED.busy || (colour && input.value !== "box");
   }
-  $("ed-hint").textContent = !colour ? ED_HINTS[ED.tool]
-    : v.kept ? "The holds it finds replace the ones you have. Undo brings them back."
-    : "Or drag a box around a hold to place it by hand.";
+  // One short line, only where a click does something you couldn't guess.
+  const hint = colour && v.kept ? "Picking a colour replaces these holds (Undo restores them)." : "";
+  $("ed-hint").textContent = hint;
+  $("ed-hint").hidden = !hint;
   const kept = v.holds.filter((h) => h.kept).sort((a, b) => a.id - b.id);
   const ids = (role) => kept.filter((h) => h.role === role).map((h) => `<b>${h.id}</b>`).join(", ") || "none";
   const how = kept.length ? v.origin : "";
@@ -1797,7 +1890,6 @@ document.addEventListener("keydown", (e) => {
 });
 
 $("ed-undo").addEventListener("click", () => edRun("op", { op: "undo" }));
-$("ed-time").addEventListener("input", (e) => scrubTo(Number(e.target.value)));
 $("ed-own").addEventListener("click", () => $("ed-file").click());
 $("ed-file").addEventListener("change", (e) => {
   const file = e.target.files?.[0];

@@ -180,8 +180,7 @@ async def test_roboflow_failure_is_reported_in_plain_words(builder, monkeypatch)
     await builder.open("wall")
     view = await builder.op("pick", norm(*ROUTE[0]))
     assert view["message"] == (
-        "Couldn't find holds: Roboflow unavailable: ROBOFLOW_API_KEY is not set. "
-        "Drag with Add box to place holds by hand."
+        "Couldn't find holds: Roboflow unavailable: ROBOFLOW_API_KEY is not set."
     )
     assert "use r" not in view["message"]  # the desktop editor's key hints are dropped
 
@@ -247,7 +246,7 @@ async def test_reopening_edits_the_saved_map_only_for_a_picture_of_the_same_shap
 
     builder.control.image = wall(H, W)  # a portrait picture: the saved boxes wouldn't line up
     view = await builder.open("wall")
-    assert view["kept"] == 0 and "doesn't match this one" in view["message"]
+    assert view["kept"] == 0 and "doesn't fit this picture" in view["message"]
 
 
 def test_http_endpoints(tmp_path, fake_roboflow):
@@ -346,7 +345,7 @@ async def test_picking_the_colour_again_replaces_the_holds_instead_of_adding_to_
     assert view["kept"] == 3 and view["colour"] == "yellow"
     view = await builder.op("undo", {})  # back past both picks to the saved map
     assert view["kept"] == 3 and view["origin"] == "from the saved map"
-    assert view["message"] == "Undone: the holds from before you picked the colour are back."
+    assert view["message"] == "Undone: the earlier holds are back."
     assert (await builder.op("undo", {}))["message"] == "Nothing to undo."
 
 
@@ -440,7 +439,7 @@ async def test_moving_to_another_moment_keeps_the_holds_and_shows_the_new_frame(
     view = await builder.op("frame", {"at": 2.5})
 
     assert view["kept"] == 3 and view["at"] == 2.5 and view["version"] == first["version"] + 1
-    assert view["message"] == "Showing 2.5 s into the video. The holds stay where they are."
+    assert view["message"] == "At 2.5 s."
     assert builder.editor.image[0, 0, 0] == 25 and builder.jpeg != jpeg  # the new frame
     assert builder.status()["last"] == {"key": "clip", "at": 2.5}  # reopening comes back here
 
