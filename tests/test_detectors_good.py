@@ -21,6 +21,7 @@ CONFIG = {
         "cue_mute_after_fall_s": 1.0,
         "cue_mute_hip_speed": 0.6,
         "route_preview_ratio": 0.8,
+        "route_preview_delay_s": 1.0,
         "weight_shift_ratio": 0.25,
         "quiet_feet_window_s": 1.0,
         "feet_cut_ms": 300,
@@ -122,17 +123,23 @@ def test_route_preview_fires_on_ground_with_far_hold():
     f = feature(arm_length=0.3)  # threshold = 0.8 * 0.3 = 0.24
     c_ground = ctx(holdmap=holdmap, on_wall=False)
 
-    # Fires once on ground; biggest gap is 2->3 (distance 0.5), far hold is 3
-    events = detector.update(f, state(0.0), c_ground)
+    # Does not fire the instant the phase becomes GROUND (that's the same frame a
+    # debrief would start, and it would just get suppressed as "busy").
+    assert detector.update(f, state(0.0), c_ground) == []
+    assert detector.update(f, state(0.5), c_ground) == []
+
+    # Fires once route_preview_delay_s (1.0s) has elapsed grounded; biggest gap is
+    # 2->3 (distance 0.5), far hold is 3.
+    events = detector.update(f, state(1.0), c_ground)
     assert len(events) == 1
     assert events[0].kind == "route_preview"
     assert events[0].data["hold_id"] == 3
     assert events[0].data["gap"] == pytest.approx(0.5)
 
     # Does not spam on subsequent frames on ground
-    assert detector.update(f, state(0.5), c_ground) == []
+    assert detector.update(f, state(1.5), c_ground) == []
 
-    # Small gaps do not fire
+    # Small gaps do not fire (even past the delay)
     small_holds = [
         Hold(1, (0.5, 0.8), (0, 0, 0, 0)),
         Hold(2, (0.5, 0.7), (0, 0, 0, 0)),
@@ -140,16 +147,43 @@ def test_route_preview_fires_on_ground_with_far_hold():
     ]
     small_map = HoldMap("p2", "blue", small_holds, (100, 100), "manual")
     det_small = RoutePreview()
-    assert det_small.update(f, state(0.0), ctx(holdmap=small_map, on_wall=False)) == []
+    small_ctx = ctx(holdmap=small_map, on_wall=False)
+    det_small.update(f, state(0.0), small_ctx)
+    assert det_small.update(f, state(1.0), small_ctx) == []
 
     # Holdmap None or arm_length <= 0 do nothing
     det_none = RoutePreview()
-    assert det_none.update(f, state(0.0), ctx(holdmap=None, on_wall=False)) == []
-    assert det_none.update(feature(arm_length=0), state(0.0), c_ground) == []
+    none_ctx = ctx(holdmap=None, on_wall=False)
+    det_none.update(f, state(0.0), none_ctx)
+    assert det_none.update(f, state(1.0), none_ctx) == []
+    det_no_arm = RoutePreview()
+    det_no_arm.update(feature(arm_length=0), state(0.0), c_ground)
+    assert det_no_arm.update(feature(arm_length=0), state(1.0), c_ground) == []
 
     # Does not fire while on_wall=True
     det_wall = RoutePreview()
     assert det_wall.update(f, state(0.0), ctx(holdmap=holdmap, on_wall=True)) == []
+
+
+def test_route_preview_waits_out_a_typical_debrief_before_firing():
+    # Regression (C's audit): RoutePreview used to fire the instant the phase
+    # became GROUND -- the same frame the debrief starts and Voice.is_speaking()
+    # becomes True for its whole duration, so the arbiter suppressed it as "busy"
+    # almost every time after the first attempt. It must wait past a typical
+    # debrief's length (route_preview_delay_s) before trying again.
+    holds = [Hold(1, (0.5, 0.8), (0, 0, 0, 0)), Hold(2, (0.5, 0.1), (0, 0, 0, 0))]
+    holdmap = HoldMap("p", "red", holds, (100, 100), "manual")
+    f = feature(arm_length=0.3)
+    detector = RoutePreview()
+
+    # Still on the wall: no events, and the ground timer must not start early.
+    assert detector.update(f, state(0.0), ctx(holdmap=holdmap, on_wall=True)) == []
+
+    c_ground = ctx(holdmap=holdmap, on_wall=False)
+    assert detector.update(f, state(1.0), c_ground) == []  # just grounded
+    assert detector.update(f, state(1.9), c_ground) == []  # < delay (1.0s) grounded
+    events = detector.update(f, state(2.1), c_ground)  # >= delay grounded
+    assert len(events) == 1 and events[0].kind == "route_preview"
 
 
 def test_quiet_feet_detects_fidget():
@@ -291,7 +325,8 @@ def test_gates_ground_vs_on_wall():
     f = feature(arm_length=0.3)
 
     assert route_det.update(f, state(0.0), ctx(holdmap=holdmap, on_wall=True)) == []
-    assert len(route_det.update(f, state(0.0), ctx(holdmap=holdmap, on_wall=False))) == 1
+    assert route_det.update(f, state(0.0), ctx(holdmap=holdmap, on_wall=False)) == []
+    assert len(route_det.update(f, state(1.0), ctx(holdmap=holdmap, on_wall=False))) == 1
 
     # On-wall detectors do not fire while on_wall=False
     c_cut = {Limb.LH: 5, Limb.RH: 6, Limb.LF: None, Limb.RF: None}
