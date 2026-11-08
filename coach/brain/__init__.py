@@ -115,7 +115,10 @@ class Brain:
             await self._install_holdmap()
             while True:
                 state = await states.get()
-                self._process_state(state)
+                try:
+                    self._process_state(state)
+                except Exception:
+                    logger.exception("frame %d failed", state.frame_idx)
                 # Queue-backed producers can make ``get`` complete without
                 # suspending; give the spoken-line consumer a turn per frame.
                 await asyncio.sleep(0)
