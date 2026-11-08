@@ -11,6 +11,7 @@ colors:
   field-book-yellow: "#f2c230"
   yellow-ink: "#2a2306"
   red-pen: "#ff5a6e"
+  signal-blue: "#7cc4ff"
   video-frame: "#0b0c0d"
   limb-left-hand: "#4fc3f7"
   limb-right-hand: "#b388ff"
@@ -137,6 +138,8 @@ A near-monochrome graphite logbook with two inks reserved for meaning, plus one 
 
 **Mode flag.** The running head says what is running, from the server's hello: "Live · camera N" (red, flashing) for a webcam; "Analysing in real time" (ink, steady dot) for a pre-recorded clip analysed live, with a clip-progress strip (name, time, loop) along the bottom of the video; "Video test" (boxed) for `web/stream_test.py`, where the layout drops to the video alone with stream stats; "Session replay · <log>" (boxed) for a bus-log replay. Never call a clip "Recorded": the analysis is real time. The connection flag appears only when something is wrong ("Reconnecting…").
 
+- **Signal Blue** (signal-blue): the "Analysing in real time" mode flag only (text at 700 and a filled dot, steady), so judges can see at a glance that the coach is watching a clip live. Not used for anything else.
+
 ### Tertiary
 - **Live Hold** (runtime, defaults to Pencil Ink): the problem's own hold colour, set from the hold map, fills the live rung number and the hold chip in the running head. Problem colours that would read as Red Pen or Field-Book Yellow (pink, red, orange, yellow) fall back to the Pencil Ink block. Its ink flips to Graphite Page or white by luminance.
 - **Limb colours** (limb-left-hand, limb-right-hand, limb-left-foot, limb-right-foot): sky blue, lilac, leaf green and pale grey. Used only on the video overlay to tie a limb dot to the hold it is on. They never appear in the page chrome.
@@ -178,15 +181,19 @@ A near-monochrome graphite logbook with two inks reserved for meaning, plus one 
 
 ## Layout
 
-A full-viewport, non-scrolling grid on wide screens: a running head across the top, then three columns (video stage taking the remaining width, the hold ladder at clamp 130–200px, the ruled side column at clamp 260–420px), then the full-width caption band at the bottom (clamp 165–220px tall, growing to clamp 165–340px during a debrief). The head is clamp 56–88px tall.
+A full-viewport, non-scrolling grid on wide screens: a running head across the top, then three columns (video stage taking the remaining width, the hold ladder at clamp 150–230px, the ruled side column at clamp 260–420px), then the full-width caption band at the bottom (clamp 165–220px tall, growing to clamp 165–340px during a debrief). The head is clamp 56–88px tall.
 
-The video frame is sized by script to the stream's aspect ratio, and the ladder's padding is aligned to the frame's top and bottom so rung 1 sits level with the bottom of the picture and the top hold with its top. Rungs share the height equally, top hold at the top.
+The video frame is sized by script to the stream's aspect ratio. The hold ladder is its own column, separate from the picture: a 3px Strong Rule on its left, the section padding, and a "Holds" title with the hold count in Pencil, like the side column's sections. Rungs share the column's height equally, top hold at the top.
 
 The side column stacks three ruled sections (latency, attempts, timeline); the timeline takes the remaining height, scrolls, and fades its last 1.6em when it overflows.
 
+A source bar sits in its own row under the picture: "Source", the clip picker (square, 2px Strong Rule, Pencil Ink on the raised page) and the clip time in Mono. It names what is being analysed and never sits on top of the picture; only the 5px progress bar does.
+
+**Portrait video** (a picture taller than it is wide, on a wide screen) gets its own grid. The picture runs the full height on the left, and its column is only as wide as the picture. To its right, top to bottom: the source bar across the full width; then the hold ladder column; then the side data split in two (latency above attempts, and the timeline beside them, divided by a 2px Faint Rule); then the caption band, which spans only this right-hand side. 3px Strong Rules divide the picture's column from the rest.
+
 Spacing comes from one fluid gap (clamp 12–24px), used at multiples of 0.6, 0.65, 1.2, 1.4 and 1.8 for section and band padding.
 
-Below 900px the page stacks and scrolls in this order: head, caption, video (56vw tall), ladder, side column. The ladder turns horizontal, running from hold 1 on the left to the top hold on the right, and the side column's left rule becomes a top rule.
+Below 900px the page stacks and scrolls in this order: head, caption, video (full width, at most 70% of the screen height), source bar, ladder, side column. The ladder turns horizontal, running from hold 1 on the left to the top hold on the right, and the ladder's and side column's left rules become top rules.
 
 ### Named Rules
 **The Ruled, Not Carded Rule.** Regions are separated by rules: 3px Strong Rule for structure, 2px Faint Rule between rungs and sections, 1px Faint Rule between entries. Never wrap content in a filled or bordered card.
@@ -209,7 +216,7 @@ Pencil marks are stroked SVG paths, not glyphs: a short slash for a fall or down
 ### Caption Band
 The coach's voice: a full-width Field-Book Yellow band at the bottom of the grid.
 - **Layout:** speaker column on the left (the "Coach" tag above the mood word), the line in the middle, the latency in ms on the right in Mono at the medium step.
-- **States:** cue (display type, two lines max); debrief (taller band, medium step at 600, five lines max, seven when long); waiting/idle (ink at 62–70% alpha).
+- **States:** cue (display type, two lines max; a cue that won't fit steps down once to 78% of the large step, three lines below 900px); debrief (taller band, medium step at 600, five lines max, seven when long); waiting/idle (ink at 62–70% alpha).
 - **Motion:** each new line arrives once, 0.45s with a 0.18em rise from 35% opacity on `cubic-bezier(0.16, 1, 0.3, 1)`. Disabled under reduced motion.
 - **Speaker tag:** 800 weight, uppercase, 0.1em tracking, boxed in a 3px Yellow Ink border. It names who is speaking; it is the one uppercase label in the chrome and is not a pattern for section headings.
 
@@ -242,8 +249,24 @@ One line per entry, divided by 1px Faint Rules, meta in Mono on the right.
 
 ### Video Overlay
 Drawn on a canvas over the camera picture, scaled with the picture.
-- **Holds:** white outlined rectangles (80% alpha), numbered. Start and top holds get a white label with dark ink ("1 START", "10 TOP"); mid holds get a dark translucent label with white ink. A held hold takes its limb's colour as outline and a translucent fill.
+- **Holds:** white outlines (80% alpha), numbered: the hold's real outline when the hold map has one (the shape contacts are measured against), otherwise its box. Start and top holds get a white label with dark ink ("1 START", "10 TOP"); mid holds get a dark translucent label with white ink. A held hold takes its limb's colour as outline and a translucent fill.
 - **Pose:** white skeleton (88% alpha, 4px round caps), a ring at the hip, limb dots in the limb colours with a dashed line to the hold they are on.
+
+### Buttons
+The dashboard is watched, not operated, so buttons appear only for setup tasks.
+- **Button:** small-step 700 Pencil Ink text in a 2px Strong Rule box, square; the border turns Pencil Ink on hover; 3px Pencil Ink focus outline at 2px offset. Disabled text is Pencil.
+- **Primary:** the one main action of a task (Save hold map) is an inverted Pencil Ink block with Graphite Page text, Graphite on hover.
+- **Text button:** an underlined 700 word in Graphite for small actions inside a heading's aside ("Edit", "Undo", "Pick the colour again").
+
+### Hold Map Editor
+Builds the problem's hold map with A's Roboflow detector, opened from the Holds column ("Build hold map" when there's none, "Edit" beside the count when there is). It takes over everything under the running head until it's saved or cancelled.
+- **Layout:** the still of the empty wall as large as fits on the left; a ruled panel on the right (clamp 320–520px) with the title and status line, the picture picker, the click tools, the route summary, and Cancel and Save pinned to the bottom. Below 900px the panel follows the picture and the page scrolls.
+- **Holds on the still:** kept holds in white over a dark edge (so they read on a pale wall or a dark one), numbered and labelled like the video overlay; left-out holds as dimmed dashed outlines; the hold under the pointer fills with white at 28%; a drag draws a dashed box (erase) or a solid one (add).
+- **Tools:** a column of ruled rows; the chosen one is an inverted Pencil Ink block, with its number key in Mono. Before a colour is picked, clicks pick the route colour and only "Add a missing hold" is enabled.
+- **Status:** one sentence in Pencil Ink that says what happened and what to do next; while Roboflow runs (or the map saves), the still dims and "Finding holds…" ("Saving…") sits on it as an inverted block with a small spinning ring. The spinner is the second motion exception, at the user's request, so a 1.5 s detector call reads as working; it stands still under reduced motion.
+- **Seek bar and own pictures:** a video still scrubs like a video player, on the picture itself. At rest it shows a 7px pale track with a Pencil Ink fill and a ringed handle along the bottom of the still, and a small dark chip above it with the time and "drag to scrub", so it reads as a control. The panel stays terse: one status line, short headings with text-button asides ("Picture · Use your own"), and a hint only where a click does something you couldn't guess. Hovering, dragging or focusing it opens a dark band (62% Pencil Ink, tall enough to leave clear space above the time) with a 6px track, a round handle, the time in Mono ("0:03.2 / 0:31.8") and the time under the pointer in a small pale block; click to jump, drag to scrub, arrow keys step 0.5 s (5 s with Shift). The holds stay put while the picture moves through its clip; the clip being analysed is offered too ("This video"). "Use your own picture" (a text button) uploads a photo, which joins the list as "Your picture · name.jpg". With no picture to build from at all, "Build hold map" asks for one straight away.
+- **Picture:** the stills filmed from the video's camera position come first. One that isn't says so in its option ("doesn't match the video") and, while open, in a 2px boxed line under the picker.
+- **Analysis pauses** while the editor is open: the coach goes quiet, and saving or Cancel restarts analysis from the start of the clip.
 
 ## Do's and Don'ts
 

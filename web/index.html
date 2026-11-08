@@ -23,10 +23,19 @@
     hello         {"no_llm": bool, "persona": str, "mood": str, "problem_id": str,
                    "mode": "live" | "offline" | "video_test" | "session_replay",
                    "source": {"kind": "camera", "index": int}
-                           | {"kind": "file", "name": str, "frames": int, "fps": float}
-                           | {"kind": "poses" | "bus_log", "name": str}}
+                           | {"kind": "browser_camera"}
+                           | {"kind": "file", "name": str, "frames": int, "fps": float,
+                              "width": int, "height": int}
+                           | {"kind": "poses" | "bus_log", "name": str},
+                   "session": int, "spec": str}
                   mode drives the head flag and layout: video_test shows the video only,
                   offline shows clip progress (from each state's frame_idx and source.frames).
+                  A new session number means the source changed: the page starts afresh.
+  Source picker: GET /api/sources lists what the server can analyse, POST /api/source
+         {"spec"} switches. Picking "This device's camera" sends webcam JPEGs to WS /camera;
+         the server analyses them and the page shows its frames like any other source.
+         Without those endpoints (replay server, stream_test.py) the picker stays hidden.
+  Portrait video: the stage shrinks to the picture's width and the side column takes the rest.
   Any payload with a "mood" field also updates the mood shown beside the caption.
 
   URL params: ?demo=1 fake data, no server needed.  ?offline=1 force the offline flag.
@@ -63,6 +72,7 @@
     --cover: #f2c230;
     --cover-ink: #2a2306;
     --red: #ff5a6e;
+    --signal: #7cc4ff;   /* "Analysing in real time": the coach is watching a clip. Used nowhere else. */
     --hold: #eef0ea;
     --hold-ink: #16181b;
     --frame: #0b0c0d;
@@ -81,7 +91,7 @@
     --gap: clamp(12px, 1.4vw, 24px);
     --head-h: clamp(56px, 8.8vh, 88px);
     --cap-h: clamp(165px, 21vh, 220px);
-    --ladder-w: clamp(130px, 12vw, 200px);
+    --ladder-w: clamp(150px, 13vw, 230px);
     --side-w: clamp(260px, 25vw, 420px);
 
     --sans: "Atkinson Hyperlegible Next", system-ui, sans-serif;
@@ -93,8 +103,8 @@
   body {
     display: grid; overflow: hidden;
     grid-template-columns: minmax(0, 1fr) var(--ladder-w) var(--side-w);
-    grid-template-rows: var(--head-h) minmax(0, 1fr) var(--cap-h);
-    grid-template-areas: "head head head" "stage ladder side" "cap cap cap";
+    grid-template-rows: var(--head-h) minmax(0, 1fr) auto var(--cap-h);
+    grid-template-areas: "head head head" "stage ladder side" "src ladder side" "cap cap cap";
   }
   ::selection { background: var(--cover); color: var(--cover-ink); }
   * { scrollbar-width: thin; scrollbar-color: var(--pencil) transparent; }
@@ -118,43 +128,86 @@
   #mode.live { color: var(--red); }
   #mode.live .dot { background: var(--red); border-color: var(--red); animation: live-blink 1.4s ease-in-out infinite; }
   @keyframes live-blink { 50% { opacity: 0.2; } }
-  #mode.realtime { color: var(--ink); }
-  #mode.realtime .dot { background: var(--ink); }
+  #mode.realtime { color: var(--signal); font-weight: 700; }
+  #mode.realtime .dot { background: var(--signal); border-color: var(--signal); }
   #mode.boxed .dot { display: none; }
   #conn.down { color: var(--ink); }
   #stream-stats { color: var(--graphite); }
 
   /* ---- Video ---- */
   #stage { grid-area: stage; position: relative; min-height: 0; min-width: 0;
-    display: flex; align-items: center; justify-content: center; padding: var(--gap) 0 var(--gap) calc(var(--gap) * 1.4); }
+    display: flex; align-items: center; justify-content: flex-start;
+    padding: var(--gap) var(--gap) var(--gap) calc(var(--gap) * 1.4); }
   /* #frame is sized by JS to the video's aspect ratio, so the picture fills it with nothing clipped. */
-  #frame { position: relative; width: 100%; height: 100%; background: var(--frame); overflow: hidden; outline: 2px solid var(--rule); }
+  #frame { position: relative; flex: none; width: 100%; height: 100%; background: var(--frame); overflow: hidden; outline: 2px solid var(--rule); }
   #video, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   #video { object-fit: fill; }
   #video:not([src]) { visibility: hidden; }
-  #novideo { position: absolute; left: 0.8em; bottom: 0.6em; color: #c9ced3; font-size: var(--s); font-weight: 600; }
+  #novideo { position: absolute; left: 0.8em; right: 0.8em; bottom: 0.6em; color: #c9ced3; font-size: var(--s); font-weight: 600; }
   #novideo small { font-weight: 400; color: #9aa1a7; margin-left: 0.4em; }
 
-  /* Clip progress (offline demo): a thin bar along the bottom of the video and its label. */
-  #clip { position: absolute; left: 0; right: 0; bottom: 0; pointer-events: none; }
-  #clip-label { position: absolute; left: 0.8em; bottom: calc(5px + 0.6em); font-size: var(--s); font-weight: 600;
-    color: var(--ink); background: rgba(11, 12, 13, 0.72); padding: 0.1em 0.45em; white-space: nowrap; }
-  #clip-label .sep { color: var(--pencil); margin: 0 0.3em; font-weight: 400; }
-  #clip-bar { height: 5px; background: rgba(238, 240, 234, 0.18); }
+  /* Clip progress: a thin bar along the bottom of the video. Its words live in the source bar, outside the picture. */
+  #clip-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 5px; background: rgba(238, 240, 234, 0.18); pointer-events: none; }
   #clip-bar span { display: block; height: 100%; width: 0; background: var(--ink); }
 
+  /* Source bar: what's being analysed and the picker to change it. Its own grid row: under a landscape
+     picture, across the top of the data beside a portrait one. */
+  #srcbar { grid-area: src; display: flex; flex-wrap: wrap; align-items: center; gap: 0.35em var(--gap);
+    min-width: 0; font-size: var(--s); padding: 0 0 var(--gap) calc(var(--gap) * 1.4); }
+  #src-pick { display: inline-flex; align-items: center; gap: 0.55em; min-width: 0; max-width: 100%;
+    color: var(--graphite); font-weight: 600; }
+  .sel { position: relative; display: inline-flex; min-width: 0; max-width: 100%; }
+  .sel::after { content: ""; position: absolute; right: 0.75em; top: 50%; width: 0.42em; height: 0.42em;
+    border-right: 2px solid var(--ink); border-bottom: 2px solid var(--ink); transform: translateY(-70%) rotate(45deg);
+    pointer-events: none; }
+  #source { appearance: none; -webkit-appearance: none; font: inherit; font-weight: 700; color: var(--ink);
+    background: var(--page-2); border: 2px solid var(--rule-strong); border-radius: 0; padding: 0.2em 2.1em 0.2em 0.55em;
+    min-width: 0; max-width: min(34em, 100%); text-overflow: ellipsis; cursor: pointer; transition: border-color 0.15s; }
+  #source:hover { border-color: var(--ink); }
+  #source:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  #source:disabled { cursor: progress; color: var(--graphite); }
+  #source option, #source optgroup { background: var(--page-2); color: var(--ink); }
+  #clip-label { color: var(--graphite); font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  #clip-label .name { color: var(--ink); }
+  #clip-label .sep { color: var(--pencil); margin: 0 0.3em; font-weight: 400; }
+  #src-note { color: var(--ink); font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  #src-note.err { border: 2px solid var(--ink); padding: 0.1em 0.5em; }
+
+  /* Portrait video: the picture runs the full height on the left. To its right, top to bottom: the source
+     bar, then the hold ladder as its own column beside the coach data (latency and attempts, then the
+     timeline), then the caption band. */
+  body.portrait {
+    grid-template-columns: auto var(--ladder-w) minmax(0, 1fr);
+    grid-template-rows: var(--head-h) auto minmax(0, 1fr) var(--cap-h);
+    grid-template-areas: "head head head" "stage src src" "stage ladder side" "stage cap cap";
+  }
+  body.portrait #stage { justify-content: center; }
+  body.portrait #srcbar { padding: calc(var(--gap) * 0.65) calc(var(--gap) * 1.2);
+    border-left: var(--rule-w) solid var(--rule-strong); border-bottom: 2px solid var(--rule); }
+  body.portrait #side { min-width: calc(var(--side-w) * 1.5);
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); grid-template-rows: auto minmax(0, 1fr); }
+  body.portrait #side > .sect:nth-child(1) { grid-column: 1; grid-row: 1; }
+  body.portrait #side > .sect:nth-child(2) { grid-column: 1; grid-row: 2; border-bottom: 0; }
+  body.portrait #timeline-sect { grid-column: 2; grid-row: 1 / span 2; border-left: 2px solid var(--rule); }
+
   /* Video test: there's no coach data, so the video gets the whole screen. */
-  body[data-mode="video_test"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--head-h) minmax(0, 1fr);
-    grid-template-areas: "head" "stage"; }
-  body[data-mode="video_test"] #ladder, body[data-mode="video_test"] #side,
+  body[data-mode="video_test"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--head-h) minmax(0, 1fr) auto;
+    grid-template-areas: "head" "stage" "src"; }
+  body[data-mode="video_test"] #ladder-col, body[data-mode="video_test"] #side,
   body[data-mode="video_test"] #caption { display: none; }
   body[data-mode="video_test"] #stage { padding-right: calc(var(--gap) * 1.4); }
 
   /* ---- Hold ladder: the problem, top hold at the top; each attempt ticked at its highpoint ---- */
-  #ladder { grid-area: ladder; min-width: 0; display: grid; grid-template-rows: repeat(var(--n, 1), minmax(0, 1fr));
-    padding: var(--gap) 0 var(--gap) var(--gap); min-height: 0; }
-  #ladder:empty::after { content: "No hold map yet"; align-self: center; color: var(--pencil);
-    font-size: var(--s); text-align: center; }
+  /* Its own ruled, titled column, separate from the picture in every layout. */
+  #ladder-col { grid-area: ladder; min-width: 0; min-height: 0; display: flex; flex-direction: column;
+    border-left: var(--rule-w) solid var(--rule-strong);
+    padding: calc(var(--gap) * 0.65) var(--gap); }
+  #ladder { flex: 1; min-width: 0; display: grid; grid-template-rows: repeat(var(--n, 1), minmax(0, 1fr)); min-height: 0; }
+  #ladder:empty { display: none; }
+  #ladder-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 0.7em; color: var(--pencil); font-size: var(--s); text-align: center; }
+  #ladder:not(:empty) ~ #ladder-empty { display: none; }
+  #ladder-head .aside { display: inline-flex; align-items: baseline; gap: 0.6em; }
   .rung { display: flex; align-items: center; gap: 0.35em; border-top: 2px solid var(--rule); min-height: 0; min-width: 0;
     overflow: hidden; font-size: var(--rung-fs, var(--m)); }
   .rung:last-child { border-bottom: 2px solid var(--rule); }
@@ -173,12 +226,12 @@
   @keyframes pencil { to { stroke-dashoffset: 0; } }
 
   /* ---- Side column: ruled, not carded ---- */
-  #side { grid-area: side; border-left: var(--rule-w) solid var(--rule-strong); margin-left: var(--gap);
+  #side { grid-area: side; border-left: var(--rule-w) solid var(--rule-strong);
     display: flex; flex-direction: column; min-height: 0; min-width: 0; }
   .sect { padding: calc(var(--gap) * 0.65) calc(var(--gap) * 1.2); border-bottom: 2px solid var(--rule); }
-  .sect h2 { margin: 0 0 0.35em; font-size: var(--s); font-weight: 700; color: var(--graphite);
+  .sect h2, #ladder-head { margin: 0 0 0.35em; font-size: var(--s); font-weight: 700; color: var(--graphite);
     display: flex; align-items: baseline; gap: 0.5em; }
-  .sect h2 .aside { margin-left: auto; font-weight: 400; color: var(--pencil); }
+  .sect h2 .aside, #ladder-head .aside { margin-left: auto; font-weight: 400; color: var(--pencil); }
 
   #lat-row { display: flex; align-items: flex-end; gap: var(--gap); }
   #lat-last { font-size: var(--l); font-weight: 700; line-height: 0.95; white-space: nowrap; }
@@ -224,10 +277,22 @@
   #timeline li.debrief .txt { font-style: italic; color: var(--graphite); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #timeline.hide-suppressed li.suppressed { display: none; }
   #timeline:empty::after { content: "Waiting for the coach…"; color: var(--pencil); }
+  /* Checkbox: a ruled square with the ladder's pencil tick, drawn in when checked.
+     The real input sits invisibly on top, so clicks, keyboard and screen readers still work. */
   label.toggle { margin-left: auto; font-weight: 400; color: var(--graphite); display: inline-flex;
-    align-items: center; gap: 0.35em; cursor: pointer; }
-  label.toggle input { width: 1em; height: 1em; margin: 0; accent-color: var(--ink); cursor: pointer; }
-  label.toggle input:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+    align-items: center; align-self: center; gap: 0.5em; cursor: pointer; user-select: none;
+    transition: color 0.15s; }
+  label.toggle:hover { color: var(--ink); }
+  .box { position: relative; flex: none; width: 1.3em; height: 1.3em; border: 2px solid var(--pencil);
+    transition: border-color 0.15s; }
+  .box input { position: absolute; inset: -2px; width: calc(100% + 4px); height: calc(100% + 4px);
+    margin: 0; opacity: 0; cursor: pointer; }
+  .box svg { position: absolute; inset: 12%; width: 76%; height: 76%; overflow: visible; pointer-events: none; }
+  .box path { fill: none; stroke: var(--ink); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round;
+    stroke-dasharray: 32; stroke-dashoffset: 32; transition: stroke-dashoffset 0.12s ease-in; }
+  label.toggle:hover .box, .box:has(input:checked) { border-color: var(--ink); }
+  .box:has(input:checked) path { stroke-dashoffset: 0; transition: stroke-dashoffset 0.38s var(--ease-out) 0.04s; }
+  .box:has(input:focus-visible) { outline: 3px solid var(--ink); outline-offset: 3px; }
 
   /* ---- Caption: the coach's voice, the one yellow thing on screen ---- */
   #caption { grid-area: cap; background: var(--cover); color: var(--cover-ink);
@@ -243,13 +308,124 @@
   #caption.debrief #cap-text { font-size: var(--m); font-weight: 600; line-height: 1.2; letter-spacing: 0;
     -webkit-line-clamp: 5; text-wrap: pretty; }
   #caption.debrief.long #cap-text { font-size: calc(var(--m) * 0.8); -webkit-line-clamp: 7; }
+  /* A cue too long for two lines at full size (the band is narrower beside a portrait picture) steps down once. */
+  #caption.fit:not(.debrief) #cap-text { font-size: calc(var(--l) * 0.78); }
   #caption.idle #cap-text, #caption.idle #cap-ms { color: rgba(42, 35, 6, 0.62); }
   #caption.waiting #cap-text { font-size: var(--m); font-weight: 600; color: rgba(42, 35, 6, 0.7); }
   #cap-text.arrive { animation: arrive 0.45s var(--ease-out); }
   @keyframes arrive { from { opacity: 0.35; transform: translateY(0.18em); } }
 
+  /* ---- Buttons: square, ruled; the one primary action is an inverted ink block ---- */
+  .btn { font: inherit; font-size: var(--s); font-weight: 700; color: var(--ink); background: transparent;
+    border: 2px solid var(--rule-strong); border-radius: 0; padding: 0.3em 0.85em; cursor: pointer;
+    transition: border-color 0.15s, background-color 0.15s; white-space: nowrap; }
+  .btn:hover:not(:disabled) { border-color: var(--ink); }
+  .btn:focus-visible, .linkbtn:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  .btn:disabled { color: var(--pencil); cursor: not-allowed; }
+  .btn.primary { background: var(--ink); color: var(--page); border-color: var(--ink); }
+  .btn.primary:hover:not(:disabled) { background: var(--graphite); border-color: var(--graphite); }
+  .btn.primary:disabled { background: var(--rule); border-color: var(--rule); color: var(--pencil); }
+  .linkbtn { font: inherit; font-weight: 700; color: var(--graphite); background: none; border: 0; padding: 0;
+    cursor: pointer; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 0.2em; }
+  .linkbtn:hover { color: var(--ink); }
+
+  /* ---- Hold map editor: takes over everything under the running head while it's open ---- */
+  #editor { position: fixed; z-index: 10; inset: var(--head-h) 0 0 0; background: var(--page);
+    border-top: var(--rule-w) solid var(--rule-strong); display: grid;
+    grid-template-columns: minmax(0, 1fr) clamp(320px, 30vw, 520px); }
+  body.editing { overflow: hidden; }
+  #ed-stage { min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center;
+    padding: var(--gap) var(--gap) var(--gap) calc(var(--gap) * 1.4); }
+  #ed-frame { position: relative; flex: none; background: var(--frame); outline: 2px solid var(--rule); touch-action: none; }
+  #ed-still, #ed-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #ed-still { object-fit: fill; user-select: none; -webkit-user-drag: none; }
+  #ed-canvas { cursor: crosshair; }
+  #editor.busy #ed-canvas { cursor: progress; }
+  /* While Roboflow runs (or the map saves): the still dims and a spinner says it's working. */
+  #ed-busy { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(11, 12, 13, 0.38); cursor: progress; }
+  #ed-busy[hidden] { display: none; }
+  #ed-busy .busy-box { display: flex; align-items: center; gap: 0.55em; background: var(--ink); color: var(--page);
+    font-size: var(--m); font-weight: 800; padding: 0.3em 0.7em; white-space: nowrap; }
+  /* The one spinner, added at the user's request; it stands still under reduced motion. */
+  .spinner { flex: none; width: 0.78em; height: 0.78em; border: 0.14em solid currentColor;
+    border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #ed-fit { border: 2px solid var(--ink); padding: 0.25em 0.55em; color: var(--ink); font-weight: 600; }
+  /* Seek bar: a video still scrubs like a video player. At rest: a 7px track with its handle along the
+     bottom of the still and a small dark chip above it with the time and "drag to scrub", so it reads as
+     a control. Hovering, dragging or focusing it opens a dark band with a wider track, a bigger handle,
+     the time, and the time under the pointer. --p is the position, 0-1. */
+  #ed-seek { --p: 0; position: absolute; left: 0; right: 0; bottom: 0; height: 26px; cursor: pointer;
+    touch-action: none; user-select: none; }
+  #ed-seek[hidden] { display: none; }
+  #ed-seek.open { height: 72px; }
+  #ed-seek .band { position: absolute; inset: 0; background: rgba(11, 12, 13, 0.62); opacity: 0;
+    transition: opacity 0.12s; pointer-events: none; }
+  #ed-seek.open .band { opacity: 1; }
+  #ed-track { position: absolute; left: 10px; right: 10px; bottom: 8px; height: 7px; background: rgba(238, 240, 234, 0.6);
+    box-shadow: 0 0 0 1px rgba(11, 12, 13, 0.45); outline: none;
+    transition: left 0.12s, right 0.12s, bottom 0.12s, height 0.12s; }
+  #ed-seek.open #ed-track { left: 16px; right: 16px; bottom: 16px; height: 6px; background: rgba(238, 240, 234, 0.3); box-shadow: none; }
+  #ed-fill { position: absolute; left: 0; top: 0; bottom: 0; width: calc(var(--p) * 100%); background: #16181b; }
+  #ed-seek.open #ed-fill { background: #eef0ea; }
+  #ed-thumb { position: absolute; top: 50%; left: calc(var(--p) * 100%); width: 16px; height: 16px; margin: -8px 0 0 -8px;
+    border-radius: 50%; background: #eef0ea; border: 2px solid #16181b; box-sizing: border-box;
+    transform: scale(0.85); transition: transform 0.12s; }
+  #ed-seek.open #ed-thumb { transform: scale(1); border-color: #eef0ea; }
+  #ed-track:focus-visible { outline: 3px solid #eef0ea; outline-offset: 4px; }
+  /* The time: a chip above the track at rest, plain text on the band when open (with room above it). */
+  #ed-seek-time { position: absolute; left: 10px; bottom: 22px; color: #eef0ea; background: rgba(11, 12, 13, 0.7);
+    font-size: var(--s); font-weight: 700; line-height: 1.2; padding: 0.1em 0.45em; white-space: nowrap;
+    pointer-events: none; transition: bottom 0.12s; }
+  #ed-seek-time .how { font-family: var(--sans); font-weight: 600; color: #c9ced3; }
+  #ed-seek.open #ed-seek-time { left: 10px; bottom: 30px; background: none; }
+  #ed-seek.open #ed-seek-time .how { display: none; }
+  #ed-seek-tip { position: absolute; bottom: 32px; transform: translateX(-50%); background: #eef0ea; color: #16181b;
+    font-size: var(--s); font-weight: 700; line-height: 1.2; padding: 0.05em 0.4em; white-space: nowrap; pointer-events: none; }
+  #ed-seek-tip[hidden] { display: none; }
+  #ed-seek.off { cursor: progress; }
+  /* The sections scroll if they must; the actions stay pinned to the bottom, always in reach. */
+  #ed-panel { border-left: var(--rule-w) solid var(--rule-strong); display: flex; flex-direction: column;
+    min-height: 0; overflow-y: auto; }
+  #ed-panel .sect { padding-top: calc(var(--gap) * 0.55); padding-bottom: calc(var(--gap) * 0.55); }
+  #ed-panel .sect:last-of-type { border-bottom: 0; }
+  #ed-panel h2#ed-title { display: block; margin: 0; font-size: var(--m); font-weight: 800; color: var(--ink);
+    letter-spacing: -0.01em; line-height: 1.1; }
+  #ed-title .num { margin-left: 0.25em; font-size: 0.6em; font-weight: 700; color: var(--graphite); letter-spacing: 0; }
+  #ed-message { margin: 0.4em 0 0; font-size: var(--s); line-height: 1.3; color: var(--ink); }
+  #ed-pic { display: flex; width: 100%; }
+  #ed-pic #ed-still-pick { width: 100%; max-width: 100%; }
+  #ed-still-pick { appearance: none; -webkit-appearance: none; font: inherit; font-size: var(--s); font-weight: 700;
+    color: var(--ink); background: var(--page-2); border: 2px solid var(--rule-strong); border-radius: 0;
+    padding: 0.2em 2.1em 0.2em 0.55em; text-overflow: ellipsis; cursor: pointer; }
+  #ed-still-pick:hover { border-color: var(--ink); }
+  #ed-still-pick:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  #ed-tools { display: flex; flex-direction: column; gap: 0.35em; font-size: var(--s); }
+  .tool { position: relative; display: flex; align-items: center; gap: 0.6em; padding: 0.22em 0.6em;
+    border: 2px solid var(--rule); cursor: pointer; font-weight: 700; color: var(--graphite);
+    transition: border-color 0.15s; }
+  .tool:hover { border-color: var(--rule-strong); color: var(--ink); }
+  .tool input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+  .tool:has(input:checked) { background: var(--ink); border-color: var(--ink); color: var(--page); }
+  .tool:has(input:focus-visible) { outline: 3px solid var(--ink); outline-offset: 2px; }
+  .tool:has(input:disabled) { color: var(--pencil); border-color: var(--rule); cursor: not-allowed; background: none; }
+  .tool .k { margin-left: auto; font-family: var(--mono); font-weight: 500; font-size: 0.8em; opacity: 0.75; }
+  .ed-hint { margin: 0.6em 0 0; font-size: var(--s); color: var(--graphite); line-height: 1.3; }
+  #ed-summary { font-size: var(--s); color: var(--graphite); line-height: 1.35; }
+  #ed-summary b { color: var(--ink); font-family: var(--mono); }
+  #ed-summary .count { display: block; font-size: var(--m); font-weight: 800; color: var(--ink); font-family: var(--sans); }
+  #ed-summary .linkbtn { font-size: inherit; }
+  #ed-actions { position: sticky; bottom: 0; margin-top: auto; display: flex; flex-wrap: wrap; gap: 0.6em;
+    padding: calc(var(--gap) * 0.8) calc(var(--gap) * 1.2); border-top: 2px solid var(--rule); background: var(--page); }
+  #ed-save { margin-left: auto; }
+
   @media (prefers-reduced-motion: reduce) {
-    #cap-text.arrive, .mark.fresh path, #mode.live .dot { animation: none; stroke-dashoffset: 0; }
+    .btn, .tool { transition: none; }
+    #source { transition: none; }
+    #ed-seek .band, #ed-track, #ed-thumb, #ed-seek-time { transition: none; }
+    #cap-text.arrive, .mark.fresh path, #mode.live .dot, .spinner { animation: none; stroke-dashoffset: 0; }
+    .box path, .box:has(input:checked) path { transition: none; }
   }
 
   /* Narrow screens: stack everything and scroll; the ladder runs left (1) to right (top). */
@@ -257,18 +433,25 @@
     :root { --s: 16px; --m: 24px; --l: 36px; }
     html, body { height: auto; }
     body { overflow: auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto;
-      grid-template-areas: "head" "cap" "stage" "ladder" "side"; }
+      grid-template-areas: "head" "cap" "stage" "src" "ladder" "side"; }
+    #srcbar { padding: 0 16px 12px; }
     #head { flex-wrap: wrap; padding: 12px 16px; }
     #flags { margin-left: 0; flex: 1 1 100%; flex-wrap: wrap; }
     #where { white-space: normal; }
-    #stage { height: 56vw; padding: 12px 16px; }
+    #stage { height: auto; padding: 12px 16px; }
     #ladder { grid-template-rows: auto; grid-template-columns: repeat(var(--n, 1), minmax(0, 1fr)); grid-auto-flow: column;
-      direction: rtl; padding: 0 16px 12px; }
+      direction: rtl; }
+    #ladder-col { border-left: 0; border-top: var(--rule-w) solid var(--rule-strong); padding: 12px 16px; }
     .rung { direction: ltr; flex-direction: column; border-top: 0; border-left: 2px solid var(--rule); --rung-fs: 22px; }
     .rung:last-child { border-bottom: 0; }
     #side { border-left: 0; border-top: var(--rule-w) solid var(--rule-strong); margin-left: 0; }
     #timeline { max-height: 60vh; }
     #caption { padding: 14px 16px; flex-wrap: wrap; gap: 10px 16px; }
+    #caption.fit:not(.debrief) #cap-text { -webkit-line-clamp: 3; }
+    #editor { grid-template-columns: minmax(0, 1fr); grid-template-rows: max-content max-content;
+      overflow-y: auto; top: 0; }
+    #ed-stage { padding: 12px 16px; }
+    #ed-panel { border-left: 0; border-top: var(--rule-w) solid var(--rule-strong); overflow: visible; }
   }
 </style>
 </head>
@@ -290,11 +473,21 @@
     <div id="novideo">No video<small>waiting for the camera stream</small></div>
     <img id="video" alt="Live camera view of the climber">
     <canvas id="overlay"></canvas>
-    <div id="clip" hidden><div id="clip-label"></div><div id="clip-bar"><span></span></div></div>
+    <div id="clip-bar" hidden><span></span></div>
   </div>
 </section>
 
-<section id="ladder" aria-label="Holds, top to bottom, with each attempt's highpoint"></section>
+<div id="srcbar" hidden>
+  <label id="src-pick" hidden><span>Source</span><span class="sel"><select id="source"></select></span></label>
+  <div id="clip-label" hidden></div>
+  <div id="src-note" hidden></div>
+</div>
+
+<section id="ladder-col" aria-label="Holds, top to bottom, with each attempt's highpoint">
+  <h2 id="ladder-head">Holds <span class="aside"><span class="num" id="ladder-count"></span><button type="button" class="linkbtn" id="ladder-edit" hidden>Edit</button></span></h2>
+  <div id="ladder"></div>
+  <div id="ladder-empty"><span>No hold map yet</span><button type="button" class="btn" id="ladder-build" hidden>Build hold map</button></div>
+</section>
 
 <aside id="side">
   <div class="sect">
@@ -313,7 +506,7 @@
   </div>
 
   <div class="sect" id="timeline-sect">
-    <h2>Timeline <label class="toggle"><input type="checkbox" id="hide-supp"> Hide suppressed</label></h2>
+    <h2>Timeline <label class="toggle"><span class="box"><input type="checkbox" id="hide-supp"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13 L9 20 L21 4"/></svg></span>Hide suppressed</label></h2>
     <ul id="timeline"></ul>
   </div>
 </aside>
@@ -323,6 +516,53 @@
   <div id="cap-text">The coach will speak here.</div>
   <div id="cap-ms" class="num"></div>
 </section>
+
+<section id="editor" hidden aria-labelledby="ed-title">
+  <div id="ed-stage">
+    <div id="ed-frame">
+      <img id="ed-still" alt="Still of the wall the hold map is built from">
+      <canvas id="ed-canvas" aria-label="Holds on the still: click to edit"></canvas>
+      <div id="ed-seek" hidden>
+        <div class="band"></div>
+        <span id="ed-seek-time" class="num"></span>
+        <span id="ed-seek-tip" class="num" hidden></span>
+        <div id="ed-track" role="slider" tabindex="0" aria-label="Moment of the video" aria-valuemin="0"><div id="ed-fill"></div><div id="ed-thumb"></div></div>
+      </div>
+      <div id="ed-busy" role="status" hidden><div class="busy-box"><span class="spinner" aria-hidden="true"></span><span id="ed-busy-text">Finding holds…</span></div></div>
+    </div>
+  </div>
+  <div id="ed-panel">
+    <div class="sect">
+      <h2 id="ed-title">Hold map <span class="num" id="ed-problem"></span></h2>
+      <p id="ed-message" aria-live="polite"></p>
+    </div>
+    <div class="sect">
+      <h2>Picture <span class="aside"><button type="button" class="linkbtn" id="ed-own">Use your own</button></span></h2>
+      <span class="sel" id="ed-pic"><select id="ed-still-pick" aria-label="Picture to build the map from"></select></span>
+      <p class="ed-hint" id="ed-fit" hidden></p>
+    </div>
+    <div class="sect">
+      <h2>Click a hold to <span class="aside"><button type="button" class="linkbtn" id="ed-undo">Undo</button></span></h2>
+      <div id="ed-tools" role="radiogroup" aria-label="What a click does">
+        <label class="tool" title="Drag across holds to erase them. Right-click a hold to delete it."><input type="radio" name="ed-tool" value="toggle" checked>Leave out or put back<span class="k">1</span></label>
+        <label class="tool"><input type="radio" name="ed-tool" value="start">Mark as a start hold<span class="k">2</span></label>
+        <label class="tool"><input type="radio" name="ed-tool" value="top">Mark as the top<span class="k">3</span></label>
+        <label class="tool"><input type="radio" name="ed-tool" value="box">Add a missing hold (drag)<span class="k">4</span></label>
+      </div>
+      <p class="ed-hint" id="ed-hint"></p>
+    </div>
+    <div class="sect">
+      <h2>Route <span class="aside"><button type="button" class="linkbtn" id="ed-recolour">Pick the colour again</button></span></h2>
+      <div id="ed-summary"></div>
+    </div>
+    <div id="ed-actions">
+      <button type="button" class="btn" id="ed-cancel">Cancel</button>
+      <button type="button" class="btn primary" id="ed-save">Save hold map</button>
+    </div>
+  </div>
+</section>
+<!-- Outside the editor, so "Build hold map" can ask for a picture before the editor opens. -->
+<input type="file" id="ed-file" accept="image/*" hidden>
 
 <script>
 "use strict";
@@ -338,11 +578,28 @@ const STREAM_WINDOW = 30;           // frames averaged for the video-test fps an
 const DEBRIEF_LONG_CHARS = 240;    // longer debriefs step down a size
 const HEAD_PAINT_MS = 250;          // running head refresh
 const ATTEMPT_CELLS = 2;            // newest attempts shown as cells; all of them are on the ladder
+const NARROW_MAX_VH = 0.7;          // narrow screens: the picture is at most this much of the screen height
+const ED_DRAG_MIN_PX = 6;           // hold map editor: a pointer move shorter than this is a click
+const UPLOAD_MAX_SIDE = 2560;       // your own picture is sent at most this long on its longer side, px
+const UPLOAD_JPEG_QUALITY = 0.92;
+const SEEK_STEP_S = 0.5;            // seek bar: an arrow key moves this far through the clip
+const SEEK_BIG_STEP_S = 5;          // ...and this far with Shift
+const SAME_SHAPE_TOLERANCE = 0.02;  // aspect ratios this close line up (coach/server/holds.py)
+const BROWSER_SPEC = "browser";     // the source spec for this device's camera (coach/server/camera.py)
+const CAMERA_FPS = 15;              // webcam frames sent to the server per second
+const CAMERA_MAX_SIDE = 960;        // longer side of a sent webcam frame, px
+const CAMERA_JPEG_QUALITY = 0.8;
+const CAMERA_MAX_BUFFER = 512 * 1024; // skip a frame while this much is still unsent
+const CAMERA_RETRY_MS = 1000;
+const CAMERA_BUSY_CODE = 4409;      // server: another dashboard is already sending
+const CAMERA_KEY = "coach-camera";  // sessionStorage: this tab was sending its camera
 
 const params = new URLSearchParams(location.search);
 const WS_URL = params.get("ws") ||
   `${location.protocol === "https:" ? "wss" : "ws"}://${location.host || "localhost:8000"}/ws`;
 const VIDEO_URL = params.get("video") || "/video";
+const HTTP_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws(\?.*)?$/, "");
+const CAMERA_URL = WS_URL.replace(/\/ws(\?.*)?$/, "/camera");
 const DEMO = params.has("demo");
 
 // Limb keys may arrive as enum values ("left_hand") or names ("LH").
@@ -379,9 +636,11 @@ const MIN_VISIBILITY = 0.4;
 // ---- State ------------------------------------------------------------------
 const S = {
   mode: null,            // "live" | "offline" | "video_test" | "session_replay" | "demo", from hello
+  session: null,         // "<hello.session>.<hello.pass>": a new source, or a looping clip's next pass
   source: null,          // hello.source
   stream: { arrivals: [], bytes: [] },  // video test: recent frame arrival times and sizes
   holdmap: null,
+  shapes: {},            // hold id -> outline (diagonal holds), from /api/holds/shapes
   state: null,
   latencies: [],
   spokenKeys: new Set(),  // cues that were actually said (capture time | kind)
@@ -429,13 +688,51 @@ function handle(msg) {
 }
 
 function onHello(d) {
-  if (d.no_llm || d.offline) $("offline").hidden = false;
+  // A new source, or a looping clip starting a replayed pass ("pass"): start the page fresh.
+  const run = d.session != null ? `${d.session}.${d.pass ?? 1}` : null;
+  if (run != null && S.session != null && run !== S.session) resetSession();
+  if (run != null) S.session = run;
+  $("offline").hidden = !(d.no_llm || d.offline || params.has("offline"));
   if (d.problem_id) showProblem(d.problem_id);
   if (d.mode) setMode(d.mode, d.source || null);
+  if (d.spec) setCurrentSource(d.spec);
+  syncCamera(d);
+  if (!DEMO) loadHoldsStatus();  // the problem may have changed
+}
+
+// A new source: forget the old problem, its attempts and cues, and wait for the new picture.
+function resetSession() {
+  Object.assign(S, { state: null, latencies: [], attemptNo: null, attemptStartT: null, attemptLive: false,
+    liveHold: null, highHold: null, attempts: [], freshAttempt: null, lastOutcome: null, curEvents: 0,
+    curSpoken: 0, debriefing: false, stream: { arrivals: [], bytes: [] }, shapes: {}, overlayDirty: true,
+    headDirty: true });
+  S.spokenKeys.clear();
+  onHoldmap(null);
+  $("problem").hidden = true;
+  const ul = $("timeline");
+  ul.innerHTML = "";
+  ul.classList.remove("overflowing");
+  $("lat-last").textContent = "–";
+  $("lat-last").classList.remove("late");
+  $("lat-sub").textContent = "No cues spoken yet";
+  $("lat-hist").innerHTML = "";
+  setMood("neutral");
+  clearTimeout(S.captionTimer);
+  $("cap-text").textContent = "The coach will speak here.";
+  $("cap-who").querySelector(".who").textContent = "Coach";
+  $("cap-ms").textContent = "";
+  $("caption").className = "waiting";
+  document.body.classList.remove("debriefing");
+  renderAttempts();
+  // Drop the old picture so the layout follows the new one's shape from the first frame.
+  video.removeAttribute("src");
+  $("novideo").hidden = false;
+  if (!wsVideo) loadVideo();
 }
 
 const MODE_FLAGS = {
-  live: (src) => ["live", src?.index != null ? `Live · camera ${src.index}` : "Live"],
+  live: (src) => ["live", src?.kind === "browser_camera" ? "Live · browser camera"
+    : src?.index != null ? `Live · camera ${src.index}` : "Live"],
   offline: () => ["realtime", "Analysing in real time"],
   video_test: () => ["boxed", "Video test"],
   session_replay: (src) => ["boxed", src?.name ? `Session replay · ${src.name}` : "Session replay"],
@@ -453,13 +750,24 @@ function setMode(mode, source) {
     flag.className = `flag ${cls}`;
     flag.querySelector(".label").textContent = label;
   }
-  $("clip").hidden = !(mode === "offline" && source?.kind === "file" && source.frames > 0);
+  const clip = mode === "offline" && source?.kind === "file" && source.frames > 0;
+  $("clip-bar").hidden = !clip;
+  $("clip-label").hidden = !(mode === "offline" && source?.name);
+  if (!$("clip-label").hidden) $("clip-label").innerHTML = clipName();
   $("stream-stats").hidden = mode !== "video_test";
   if (mode === "video_test" || mode === "session_replay") $("problem").hidden = true;
-  $("novideo").querySelector("small").textContent = NO_VIDEO_NOTES[mode] || NO_VIDEO_NOTES.live;
-  if (mode === "offline" && source?.name) $("clip-label").textContent = source.name;
+  const note = source?.kind === "browser_camera" ? (CAM.stream ? "starting the camera" : "waiting for the browser camera")
+    : NO_VIDEO_NOTES[mode] || NO_VIDEO_NOTES.live;
+  $("novideo").querySelector("small").textContent = note;
+  renderSrcbar();
   S.headDirty = true;
   S.overlayDirty = true;
+}
+
+// The clip's name in the source bar, unless the picker already shows it.
+function clipName() {
+  const name = S.source?.name;
+  return name && $("src-pick").hidden ? `<span class="name">${esc(name)}</span>` : "";
 }
 
 const NO_VIDEO_NOTES = {
@@ -473,11 +781,11 @@ const NO_VIDEO_NOTES = {
 // Offline demo: where we are in the clip, from the frame index of the state being analysed.
 function renderClip(frameIdx) {
   const src = S.source;
-  if ($("clip").hidden || !Number.isFinite(frameIdx)) return;
+  if ($("clip-bar").hidden || !Number.isFinite(frameIdx)) return;
   const pos = frameIdx % src.frames, loop = Math.floor(frameIdx / src.frames) + 1;
-  const fps = src.fps || 30, sep = `<span class="sep">·</span>`;
+  const fps = src.fps || 30, sep = `<span class="sep">·</span>`, name = clipName();
   $("clip-bar").firstElementChild.style.width = `${(100 * pos) / src.frames}%`;
-  $("clip-label").innerHTML = `${esc(src.name)}${sep}<span class="num">${fmtTime(pos / fps)} / ${fmtTime(src.frames / fps)}</span>` +
+  $("clip-label").innerHTML = `${name}${name ? sep : ""}<span class="num">${fmtTime(pos / fps)} / ${fmtTime(src.frames / fps)}</span>` +
     (loop > 1 ? `${sep}loop <span class="num">${loop}</span>` : "");
 }
 
@@ -510,7 +818,21 @@ function onHoldmap(hm) {
     root.removeProperty("--hold"); root.removeProperty("--hold-ink");
   }
   renderLadder();
+  loadShapes(hm);
   S.headDirty = true;
+}
+
+// Diagonal holds have an outline in the hold map file (the HoldMap on the bus carries boxes
+// only). Contacts are measured against the outline, so the overlay draws it too.
+async function loadShapes(hm) {
+  S.shapes = {};
+  if (!hm || DEMO) return;
+  try {
+    const r = await fetch(`${HTTP_BASE}/api/holds/shapes`);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.problem_id === S.holdmap?.problem_id) { S.shapes = d.shapes || {}; S.overlayDirty = true; }
+  } catch {}
 }
 
 function luminance(hex) {
@@ -680,6 +1002,8 @@ function renderLadder() {
   const el = $("ladder");
   const holds = [...(S.holdmap?.holds || [])].sort((a, b) => b.id - a.id);
   el.style.setProperty("--n", Math.max(holds.length, 1));
+  $("ladder-count").textContent = holds.length || "";
+  renderHoldsEntry();
   el.innerHTML = holds.map((h) => {
     return `<div class="rung" data-id="${h.id}"><span class="n">${h.id}</span><span class="marks"></span></div>`;
   }).join("");
@@ -739,6 +1063,8 @@ function setCaption(text, debrief, ms) {
   $("cap-ms").textContent = ms;
   cap.classList.toggle("debrief", debrief);
   cap.classList.toggle("long", debrief && txt.textContent.length > DEBRIEF_LONG_CHARS);
+  cap.classList.remove("fit");
+  if (!debrief && txt.scrollHeight > txt.clientHeight + 2) cap.classList.add("fit");
   const wasTall = document.body.classList.contains("debriefing");
   document.body.classList.remove("debriefing");
   const tall = debrief && txt.scrollHeight > txt.clientHeight + 2;
@@ -812,14 +1138,41 @@ function contentRect() {
   return { x: 0, y: 0, w: canvas.width, h: canvas.height };
 }
 
-// Largest box with the video's aspect ratio that fits in #stage.
+// Size of the picture: the current frame, else what hello or the hold map says, else 16:9.
+function pictureSize() {
+  if (video.naturalWidth && video.naturalHeight) return [video.naturalWidth, video.naturalHeight];
+  if (S.source?.width && S.source?.height) return [S.source.width, S.source.height];
+  const [w, h] = S.holdmap?.image_size || [];
+  return w && h ? [w, h] : [16, 9];
+}
+
+// Largest box with the video's aspect ratio that fits in #stage. A portrait picture runs the full
+// height and the stage column is only as wide as the picture, so the rest goes to the data.
 function fitFrame() {
   const stage = $("stage"), frameEl = $("frame");
-  let iw = video.naturalWidth, ih = video.naturalHeight;
-  if (!iw || !ih) [iw, ih] = S.holdmap?.image_size || [16, 9];
+  const [iw, ih] = pictureSize();
+  const narrow = matchMedia("(max-width: 900px)").matches;
+  const portrait = ih > iw && !narrow && S.mode !== "video_test";
+  if (document.body.classList.contains("portrait") !== portrait) {
+    document.body.classList.toggle("portrait", portrait);
+    S.overlayDirty = true;
+  }
   const cs = getComputedStyle(stage);
-  const sw = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-  const sh = stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+  const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+  let sw, sh;
+  if (narrow) {
+    sw = stage.clientWidth - padX;
+    sh = window.innerHeight * NARROW_MAX_VH;
+  } else if (portrait) {
+    // As wide as the height allows, leaving the ladder and the side column their minimum widths.
+    const room = document.body.clientWidth - $("ladder-col").offsetWidth - parseFloat(getComputedStyle($("side")).minWidth);
+    sw = room - padX;
+    sh = stage.clientHeight - padY;
+  } else {
+    sw = stage.clientWidth - padX;
+    sh = stage.clientHeight - padY;
+  }
   if (sw <= 0 || sh <= 0) return;
   const scale = Math.min(sw / iw, sh / ih);
   const w = `${Math.floor(iw * scale)}px`, h = `${Math.floor(ih * scale)}px`;
@@ -831,14 +1184,8 @@ function fitFrame() {
   }
 }
 
-function alignLadder() {
-  const ladder = $("ladder");
-  if (matchMedia("(max-width: 900px)").matches) { ladder.style.paddingTop = ladder.style.paddingBottom = ""; return; }
-  const f = $("frame").getBoundingClientRect(), l = ladder.getBoundingClientRect();
-  ladder.style.paddingTop = `${Math.max(0, f.top - l.top)}px`;
-  ladder.style.paddingBottom = `${Math.max(0, l.bottom - f.bottom)}px`;
-  fitLadder();
-}
+// The ladder fills its own column; only its numbers need resizing when the layout changes.
+function alignLadder() { fitLadder(); }
 
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
@@ -855,6 +1202,38 @@ function normLimbs(obj) {
 
 const OVERLAY_FONT = '"Atkinson Hyperlegible Next", system-ui, sans-serif';
 
+// A hold's shape as the current path: its outline if it has one, otherwise its box.
+// P maps a normalised [x, y] to canvas pixels.
+function holdPath(c, P, bbox, poly) {
+  c.beginPath();
+  if (poly && poly.length >= 3) {
+    poly.forEach((pt, i) => { const [x, y] = P(pt); if (i) c.lineTo(x, y); else c.moveTo(x, y); });
+    c.closePath();
+  } else {
+    const [x0, y0] = P([bbox[0], bbox[1]]), [x1, y1] = P([bbox[2], bbox[3]]);
+    c.rect(x0, y0, x1 - x0, y1 - y0);
+  }
+}
+
+// "1 START", "10 TOP" on white, mid holds' numbers on dark, above the hold (below if that's taken).
+function drawHoldLabel(c, u, id, role, [x0, y0, x1, y1], placed) {
+  const label = role === "start" ? `${id} START` : role === "top" ? `${id} TOP` : `${id}`;
+  c.font = `700 ${17 * u}px ${OVERLAY_FONT}`;
+  c.textBaseline = "middle";
+  c.textAlign = "center";
+  const tw = c.measureText(label).width + 12 * u, th = 24 * u;
+  const lx = (x0 + x1) / 2;
+  let ly = Math.max(th / 2, y0 - th / 2 - 3 * u);
+  const box = (y) => ({ x0: lx - tw / 2, x1: lx + tw / 2, y0: y - th / 2, y1: y + th / 2 });
+  const hits = (r) => placed.some((q) => r.x0 < q.x1 && r.x1 > q.x0 && r.y0 < q.y1 && r.y1 > q.y0);
+  if (hits(box(ly))) ly = y1 + th / 2 + 3 * u;
+  placed.push(box(ly));
+  c.fillStyle = role === "mid" ? "rgba(17,19,21,0.78)" : "#ffffff";
+  c.fillRect(lx - tw / 2, ly - th / 2, tw, th);
+  c.fillStyle = role === "mid" ? "#ffffff" : "#111315";
+  c.fillText(label, lx, ly + 1 * u);
+}
+
 function drawOverlay() {
   resizeCanvas();
   const dpr = window.devicePixelRatio || 1;
@@ -862,7 +1241,7 @@ function drawOverlay() {
   const P = ([x, y]) => [R.x + x * R.w, R.y + y * R.h];
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   // Labels scale with the picture so they stay readable at a distance.
-  const u = Math.max(0.65, Math.min(1.6, R.w / (900 * dpr))) * dpr;
+  const u = Math.max(0.65, Math.min(1.6, Math.max(R.w, R.h) / (900 * dpr))) * dpr;
 
   const st = S.state && S.state.person_found !== false ? S.state : null;
   const contacts = normLimbs(st?.contacts);
@@ -874,34 +1253,18 @@ function drawOverlay() {
   const holds = S.holdmap?.holds || [];
   const byId = {};
   const placed = [];
-  const hits = (r) => placed.some((q) => r.x0 < q.x1 && r.x1 > q.x0 && r.y0 < q.y1 && r.y1 > q.y0);
-  ctx.textBaseline = "middle";
-  ctx.textAlign = "center";
   for (const h of holds) {
     byId[h.id] = h;
-    const [x0, y0] = P([h.bbox[0], h.bbox[1]]);
-    const [x1, y1] = P([h.bbox[2], h.bbox[3]]);
     const users = heldBy[h.id];
+    holdPath(ctx, P, h.bbox, S.shapes[h.id]);
     if (users) {
       ctx.fillStyle = LIMB_COLOURS[users[0]] + "55";
-      ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      ctx.fill();
     }
     ctx.lineWidth = (users ? 4 : h.role === "mid" ? 2 : 3) * u;
     ctx.strokeStyle = users ? LIMB_COLOURS[users[0]] : "rgba(255,255,255,0.8)";
-    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
-
-    const label = h.role === "start" ? `${h.id} START` : h.role === "top" ? `${h.id} TOP` : `${h.id}`;
-    ctx.font = `700 ${17 * u}px ${OVERLAY_FONT}`;
-    const tw = ctx.measureText(label).width + 12 * u, th = 24 * u;
-    const lx = (x0 + x1) / 2;
-    let ly = Math.max(th / 2, y0 - th / 2 - 3 * u);
-    const box = (y) => ({ x0: lx - tw / 2, x1: lx + tw / 2, y0: y - th / 2, y1: y + th / 2 });
-    if (hits(box(ly))) ly = y1 + th / 2 + 3 * u;   // try below the hold instead
-    placed.push(box(ly));
-    ctx.fillStyle = h.role === "mid" ? "rgba(17,19,21,0.78)" : "#ffffff";
-    ctx.fillRect(lx - tw / 2, ly - th / 2, tw, th);
-    ctx.fillStyle = h.role === "mid" ? "#ffffff" : "#111315";
-    ctx.fillText(label, lx, ly + 1 * u);
+    ctx.stroke();
+    drawHoldLabel(ctx, u, h.id, h.role, [...P([h.bbox[0], h.bbox[1]]), ...P([h.bbox[2], h.bbox[3]])], placed);
   }
 
   if (!st) return;
@@ -994,6 +1357,669 @@ function showBase64Frame(b64) {
 video.addEventListener("load", () => { $("novideo").hidden = true; S.overlayDirty = true; });
 video.addEventListener("error", () => { if (!wsVideo) $("novideo").hidden = false; });
 
+// ---- Source picker ------------------------------------------------------------
+// Lists what the server can analyse; picking one asks the server to switch. The new "hello"
+// that follows (to every open dashboard) is what actually updates the page.
+const SRC = { current: null, switching: false };
+
+async function loadSources() {
+  try {
+    const r = await fetch(`${HTTP_BASE}/api/sources`);
+    if (!r.ok) throw new Error(r.statusText);
+    renderPicker(await r.json());
+  } catch {
+    $("src-pick").hidden = true;  // this server can't switch (replay, stream test)
+    renderSrcbar();
+  }
+}
+
+function renderPicker({ current, options }) {
+  const groups = new Map();
+  for (const o of options || []) {
+    if (!groups.has(o.group)) groups.set(o.group, []);
+    groups.get(o.group).push(o);
+  }
+  $("source").innerHTML = [...groups].map(([g, opts]) => `<optgroup label="${esc(g)}">` +
+    opts.map((o) => `<option value="${esc(o.spec)}" title="${esc(o.spec)}">${esc(o.name)}</option>`).join("") +
+    `</optgroup>`).join("");
+  $("src-pick").hidden = !(options || []).length;
+  setCurrentSource(current ?? SRC.current);
+  if (!$("clip-label").hidden && S.mode) setMode(S.mode, S.source);  // the name moves into the picker
+  renderSrcbar();
+}
+
+function setCurrentSource(spec) {
+  if (!spec) return;
+  SRC.current = spec;
+  if (!SRC.switching) $("source").value = spec;
+}
+
+function renderSrcbar() {
+  const bar = $("srcbar");
+  const hidden = $("src-pick").hidden && $("clip-label").hidden && $("src-note").hidden;
+  if (bar.hidden !== hidden) { bar.hidden = hidden; S.overlayDirty = true; }
+}
+
+function srcNote(text, isError = false) {
+  const el = $("src-note");
+  el.hidden = !text;
+  el.textContent = text || "";
+  el.classList.toggle("err", isError);
+  renderSrcbar();
+}
+
+async function pickSource(spec) {
+  const prev = SRC.current;
+  if (spec === BROWSER_SPEC && !(await startCamera())) { $("source").value = prev ?? ""; return; }
+  SRC.switching = true;
+  $("source").disabled = true;
+  srcNote("Switching…");
+  try {
+    const r = await fetch(`${HTTP_BASE}/api/source`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ spec }) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    const { hello } = await r.json();
+    srcNote(null);
+    if (hello) onHello(hello);  // normally the WebSocket brings it first; this covers a slow socket
+  } catch (err) {
+    srcNote(`Couldn't switch: ${err.message}`, true);
+    if (spec === BROWSER_SPEC) stopCamera();
+    $("source").value = prev ?? "";
+  } finally {
+    SRC.switching = false;
+    $("source").disabled = false;
+    setCurrentSource(SRC.current);
+  }
+}
+$("source").addEventListener("change", (e) => pickSource(e.target.value));
+
+// ---- Hold map editor ---------------------------------------------------------------
+// Builds data/holdmaps/<problem>.json from a still of the empty wall, with A's Roboflow
+// detector doing the finding (coach/server/holds.py). Each click or drag is one op on the
+// server, which replies with the whole editor view to redraw. Analysis pauses while the editor
+// is open. Saving or leaving restarts it, so a new hello arrives (with the new map after a save).
+const HOLDS = { status: null, checked: false };  // GET /api/holds, or null when this server can't build maps
+const ED = { view: null, tool: "toggle", busy: false, down: null, drag: null, hover: null, edits: 0 };
+const edCanvas = $("ed-canvas"), edCtx = edCanvas.getContext("2d"), edStill = $("ed-still");
+
+async function loadHoldsStatus() {
+  try {
+    const r = await fetch(`${HTTP_BASE}/api/holds`);
+    HOLDS.status = r.ok ? await r.json() : null;
+  } catch {
+    HOLDS.status = null;
+  }
+  renderHoldsEntry();
+  // Reloaded while the editor was open (analysis is paused): go back into it.
+  if (!HOLDS.checked && HOLDS.status) {
+    HOLDS.checked = true;
+    if (HOLDS.status.open && !ED.view) reopenEditor();
+  }
+}
+
+async function reopenEditor() {
+  try {
+    const r = await fetch(`${HTTP_BASE}/api/holds/view`);
+    const view = r.ok ? await r.json() : null;
+    if (!view?.open || ED.view) return;
+    ED.edits = 1;  // unknown edits: ask before leaving
+    showEditor(view);
+  } catch {}
+}
+
+function renderHoldsEntry() {
+  const st = HOLDS.status, can = !!st?.available, has = holdCount() > 0;
+  $("ladder-edit").hidden = !can || !has;
+  $("ladder-build").hidden = !can || has;
+}
+
+// body: JSON, or a Blob (a picture) sent as it is.
+async function edPost(path, body) {
+  const blob = body instanceof Blob;
+  const r = await fetch(`${HTTP_BASE}/api/holds/${path}`, { method: "POST",
+    headers: { "content-type": blob ? body.type || "image/jpeg" : "application/json" },
+    body: blob ? body : JSON.stringify(body || {}) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || r.statusText);
+  return data;
+}
+
+// label: the words beside the spinner over the still (slow steps only); null shows none.
+function setEdBusy(busy, label = null) {
+  ED.busy = busy;
+  $("editor").classList.toggle("busy", busy);
+  $("ed-busy").hidden = !(busy && label);
+  if (label) $("ed-busy-text").textContent = label;
+  for (const id of ["ed-undo", "ed-recolour", "ed-save", "ed-still-pick", "ed-own"]) $(id).disabled = busy;
+  if (!busy) renderEdControls();
+}
+
+// One request to the builder; the view it returns is drawn. Returns the view, or null on failure.
+async function edRun(path, body, label = null) {
+  if (ED.busy) return null;
+  setEdBusy(true, label);
+  try {
+    const view = await edPost(path, body);
+    showEditor(view);
+    if (path === "op") ED.edits++;
+    return view;
+  } catch (err) {
+    if (ED.view?.open) $("ed-message").textContent = `That didn't work: ${err.message}`;
+    else srcNote(`Couldn't open the hold map editor: ${err.message}`, true);
+    return null;
+  } finally {
+    setEdBusy(false);
+  }
+}
+
+async function openEditor(stillKey) {
+  if (ED.busy) return;
+  // Nothing to build from (no video, no empty-wall clip): ask for a picture of your own. This
+  // has to happen before any await, while the click still allows opening a file dialog.
+  if (!stillKey && HOLDS.status?.available && !HOLDS.status.stills?.length) return $("ed-file").click();
+  const first = !ED.view?.open;
+  if (first) srcNote("Opening the hold map editor and pausing analysis…");
+  await loadHoldsStatus();
+  const st = HOLDS.status;
+  if (!st?.available) return srcNote(st?.reason || "This server can't build hold maps", true);
+  if (!st.stills.length) {
+    return srcNote("There's no picture to build a hold map from yet. Click again to use your own picture.", true);
+  }
+  ED.edits = 0;
+  // The still used last (at its moment), else the first: the builder lists the stills filmed
+  // from the video's camera position first.
+  const body = stillKey ? { still: stillKey } : st.last ? { still: st.last.key, at: st.last.at }
+    : { still: st.stills[0].key };
+  const view = await edRun("open", body, first ? null : "Opening…");
+  if (view && first) srcNote(null);
+}
+
+// ---- Your own picture: converted in the browser (so any format it can open, the right way up,
+// at most UPLOAD_MAX_SIDE) to a JPEG, kept by the server for this problem, and opened.
+async function toJpeg(file) {
+  const bmp = await createImageBitmap(file);  // applies the photo's EXIF orientation
+  const k = Math.min(1, UPLOAD_MAX_SIDE / Math.max(bmp.width, bmp.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bmp.width * k);
+  c.height = Math.round(bmp.height * k);
+  c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close?.();
+  return new Promise((resolve, reject) => c.toBlob(
+    (b) => (b ? resolve(b) : reject(new Error("couldn't encode"))), "image/jpeg", UPLOAD_JPEG_QUALITY));
+}
+
+async function usePicture(file) {
+  if (!file || ED.busy) return;
+  const open = !!ED.view?.open;
+  if (open && ED.edits && !confirm("Switching pictures starts this map again. Continue?")) return;
+  const say = (text) => (open ? ($("ed-message").textContent = text) : srcNote(text, true));
+  if (!open) srcNote("Opening your picture and pausing analysis…");
+  let jpeg;
+  try {
+    jpeg = await toJpeg(file);
+  } catch {
+    return say(`This browser can't open ${file.name}: use a JPEG or PNG.`);
+  }
+  ED.edits = 0;
+  const view = await edRun(`upload?name=${encodeURIComponent(file.name)}`, jpeg, open ? "Opening…" : null);
+  if (!view) return;
+  if (!open) srcNote(null);
+  await loadHoldsStatus();  // the picture joins the list
+  renderEdControls();
+}
+
+// ---- Seek bar: scrub a video still like a video player. One request at a time; while one runs,
+// only the newest wanted moment is kept, so the picture follows the handle without piling up.
+const SCRUB = { want: null, inflight: false, dragging: false };
+const seekEl = $("ed-seek"), trackEl = $("ed-track");
+const fmtMoment = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, "0")}`;
+
+function scrubTo(at) {
+  SCRUB.want = at;
+  if (!SCRUB.inflight) scrubNext();
+}
+
+// Draw the bar at a moment (before the server answers, so dragging feels immediate).
+function renderSeek(at) {
+  const d = ED.view?.duration;
+  if (!d) return;
+  seekEl.style.setProperty("--p", Math.min(1, Math.max(0, at / d)));
+  $("ed-seek-time").innerHTML = `${fmtMoment(at)} / ${fmtMoment(d)}<span class="how"> · drag to scrub</span>`;
+  trackEl.setAttribute("aria-valuemax", d.toFixed(1));
+  trackEl.setAttribute("aria-valuenow", at.toFixed(1));
+  trackEl.setAttribute("aria-valuetext", `${at.toFixed(1)} seconds of ${d.toFixed(1)}`);
+}
+
+function seekTo(at) {
+  const d = ED.view?.duration;
+  if (!d || ED.busy) return;
+  at = Math.min(d, Math.max(0, at));
+  renderSeek(at);
+  scrubTo(at);
+}
+
+// The moment under the pointer, from its position along the track.
+function momentAt(e) {
+  const r = trackEl.getBoundingClientRect();
+  return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * (ED.view?.duration || 0);
+}
+
+function openSeek(open) {
+  seekEl.classList.toggle("open", open || SCRUB.dragging || document.activeElement === trackEl);
+}
+
+seekEl.addEventListener("pointerenter", () => openSeek(true));
+seekEl.addEventListener("pointerleave", () => { $("ed-seek-tip").hidden = true; openSeek(false); });
+seekEl.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0 || ED.busy || !ED.view?.duration) return;
+  e.preventDefault();  // no text selection, no focus jump
+  try { seekEl.setPointerCapture(e.pointerId); } catch {}
+  SCRUB.dragging = true;
+  openSeek(true);
+  seekTo(momentAt(e));
+});
+seekEl.addEventListener("pointermove", (e) => {
+  if (!ED.view?.duration) return;
+  const at = momentAt(e), tip = $("ed-seek-tip");
+  tip.hidden = false;
+  tip.textContent = fmtMoment(at);
+  const r = seekEl.getBoundingClientRect(), x = e.clientX - r.left, half = tip.offsetWidth / 2;
+  tip.style.left = `${Math.min(r.width - half, Math.max(half, x))}px`;
+  if (SCRUB.dragging) seekTo(at);
+});
+const endDrag = () => {
+  if (!SCRUB.dragging) return;
+  SCRUB.dragging = false;
+  openSeek(seekEl.matches(":hover"));
+};
+seekEl.addEventListener("pointerup", endDrag);
+seekEl.addEventListener("pointercancel", endDrag);
+trackEl.addEventListener("focus", () => openSeek(true));
+trackEl.addEventListener("blur", () => openSeek(seekEl.matches(":hover")));
+trackEl.addEventListener("keydown", (e) => {
+  const v = ED.view, now = SCRUB.want ?? v?.at ?? 0;
+  if (!v?.duration) return;
+  const step = e.shiftKey ? SEEK_BIG_STEP_S : SEEK_STEP_S;
+  const to = { ArrowLeft: now - step, ArrowDown: now - step, ArrowRight: now + step, ArrowUp: now + step,
+    Home: 0, End: v.duration }[e.key];
+  if (to == null) return;
+  e.preventDefault();
+  e.stopPropagation();
+  seekTo(to);
+});
+
+async function scrubNext() {
+  if (SCRUB.want == null || !ED.view?.open) return;
+  const at = SCRUB.want;
+  SCRUB.want = null;
+  SCRUB.inflight = true;
+  try {
+    showEditor(await edPost("op", { op: "frame", at }));
+  } catch (err) {
+    $("ed-message").textContent = `That didn't work: ${err.message}`;
+  } finally {
+    SCRUB.inflight = false;
+    if (SCRUB.want != null) scrubNext();
+  }
+}
+
+function showEditor(view) {
+  if (!view?.open) return hideEditor();
+  const newStill = ED.view?.version !== view.version;
+  ED.view = view;
+  $("editor").hidden = false;
+  document.body.classList.add("editing");
+  $("ed-problem").textContent = view.problem_id;
+  if (newStill) {
+    edStill.src = `${HTTP_BASE}/api/holds/still.jpg?v=${view.version}`;
+    ED.hover = null;
+  }
+  $("ed-message").textContent = view.message;
+  renderEdControls();
+  fitEditor();
+  drawEditor();
+}
+
+function hideEditor() {
+  $("editor").hidden = true;
+  document.body.classList.remove("editing");
+  ED.view = null;
+  ED.hover = ED.down = ED.drag = null;
+  edStill.removeAttribute("src");
+  SCRUB.want = null;
+  SCRUB.dragging = false;
+  seekEl.classList.remove("open");
+}
+
+// Clicks pick the route colour until there are holds to work on, and after "Pick the colour
+// again" (the server's "picking") until a pick finds holds or "Keep these holds".
+function choosingColour() {
+  const v = ED.view;
+  return !!v && (v.picking || (!v.picked && v.kept === 0));
+}
+
+function renderEdControls() {
+  const v = ED.view;
+  if (!v?.open) return;
+  const pick = $("ed-still-pick"), stills = HOLDS.status?.stills || [];
+  pick.innerHTML = stills.map((s) => `<option value="${esc(s.key)}">${esc(s.name)}` +
+    `${s.fits === false ? " · doesn't match the video" : ""}</option>`).join("");
+  pick.value = v.still;
+  seekEl.hidden = !v.duration;
+  seekEl.classList.toggle("off", ED.busy);
+  // Don't pull the handle back while it's being dragged or a newer moment is on its way.
+  if (v.duration && SCRUB.want == null && !SCRUB.inflight && !SCRUB.dragging) renderSeek(v.at ?? 0);
+  $("ed-fit").hidden = v.fits !== false;
+  if (v.fits === false) {
+    const [vw, vh] = pictureSize(), [w, h] = v.size;
+    $("ed-fit").textContent = Math.abs(w / h - vw / vh) > SAME_SHAPE_TOLERANCE
+      ? `Different shape from the video (${w}×${h} vs ${vw}×${vh}): holds won't line up.`
+      : "Filmed from a different spot than the video: holds won't line up.";
+  }
+  const colour = choosingColour();
+  for (const input of document.querySelectorAll('input[name="ed-tool"]')) {
+    input.disabled = ED.busy || (colour && input.value !== "box");
+  }
+  // One short line, only where a click does something you couldn't guess.
+  const hint = colour && v.kept ? "Picking a colour replaces these holds (Undo restores them)." : "";
+  $("ed-hint").textContent = hint;
+  $("ed-hint").hidden = !hint;
+  const kept = v.holds.filter((h) => h.kept).sort((a, b) => a.id - b.id);
+  const ids = (role) => kept.filter((h) => h.role === role).map((h) => `<b>${h.id}</b>`).join(", ") || "none";
+  const how = kept.length ? v.origin : "";
+  $("ed-summary").innerHTML = kept.length
+    ? `<span class="count num">${kept.length} hold${kept.length === 1 ? "" : "s"}</span>` +
+      `${esc([v.colour, how].filter(Boolean).join(" · "))}<br>` +
+      `Start ${ids("start")} · Top ${ids("top")}`
+    : "No holds yet.";
+  const keeping = v.picking && kept.length > 0;  // mid re-pick: offer a way back out
+  $("ed-recolour").hidden = colour && !keeping;
+  $("ed-recolour").textContent = keeping ? "Keep these holds" : "Pick the colour again";
+  $("ed-save").disabled = ED.busy || !kept.length;
+  $("ed-undo").disabled = ED.busy;
+}
+
+// The still, as large as fits beside the panel (or under it on a narrow screen).
+function fitEditor() {
+  const v = ED.view;
+  if (!v?.open) return;
+  const stage = $("ed-stage"), frameEl = $("ed-frame"), cs = getComputedStyle(stage);
+  const sw = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const sh = matchMedia("(max-width: 900px)").matches ? window.innerHeight * NARROW_MAX_VH
+    : stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  const [iw, ih] = v.size;
+  const k = Math.min(sw / iw, sh / ih);
+  if (!(k > 0)) return;
+  frameEl.style.width = `${Math.floor(iw * k)}px`;
+  frameEl.style.height = `${Math.floor(ih * k)}px`;
+}
+
+function drawEditor() {
+  const v = ED.view;
+  if (!v?.open) return;
+  const dpr = window.devicePixelRatio || 1, r = edCanvas.getBoundingClientRect();
+  const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
+  if (edCanvas.width !== W || edCanvas.height !== H) { edCanvas.width = W; edCanvas.height = H; }
+  const c = edCtx, P = ([x, y]) => [x * W, y * H];
+  const u = Math.max(0.65, Math.min(1.6, Math.max(W, H) / (900 * dpr))) * dpr;
+  c.clearRect(0, 0, W, H);
+  // Left out: dashed and dim, still clickable to put back.
+  c.setLineDash([5 * u, 4 * u]);
+  for (const h of v.holds.filter((x) => !x.kept)) {
+    holdPath(c, P, h.box, h.polygon);
+    c.lineWidth = 2 * u;
+    c.strokeStyle = "rgba(180, 186, 193, 0.85)";
+    c.stroke();
+  }
+  c.setLineDash([]);
+  if (ED.hover) {
+    holdPath(c, P, ED.hover.box, ED.hover.polygon);
+    c.fillStyle = "rgba(255, 255, 255, 0.28)";
+    c.fill();
+  }
+  // Kept: white over a dark edge, so the outline reads on a pale wall and on a dark one.
+  const kept = v.holds.filter((x) => x.kept).sort((a, b) => a.id - b.id);
+  for (const h of kept) {
+    const w = (h.role === "mid" ? 2.5 : 3.5) * u;
+    holdPath(c, P, h.box, h.polygon);
+    c.lineWidth = w + 3 * u;
+    c.strokeStyle = "rgba(11, 12, 13, 0.6)";
+    c.stroke();
+    c.lineWidth = w;
+    c.strokeStyle = "#ffffff";
+    c.stroke();
+  }
+  const placed = [];
+  for (const h of kept) drawHoldLabel(c, u, h.id, h.role, [...P(h.box.slice(0, 2)), ...P(h.box.slice(2))], placed);
+  if (ED.drag) {
+    const [[ax, ay], [bx, by]] = ED.drag.map(P);
+    const adding = ED.tool === "box";
+    c.fillStyle = adding ? "rgba(255, 255, 255, 0.14)" : "rgba(11, 12, 13, 0.45)";
+    c.fillRect(Math.min(ax, bx), Math.min(ay, by), Math.abs(bx - ax), Math.abs(by - ay));
+    c.setLineDash(adding ? [] : [6 * u, 4 * u]);
+    c.lineWidth = 2 * u;
+    c.strokeStyle = "#ffffff";
+    c.strokeRect(Math.min(ax, bx), Math.min(ay, by), Math.abs(bx - ax), Math.abs(by - ay));
+    c.setLineDash([]);
+  }
+}
+
+function edPoint(e) {
+  const r = edCanvas.getBoundingClientRect();
+  const clamp = (n) => Math.min(1, Math.max(0, n));
+  return [clamp((e.clientX - r.left) / r.width), clamp((e.clientY - r.top) / r.height)];
+}
+
+function insideHold(h, [x, y]) {
+  const poly = h.polygon;
+  if (!poly) return x >= h.box[0] && x <= h.box[2] && y >= h.box[1] && y <= h.box[3];
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+// The smallest hold under the point, as the server picks it.
+function holdAt(p) {
+  const area = (h) => (h.box[2] - h.box[0]) * (h.box[3] - h.box[1]);
+  const hits = (ED.view?.holds || []).filter((h) => insideHold(h, p));
+  return hits.length ? hits.reduce((a, b) => (area(b) < area(a) ? b : a)) : null;
+}
+
+function edClick([x, y]) {
+  if (choosingColour()) return edRun("op", { op: "pick", x, y }, "Finding holds…");
+  if (ED.tool === "box") {
+    $("ed-message").textContent = "Drag a box around the hold to add it.";
+    return;
+  }
+  edRun("op", { op: ED.tool, x, y });
+}
+
+edCanvas.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0 || ED.busy || !ED.view?.open) return;
+  try { edCanvas.setPointerCapture(e.pointerId); } catch {}  // keeps a drag going outside the picture
+  ED.down = edPoint(e);
+  ED.drag = null;
+});
+edCanvas.addEventListener("pointermove", (e) => {
+  const p = edPoint(e);
+  if (ED.down) {
+    const r = edCanvas.getBoundingClientRect();
+    const moved = Math.max(Math.abs(p[0] - ED.down[0]) * r.width, Math.abs(p[1] - ED.down[1]) * r.height);
+    if (moved >= ED_DRAG_MIN_PX) ED.drag = [ED.down, p];
+    drawEditor();
+    return;
+  }
+  const h = ED.busy ? null : holdAt(p);
+  if (h !== ED.hover) { ED.hover = h; drawEditor(); }
+});
+edCanvas.addEventListener("pointerup", (e) => {
+  if (!ED.down) return;
+  const start = ED.down, drag = ED.drag;
+  ED.down = ED.drag = null;
+  if (!drag) return edClick(start);
+  drawEditor();
+  const [[x0, y0], [x1, y1]] = drag;
+  edRun("op", { op: ED.tool === "box" ? "box" : "erase", x0, y0, x1, y1 });
+});
+edCanvas.addEventListener("pointercancel", () => { ED.down = ED.drag = null; drawEditor(); });
+edCanvas.addEventListener("pointerleave", () => { if (!ED.down && ED.hover) { ED.hover = null; drawEditor(); } });
+edCanvas.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  if (ED.busy || !ED.view?.open || choosingColour()) return;
+  const [x, y] = edPoint(e);
+  edRun("op", { op: "delete", x, y });
+});
+
+for (const input of document.querySelectorAll('input[name="ed-tool"]')) {
+  input.addEventListener("change", () => { ED.tool = input.value; renderEdControls(); });
+}
+document.addEventListener("keydown", (e) => {
+  if (!ED.view?.open || e.target.tagName === "SELECT") return;
+  if (e.key === "Escape" && ED.down) { ED.down = ED.drag = null; drawEditor(); return; }
+  if ((e.key === "z" && (e.metaKey || e.ctrlKey)) || (e.key === "u" && !e.metaKey && !e.ctrlKey)) {
+    e.preventDefault();
+    edRun("op", { op: "undo" });
+    return;
+  }
+  const radio = document.querySelectorAll('input[name="ed-tool"]')[Number(e.key) - 1];
+  if (radio && !radio.disabled && !e.metaKey && !e.ctrlKey) {
+    radio.checked = true;
+    radio.dispatchEvent(new Event("change"));
+  }
+});
+
+$("ed-undo").addEventListener("click", () => edRun("op", { op: "undo" }));
+$("ed-own").addEventListener("click", () => $("ed-file").click());
+$("ed-file").addEventListener("change", (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = "";  // choosing the same file again still counts
+  usePicture(file);
+});
+$("ed-recolour").addEventListener("click", () => edRun("op", { op: ED.view?.picking ? "keep" : "recolour" }));
+$("ed-still-pick").addEventListener("change", (e) => {
+  const key = e.target.value;
+  if (ED.edits && !confirm("Switching pictures starts this map again. Continue?")) {
+    e.target.value = ED.view.still;
+    return;
+  }
+  openEditor(key);
+});
+$("ed-cancel").addEventListener("click", async () => {
+  if (ED.busy || (ED.edits && !confirm("Leave without saving this hold map?"))) return;
+  hideEditor();
+  srcNote("Restarting analysis…");
+  try {
+    await edPost("close");
+    srcNote(null);
+  } catch (err) {
+    srcNote(`Couldn't restart analysis: ${err.message}`, true);
+  }
+});
+$("ed-save").addEventListener("click", async () => {
+  if (ED.busy) return;
+  setEdBusy(true, "Saving…");
+  $("ed-message").textContent = "Saving, then restarting analysis with the new map…";
+  try {
+    const { holds } = await edPost("save");
+    hideEditor();
+    srcNote(`Saved a hold map with ${holds} holds. The coach is using it now.`);
+    setTimeout(() => { if ($("src-note").textContent.startsWith("Saved a hold map")) srcNote(null); }, 6000);
+  } catch (err) {
+    $("ed-message").textContent = `Couldn't save: ${err.message}`;
+  } finally {
+    setEdBusy(false);
+  }
+});
+$("ladder-edit").addEventListener("click", () => openEditor());
+$("ladder-build").addEventListener("click", () => openEditor());
+window.addEventListener("resize", () => { if (ED.view?.open) { fitEditor(); drawEditor(); } });
+
+// ---- This device's camera -------------------------------------------------------
+// Webcam frames go to the server as JPEGs over WS /camera. The server runs perception on
+// them and sends its frames back like any other source, so the overlay matches what it saw.
+const CAM = { stream: null, el: null, canvas: null, ws: null, timer: null, encoding: false, wanted: false };
+
+async function startCamera() {
+  if (CAM.stream) return true;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    srcNote("The camera only works over https or on localhost", true);
+    return false;
+  }
+  try {
+    CAM.stream = await navigator.mediaDevices.getUserMedia({ audio: false,
+      video: { width: { ideal: 1280 }, height: { ideal: 720 } } });
+  } catch (err) {
+    srcNote(err.name === "NotAllowedError" ? "Camera permission was denied" : `No camera: ${err.message}`, true);
+    return false;
+  }
+  CAM.el = Object.assign(document.createElement("video"), { muted: true, playsInline: true, srcObject: CAM.stream });
+  await CAM.el.play().catch(() => {});
+  CAM.canvas = document.createElement("canvas");
+  CAM.wanted = true;
+  try { sessionStorage.setItem(CAMERA_KEY, "1"); } catch {}
+  CAM.stream.getVideoTracks()[0]?.addEventListener("ended", () => { stopCamera(); srcNote("The camera stopped", true); });
+  openCameraSocket();
+  CAM.timer = setInterval(sendCameraFrame, 1000 / CAMERA_FPS);
+  return true;
+}
+
+function openCameraSocket() {
+  const ws = new WebSocket(CAMERA_URL);
+  CAM.ws = ws;
+  ws.onclose = (e) => {
+    if (CAM.ws !== ws) return;
+    CAM.ws = null;
+    if (e.code === CAMERA_BUSY_CODE) {
+      stopCamera();
+      srcNote("Another dashboard is already sending its camera", true);
+    } else if (CAM.wanted) {
+      setTimeout(() => { if (CAM.wanted && !CAM.ws) openCameraSocket(); }, CAMERA_RETRY_MS);
+    }
+  };
+}
+
+function sendCameraFrame() {
+  const ws = CAM.ws, v = CAM.el;
+  if (!ws || ws.readyState !== WebSocket.OPEN || CAM.encoding || ws.bufferedAmount > CAMERA_MAX_BUFFER) return;
+  if (!v?.videoWidth) return;
+  const scale = Math.min(1, CAMERA_MAX_SIDE / Math.max(v.videoWidth, v.videoHeight));
+  const c = CAM.canvas;
+  c.width = Math.round(v.videoWidth * scale);
+  c.height = Math.round(v.videoHeight * scale);
+  c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+  CAM.encoding = true;
+  c.toBlob((blob) => {
+    CAM.encoding = false;
+    if (blob && ws.readyState === WebSocket.OPEN) ws.send(blob);
+  }, "image/jpeg", CAMERA_JPEG_QUALITY);
+}
+
+function stopCamera() {
+  CAM.wanted = false;
+  try { sessionStorage.removeItem(CAMERA_KEY); } catch {}
+  clearInterval(CAM.timer);
+  CAM.timer = null;
+  CAM.stream?.getTracks().forEach((t) => t.stop());
+  CAM.stream = null;
+  if (CAM.el) CAM.el.srcObject = null;
+  CAM.el = null;
+  const ws = CAM.ws;
+  CAM.ws = null;
+  ws?.close();
+}
+
+// Keep sending only while the server is analysing the browser camera. After a reload, the
+// tab that was sending picks it up again.
+function syncCamera(hello) {
+  if (hello.source?.kind !== "browser_camera") { if (CAM.stream) stopCamera(); return; }
+  let resume = false;
+  try { resume = sessionStorage.getItem(CAMERA_KEY) === "1"; } catch {}
+  if (!CAM.stream && resume) startCamera();
+}
+
 // ---- WebSocket --------------------------------------------------------------
 let backoff = 500;
 function connect() {
@@ -1004,6 +2030,7 @@ function connect() {
     backoff = 500;
     setConn("ok", "Connected");
     loadVideo();
+    loadSources();
   };
   ws.onmessage = (e) => {
     if (e.data instanceof Blob) return showFrame(e.data.type ? e.data : new Blob([e.data], { type: "image/jpeg" }));

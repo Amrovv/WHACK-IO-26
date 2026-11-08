@@ -10,6 +10,13 @@ Owned by D.
                   on connect: "hello" (if given) and the latest "holdmap"
   GET /video    MJPEG (multipart/x-mixed-replace) of the latest "frame", ~FRAME_FPS
 
+With a SourceControl (run.py's Session), the dashboard can also change what's analysed:
+  GET  /api/sources   {"current": spec, "options": [{"spec", "name", "group"}]}
+  POST /api/source    {"spec": "..."} -> switches; every dashboard gets the new "hello"
+  WS   /camera        binary JPEG frames from a dashboard's webcam (one sender at a time)
+and, when it is also a HoldsControl, build the problem's hold map from the dashboard:
+  /api/holds/...      see coach/server/holds.py
+
 run.py awaits serve(bus, host, port). Replay a bus log with no pipeline running:
 
   uv run python -m coach.server.app --replay data/bus_logs/x.jsonl [--loop]
@@ -27,15 +34,16 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Protocol
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from coach.bus import Bus, to_jsonable
 from coach.contracts import TOPICS
+from coach.server.holds import UPLOAD_MAX_BYTES, HoldMapBuilder, Unavailable
 
 log = logging.getLogger("coach.server")
 
@@ -46,8 +54,21 @@ STATE_HZ = 10.0  # max "state" messages per second per client
 FRAME_FPS = 10.0  # max MJPEG frames per second per /video client
 CLIENT_BACKLOG = 64  # messages queued per client; the oldest is dropped when full
 SHUTDOWN_GRACE_S = 1  # uvicorn waits this long for open streams on shutdown
+CAMERA_BUSY_CODE = 4409  # /camera close code when another dashboard is already sending
 
 Clock = Callable[[], float]
+
+
+class SourceControl(Protocol):
+    """What the server needs to let the dashboard pick the source (run.py's Session)."""
+
+    def listen(self, on_hello: Callable[[dict], None]) -> None: ...
+
+    def sources(self) -> dict: ...
+
+    async def switch(self, spec: str) -> dict: ...  # ValueError for a spec it doesn't offer
+
+    def feed_camera(self, jpeg: bytes) -> bool: ...  # False when the browser camera isn't on
 
 
 def encode(topic: str, t: float, payload: Any) -> str:
@@ -130,6 +151,14 @@ class Hub:
         async with self._frame_cond:
             self._frame_cond.notify_all()
 
+    def set_hello(self, hello: dict) -> None:
+        """A new source: tell every dashboard, and forget the old problem's hold map."""
+        self.hello = hello
+        self.holdmap_msg = None
+        msg = encode("hello", self.clock(), hello)
+        for client in self.clients:
+            client.offer("hello", msg)
+
     def connect(self) -> Client:
         client = Client(self.clock)
         if self.hello is not None:
@@ -178,8 +207,18 @@ class Hub:
             yield jpeg
 
 
-def create_app(bus: Bus, hello: dict | None = None, clock: Clock = time.monotonic) -> FastAPI:
+def create_app(
+    bus: Bus,
+    hello: dict | None = None,
+    clock: Clock = time.monotonic,
+    control: SourceControl | None = None,
+) -> FastAPI:
     hub = Hub(bus, hello, clock)
+    if control is not None:
+        control.listen(hub.set_hello)
+    camera_senders: set[WebSocket] = set()
+    # Hold maps are built against the session that's running, so they need its controls too.
+    builder = HoldMapBuilder(control) if hasattr(control, "read_still") else None
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -189,10 +228,12 @@ def create_app(bus: Bus, hello: dict | None = None, clock: Clock = time.monotoni
 
     app = FastAPI(title="Climbing Coach", lifespan=lifespan)
     app.state.hub = hub
+    app.state.holds = builder
 
     @app.get("/")
     async def index() -> FileResponse:
-        return FileResponse(WEB_DIR / "index.html")
+        # no-cache: browsers check back each load, so a plain reload shows dashboard changes.
+        return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
     app.mount("/fonts", StaticFiles(directory=WEB_DIR / "fonts"), name="fonts")
 
@@ -218,6 +259,102 @@ def create_app(bus: Bus, hello: dict | None = None, clock: Clock = time.monotoni
                 yield mjpeg_part(jpeg)
 
         return StreamingResponse(parts(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+    def need_control() -> SourceControl:
+        if control is None:
+            raise HTTPException(404, "this server can't change its source")
+        return control
+
+    @app.get("/api/sources")
+    async def sources() -> dict:
+        return need_control().sources()
+
+    @app.post("/api/source")
+    async def set_source(spec: str = Body(embed=True)) -> dict:
+        ctl = need_control()
+        try:
+            return {"hello": await ctl.switch(spec)}
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.websocket("/camera")
+    async def camera(sock: WebSocket) -> None:
+        await sock.accept()
+        if control is None or camera_senders:
+            await sock.close(code=CAMERA_BUSY_CODE)
+            return
+        camera_senders.add(sock)
+        log.info("browser camera connected")
+        try:
+            while True:
+                control.feed_camera(await sock.receive_bytes())
+        except (WebSocketDisconnect, RuntimeError, KeyError):
+            pass  # KeyError: a text message, which a camera never sends
+        finally:
+            camera_senders.discard(sock)
+            log.info("browser camera disconnected")
+
+    def need_builder() -> HoldMapBuilder:
+        if builder is None:
+            raise HTTPException(404, "this server can't build hold maps")
+        return builder
+
+    async def run_builder(call: Awaitable[dict]) -> dict:
+        """Builder errors as HTTP errors: 409 for a bad request, 503 without A's code."""
+        try:
+            return await call
+        except Unavailable as e:
+            raise HTTPException(503, str(e)) from e
+        except (ValueError, KeyError, TypeError) as e:
+            raise HTTPException(409, str(e)) from e
+
+    @app.get("/api/holds")
+    async def holds_status() -> dict:
+        return await asyncio.to_thread(need_builder().status)  # reads and compares stills
+
+    @app.get("/api/holds/view")
+    async def holds_view() -> dict:
+        return need_builder().view()  # lets a reloaded dashboard get back into an open editor
+
+    @app.get("/api/holds/shapes")
+    async def holds_shapes() -> dict:
+        return await asyncio.to_thread(need_builder().shapes)
+
+    @app.get("/api/holds/still.jpg")
+    async def holds_still() -> Response:
+        jpeg = need_builder().jpeg
+        if jpeg is None:
+            raise HTTPException(404, "no hold map is open")
+        return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/holds/open")
+    async def holds_open(
+        still: Annotated[str, Body(embed=True)],
+        at: Annotated[float | None, Body(embed=True)] = None,
+    ) -> dict:
+        return await run_builder(need_builder().open(still, at))
+
+    @app.post("/api/holds/upload")
+    async def holds_upload(request: Request, name: str = "picture") -> dict:
+        """The raw picture in the body (the page sends a JPEG); ?name= is its file name."""
+        if int(request.headers.get("content-length") or 0) > UPLOAD_MAX_BYTES:
+            raise HTTPException(413, "that picture is too big")
+        builder = need_builder()
+        return await run_builder(builder.upload(name, await request.body()))
+
+    @app.post("/api/holds/op")
+    async def holds_op(body: Annotated[dict, Body()]) -> dict:
+        args = dict(body)
+        return await run_builder(need_builder().op(str(args.pop("op", "")), args))
+
+    @app.post("/api/holds/save")
+    async def holds_save() -> dict:
+        return await run_builder(need_builder().save())
+
+    @app.post("/api/holds/close")
+    async def holds_close() -> dict:
+        await need_builder().close()  # restarts analysis
+        return {"open": False}
 
     return app
 

@@ -58,7 +58,7 @@ HOLDMAP_DIR = ROOT / "data" / "holdmaps"
 
 # Streaming settings for the dashboard (not coaching thresholds, so not in config/default.yaml).
 FRAME_FPS = 10.0  # frames sent to the dashboard per second
-FRAME_MAX_WIDTH = 960  # downscale wider frames before JPEG encoding
+FRAME_MAX_SIDE = 960  # downscale frames whose longer side is bigger (portrait or landscape)
 FRAME_JPEG_QUALITY = 75
 DASHBOARD_STATE_HZ = 10.0  # ClimberState forwarded to the dashboard at most this often
 CLIENT_QUEUE_MAX = 64  # per-dashboard backlog; the oldest message is dropped when full
@@ -250,6 +250,8 @@ class VideoPerception(_Worker):
     Publishes the newest frame as JPEG on "frame" (~FRAME_FPS) and, unless frames_only, a
     ClimberState with person_found=False per frame so the brain still sees time pass.
     Files loop at real speed; with fast=True a file plays once as quickly as it decodes.
+    source may also be a frame source object (the browser camera): an iterable of
+    (t, frame_idx, bgr) with close(), read until it's closed.
     """
 
     def __init__(
@@ -258,6 +260,12 @@ class VideoPerception(_Worker):
         super().__init__("video")
         self.source, self.problem_id, self.bus, self.out = source, problem_id, bus, out
         self.fast, self.frames_only = fast, frames_only
+        self.latest_frame = None  # newest BGR frame, for building a hold map from it
+
+    def stop(self) -> None:
+        if not isinstance(self.source, (int, str)):
+            self.source.close()  # wakes the thread if it's waiting for the next frame
+        super().stop()
 
     def _run(self) -> None:
         import cv2  # only needed when there's video
@@ -266,6 +274,9 @@ class VideoPerception(_Worker):
             holdmap = load_holdmap(self.problem_id)
             if holdmap:
                 self.bus.publish("holdmap", holdmap)
+        if not isinstance(self.source, (int, str)):
+            self._run_frames(cv2)
+            return
         cap = cv2.VideoCapture(self.source)
         if not cap.isOpened():
             log.error("could not open video source %r; running with no video", self.source)
@@ -294,6 +305,7 @@ class VideoPerception(_Worker):
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # loop the clip
                     continue
                 t = time.monotonic()
+                self.latest_frame = img
                 self._publish_frame(cv2, img)
                 if not self.frames_only:
                     s = ClimberState(t, frame_idx, False, {}, {}, {}, (0.5, 0.5))
@@ -310,6 +322,21 @@ class VideoPerception(_Worker):
         finally:
             cap.release()
 
+    def _run_frames(self, cv2) -> None:
+        """A frame source that paces itself (the browser camera)."""
+        last_sent = -float("inf")
+        for t, frame_idx, img in self.source:
+            if self._stop.is_set():
+                return
+            self.latest_frame = img
+            if t - last_sent >= 1.0 / FRAME_FPS:
+                last_sent = t
+                self._publish_frame(cv2, img)
+            if not self.frames_only:
+                s = ClimberState(t, frame_idx, False, {}, {}, {}, (0.5, 0.5))
+                self.bus.publish("state", s)
+                self.out.put(s)
+
     def _publish_frame(self, cv2, img) -> None:
         jpeg = encode_jpeg(img)
         if jpeg is not None:
@@ -317,12 +344,13 @@ class VideoPerception(_Worker):
 
 
 def encode_jpeg(img) -> bytes | None:
-    """BGR image -> JPEG for the dashboard, downscaled to FRAME_MAX_WIDTH."""
+    """BGR image -> JPEG for the dashboard, its longer side downscaled to FRAME_MAX_SIDE."""
     import cv2
 
-    if img.shape[1] > FRAME_MAX_WIDTH:
-        h = round(img.shape[0] * FRAME_MAX_WIDTH / img.shape[1])
-        img = cv2.resize(img, (FRAME_MAX_WIDTH, h), interpolation=cv2.INTER_AREA)
+    h, w = img.shape[:2]
+    if max(w, h) > FRAME_MAX_SIDE:
+        scale = FRAME_MAX_SIDE / max(w, h)
+        img = cv2.resize(img, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
     ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, FRAME_JPEG_QUALITY])
     return buf.tobytes() if ok else None
 
