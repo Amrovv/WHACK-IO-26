@@ -63,6 +63,35 @@ async def test_brain_runs_without_a_holdmap(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_brain_survives_one_bad_frame() -> None:
+    # Regression (C's audit): Brain.run() called self._process_state(state) with no
+    # guard, so one exception (a bad detector, Memory, or the arbiter) ended run()
+    # for the rest of the session. A single bad frame must be logged and skipped,
+    # not silence the coach permanently.
+    bus = Bus()
+    event_queue = bus.subscribe("event")
+    brain = Brain(_config(), bus, FakeVoice())
+    original = brain._process_state
+    calls: list[int] = []
+
+    def flaky(state):
+        calls.append(state.frame_idx)
+        if len(calls) == 1:
+            raise RuntimeError("synthetic detector failure")
+        original(state)
+
+    brain._process_state = flaky
+
+    await _run_frames(brain, bus, _synthetic_climb())
+
+    assert len(calls) == len(_synthetic_climb())
+    events = []
+    while not event_queue.empty():
+        events.append(event_queue.get_nowait())
+    assert any(event.kind == "attempt_start" for event in events)
+
+
+@pytest.mark.asyncio
 async def test_spoken_topic_updates_memory() -> None:
     bus = Bus()
     brain = Brain(_config(), bus, FakeVoice())
