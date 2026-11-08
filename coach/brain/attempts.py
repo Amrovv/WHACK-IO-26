@@ -37,6 +37,7 @@ class AttemptTracker:
         self._attempt_high: int | None = None
         self._best_hold = 0
         self._last_record_emitted = 0
+        self._await_ground = False
 
     def _standing_y(self) -> float | None:
         return sum(self._standing_hips) / len(self._standing_hips) if self._standing_hips else None
@@ -84,6 +85,7 @@ class AttemptTracker:
         self.phase = "GROUND"
         self._ground_since = None
         self._raised_since = None
+        self._await_ground = True
         if self._attempt_high is not None:
             self._best_hold = max(self._best_hold, self._attempt_high)
         return summary
@@ -93,6 +95,10 @@ class AttemptTracker:
         if not state.person_found:
             return events
         if self.phase == "GROUND":
+            if self._await_ground:
+                if not self._grounded(state, features):
+                    return events
+                self._await_ground = False
             features.add_calibration_sample(state)
             if not self._standing_hips or not self._raised(state, features):
                 self._standing_hips.append(state.hip[1])
@@ -165,6 +171,9 @@ class AttemptTracker:
                         )
                     )
                 self._finish(state, outcome)
+                # Fall and downclimb both finish on a grounded frame, so the
+                # post-top wall latch is already satisfied for these outcomes.
+                self._await_ground = False
         else:
             self._ground_since = None
             self._fall_seen = False

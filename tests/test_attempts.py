@@ -326,3 +326,45 @@ def test_one_hand_on_top_hold_does_not_trigger_top():
         )
         assert "top" not in [e.kind for e in events], f"unexpected top event at t={t}"
         assert attempt.finished_attempts == [], f"attempt unexpectedly closed at t={t}"
+
+
+def test_holding_the_top_does_not_start_new_attempts():
+    # Regression (C's audit): after a top, _finish() sets phase="GROUND" while the
+    # climber is still physically on the wall. The very next frame still shows both
+    # feet/hands on holds, so the GROUND branch used to call _enter_wall() again,
+    # firing attempt_start/top once a second for as long as they stayed up, and
+    # scoring the eventual climb-down as a fall. One real top-out must be one attempt.
+    cfg = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
+    holds = [
+        Hold(1, (0.5, 0.9), (0.45, 0.85, 0.55, 0.95), "start"),
+        Hold(2, (0.5, 0.5), (0.45, 0.45, 0.55, 0.55)),
+        Hold(3, (0.5, 0.1), (0.45, 0.05, 0.55, 0.15), "top"),
+    ]
+    tracker = AttemptTracker(HoldMap("x", "pink", holds, (100, 100), "manual"), cfg)
+    features = FeatureTracker(cfg["brain"]["move_speed_eps"])
+    parts = (
+        ("shoulder", 0.3),
+        ("elbow", 0.4),
+        ("wrist", 0.5),
+        ("hip", 0.6),
+        ("knee", 0.75),
+        ("ankle", 0.9),
+    )
+    kp = {f"{side}_{part}": (0.5, y, 1.0) for side in ("left", "right") for part, y in parts}
+    none = {limb: None for limb in Limb}
+    on_top = {Limb.LH: 3, Limb.RH: 3, Limb.LF: 2, Limb.RF: 2}
+    kinds, t = [], 0.0
+    # 30 fps: stand 1 s, climb and hold the top 4 s, back on the floor 2 s, top again
+    for frames, hip_y, contacts in (
+        (30, 0.6, none),
+        (120, 0.3, on_top),
+        (60, 0.6, none),
+        (60, 0.3, on_top),
+    ):
+        for _ in range(frames):
+            state = ClimberState(t, 0, True, kp, {}, contacts, (0.5, hip_y))
+            kinds += [e.kind for e in tracker.update(state, features.update(state))]
+            t += 1 / 30
+    # No "high_point" here: attempt 1 has no finished attempt to beat yet (PR #25).
+    assert kinds == ["attempt_start", "top", "attempt_start", "top"]
+    assert [a.outcome for a in tracker.finished_attempts] == ["top", "top"]
