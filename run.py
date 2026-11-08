@@ -143,7 +143,6 @@ def a_parts() -> SimpleNamespace:
     """A's perception building blocks. Raises ImportError when A's code isn't on this branch."""
     from coach.perception.holds import load_holdmap_with_shapes
     from coach.perception.pose import PoseTracker, load_perception_config
-
     from coach.sources import LatestQueue, parse_source
 
     cfg = load_perception_config()
