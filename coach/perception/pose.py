@@ -391,22 +391,44 @@ def main() -> None:
     parser.add_argument("--source", required=True, help="cam:<n> or file:<path>")
     parser.add_argument("--no-window", action="store_true")
     parser.add_argument("--problem", help="hold map id (data/holdmaps/<id>.json): fills contacts")
+    transcript_group = parser.add_mutually_exclusive_group()
+    transcript_group.add_argument("--transcript", dest="transcript", action="store_true")
+    transcript_group.add_argument("--no-transcript", dest="transcript", action="store_false")
+    parser.set_defaults(transcript=None)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     from coach.perception.holds import load_holdmap_with_shapes
 
     holdmap, shapes = load_holdmap_with_shapes(args.problem) if args.problem else (None, {})
+    transcript_enabled = args.transcript if args.transcript is not None else bool(args.problem)
+    engine = None
+    engine_cost_ms = 0.0
+    show_transcript = True
+    max_lines = 25
+    if transcript_enabled and holdmap is not None:
+        from coach.perception.transcript import TranscriptEngine, draw_panel, format_line
+
+        engine = TranscriptEngine(load_config(), holdmap)
+    elif transcript_enabled:
+        log.info("Transcript needs --problem; skipping it")
     tracker = PoseTracker(load_perception_config(), holdmap=holdmap, shapes=shapes)
     source = parse_source(args.source)
     fps = getattr(source, "fps", None)  # file sources know their fps
     if not args.no_window:
         cv2.namedWindow("pose", cv2.WINDOW_NORMAL)  # resizable
+        window_sized = False
     t_first = time.monotonic()
     n, found, t_start = 0, 0, t_first
     try:
         for t, idx, frame in source:
             state = tracker.process(t, idx, frame)
+            started = time.perf_counter()
+            entries = engine.update(state) if engine else []
+            if engine:
+                for entry in entries:
+                    log.info("%s", format_line(entry, engine.t0 or 0.0))
+                engine_cost_ms += (time.perf_counter() - started) * 1000
             n += 1
             found += state.person_found
             if n % 30 == 0:
@@ -417,8 +439,27 @@ def main() -> None:
                 )
             if not args.no_window:
                 video_t = idx / fps if fps else t - t_first
-                cv2.imshow("pose", draw_overlay(frame, state, video_t, holdmap, shapes))
-                if cv2.waitKey(1) & 0xFF in (27, ord("q")):
+                image = draw_overlay(frame, state, video_t, holdmap, shapes)
+                if engine and show_transcript:
+                    panel = draw_panel(
+                        engine.entries,
+                        state.t,
+                        image.shape[0],
+                        max_lines=max_lines,
+                        t0=engine.t0 or 0.0,
+                    )
+                    image = np.hstack((image, panel))
+                if not window_sized:  # once: fit the window to the screen, keeping proportions
+                    fit = min(1.0, 800 / image.shape[0], 1400 / image.shape[1])
+                    cv2.resizeWindow(
+                        "pose", round(image.shape[1] * fit), round(image.shape[0] * fit)
+                    )
+                    window_sized = True
+                cv2.imshow("pose", image)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("t") and engine:
+                    show_transcript = not show_transcript
+                if key in (27, ord("q")):
                     break
     except KeyboardInterrupt:
         pass
@@ -433,6 +474,8 @@ def main() -> None:
             n / (time.monotonic() - t_start),
             100 * found / n,
         )
+    if engine:
+        log.info("transcript engine: %.3f ms/frame average", engine_cost_ms / max(n, 1))
 
 
 if __name__ == "__main__":

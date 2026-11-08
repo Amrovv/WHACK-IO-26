@@ -21,10 +21,12 @@ import cv2
 import numpy as np
 
 from coach.contracts import ClimberState, HoldMap, Limb
+from coach.perception.config import load_config
 from coach.perception.contacts import ContactTracker
 from coach.perception.holds import load_holdmap_with_shapes
 from coach.perception.pose import draw_overlay, load_perception_config
 from coach.perception.serialize import state_from_line
+from coach.perception.transcript import draw_panel, format_line, run_over_states
 
 log = logging.getLogger(__name__)
 
@@ -117,17 +119,25 @@ def render(
     holdmap: HoldMap | None,
     fps: float,
     shapes: dict | None = None,
+    entries=None,
+    show_transcript: bool = True,
 ) -> np.ndarray:
     out = draw_overlay(frame.copy(), state, state.frame_idx / fps, holdmap, shapes)
     if holdmap is not None and state.person_found:
         cv2.putText(
             out, contact_text(state), (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2
         )
+    if entries is not None and show_transcript:
+        out = np.hstack((out, draw_panel(entries, state.t, out.shape[0])))
     return out
 
 
 def run(
-    video: Path, states: list[ClimberState], holdmap: HoldMap | None, shapes: dict | None = None
+    video: Path,
+    states: list[ClimberState],
+    holdmap: HoldMap | None,
+    shapes: dict | None = None,
+    entries=None,
 ) -> None:
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
@@ -138,6 +148,7 @@ def run(
     win = "review"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)  # resizable
     syncing = False
+    show_transcript = entries is not None
 
     def on_slider(pos: int) -> None:
         if not syncing:
@@ -160,9 +171,15 @@ def run(
                 cv2.setTrackbarPos("frame", win, rv.idx)
                 syncing = False
             state = states[rv.idx]
-            cv2.imshow(win, render(frame, state, holdmap, fps, shapes))
+            cv2.imshow(win, render(frame, state, holdmap, fps, shapes, entries, show_transcript))
             code = cv2.waitKeyEx(1 if rv.paused else max(int(1000 / fps), 1))
             rv.on_key(key_name(code))
+            if code & 0xFF == ord("t") and entries is not None:
+                show_transcript = not show_transcript
+            if code & 0xFF == ord("l") and entries is not None:
+                for entry in entries:
+                    if entry.t <= state.t:
+                        log.info("%s", format_line(entry))
             rv.tick()
     finally:
         cap.release()
@@ -181,8 +198,13 @@ def main() -> None:
     holdmap, shapes = load_holdmap_with_shapes(args.problem) if args.problem else (None, {})
     if holdmap is not None:
         recompute_contacts(states, holdmap, shapes)
+    entries = None
+    if holdmap is not None:
+        entries = run_over_states(states, load_config(), holdmap)
+        for entry in entries:
+            log.info("%s", format_line(entry))
     log.info("%d frames loaded. Keys: space pause · a/d step · w/s ±1 s · q quit", len(states))
-    run(Path(args.video), states, holdmap, shapes)
+    run(Path(args.video), states, holdmap, shapes, entries)
 
 
 if __name__ == "__main__":
