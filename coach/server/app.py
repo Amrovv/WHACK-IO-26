@@ -13,7 +13,8 @@ Owned by D.
 With a SourceControl (run.py's Session), the dashboard can also change what's analysed:
   GET  /api/sources   {"current": spec, "options": [{"spec", "name", "group"}]}
   POST /api/source    {"spec": "..."} -> switches; every dashboard gets the new "hello"
-  WS   /camera        binary JPEG frames from a dashboard's webcam (one sender at a time)
+  POST /api/replay    a clip that ended (hello "ended": true) plays again; 409 if none has
+  WS   /camera       binary JPEG frames from a dashboard's webcam (one sender at a time)
 and, when it is also a HoldsControl, build the problem's hold map from the dashboard:
   /api/holds/...      see coach/server/holds.py
 
@@ -276,6 +277,17 @@ def create_app(
             return {"hello": await ctl.switch(spec)}
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+
+    @app.post("/api/replay")
+    async def replay() -> dict:
+        """The Replay button: play an ended clip again (its recorded live pass)."""
+        ctl = need_control()
+        if not hasattr(ctl, "replay_clip"):
+            raise HTTPException(404, "this server can't replay a clip")
+        try:
+            return {"hello": await ctl.replay_clip()}
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from e
 
     @app.websocket("/camera")
     async def camera(sock: WebSocket) -> None:

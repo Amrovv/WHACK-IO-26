@@ -587,7 +587,15 @@ def test_the_first_pass_is_recorded_and_played_back_in_step_on_later_passes():
     assert passes == [2, 3]  # dashboards were told to start each replayed pass fresh
 
 
-async def test_a_looping_clip_is_analysed_once_then_replayed():
+async def wait_for(condition, timeout_s=3.0) -> bool:
+    for _ in range(int(timeout_s / 0.01)):
+        if condition():
+            return True
+        await asyncio.sleep(0.01)
+    return condition()
+
+
+async def test_a_clip_plays_once_then_replays_its_live_pass_on_request():
     bus = Bus()
     bus.bind_loop()
     published = []  # (topic, while replaying)
@@ -610,16 +618,25 @@ async def test_a_looping_clip_is_analysed_once_then_replayed():
         "clip.mp4", "p1", {}, run.TapBus(bus, replay), states, parts=parts, replay=replay
     )
 
+    ends = []
+    perception.on_ended = lambda: ends.append(replay.passes)
+    assert perception.request_replay() is False  # nothing has ended yet
+
     perception.start()
-    for _ in range(300):  # a pass takes ~0.15 s
-        if replay.passes >= 4:
-            break
-        await asyncio.sleep(0.01)
+    assert await wait_for(perception.ended.is_set)  # a pass takes ~0.15 s
+    await asyncio.sleep(0.2)
+    shown = len(published)
+    await asyncio.sleep(0.2)
+    assert len(published) == shown and replay.passes == 1  # it stopped: no loop
+
+    for n in (2, 3):  # the Replay button, twice
+        assert perception.request_replay() is True
+        assert await wait_for(lambda n=n: replay.passes == n and perception.ended.is_set())
     perception.stop()
 
-    assert replay.passes >= 4
+    assert ends == [1, 2, 3]  # the end was reported after every pass
     assert all(idx < 5 for idx in seen)  # only the first pass was analysed
-    assert ("frame", True) in published  # the video kept playing on the replayed passes
+    assert ("frame", True) in published  # the video played on the replayed passes
     assert ("state", True) in published  # and the recorded poses played back with it
 
 
@@ -667,3 +684,55 @@ async def test_a_replayed_pass_starts_dashboards_fresh_with_the_hold_map(tmp_pat
     stale, session.replay = session.replay, run.LoopReplay(session.bus)  # the source changed
     session._announce_pass(stale, 3)
     assert len(hellos) == 1  # an old source's pass: ignored
+
+
+async def test_an_ended_clip_offers_replay_and_replaying_clears_it(tmp_path, monkeypatch):
+    holdmap = HoldMap("p1", "pink", [], (6, 4), "manual")
+    _, parts = fake_parts()
+    session, _ = make_session(tmp_path, monkeypatch, parts)
+    hellos, maps, asked = [], [], []
+    session.listen(hellos.append)
+    session.bus.publish = lambda topic, payload: (
+        maps.append(payload) if topic == "holdmap" else None
+    )
+    session._loop = asyncio.get_running_loop()
+    session.hello = {"session": 1}
+    session.replay = run.LoopReplay(session.bus)
+    worker = SimpleNamespace(holdmap=holdmap, request_replay=lambda: asked.append(1) or True)
+    session.workers = [worker]
+
+    session._clip_ended()  # from perception's reader thread in real life
+    await asyncio.sleep(0)
+    assert hellos[-1] == {"session": 1, "ended": True} and maps == [holdmap]
+
+    assert await session.replay_clip() == {"session": 1, "ended": True} and asked == [1]
+    session._announce_pass(session.replay, 2)  # the replay's first frame
+    assert hellos[-1] == {"session": 1, "pass": 2}  # Replay goes away; the page starts fresh
+
+    worker.request_replay = lambda: False  # playing: nothing to replay
+    with pytest.raises(ValueError):
+        await session.replay_clip()
+
+
+def test_the_replay_endpoint_asks_the_session(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from coach.server.app import create_app
+
+    calls = []
+
+    class Control:
+        def listen(self, on_hello) -> None:
+            pass
+
+        async def replay_clip(self) -> dict:
+            calls.append(1)
+            if len(calls) > 1:
+                raise ValueError("there's no ended clip to replay")
+            return {"session": 1, "pass": 2}
+
+    with TestClient(create_app(Bus(), control=Control())) as client:
+        assert client.post("/api/replay").json() == {"hello": {"session": 1, "pass": 2}}
+        assert client.post("/api/replay").status_code == 409
+    with TestClient(create_app(Bus())) as client:
+        assert client.post("/api/replay").status_code == 404  # no control: can't replay
