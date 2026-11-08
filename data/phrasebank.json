@@ -1,239 +1,239 @@
 {
   "attempt_start": {
     "0": {
-      "neutral": ["Off you go.", "Eyes up. Go.", "{colour} holds only."],
-      "impressed": ["Go on then.", "Show me.", "Go on. Impress me."],
-      "exasperated": ["Again. Properly.", "Here we go again.", "Go. Think this time."]
+      "neutral": ["First attempt. Eyes up, off you go.", "Starting now. Only {colour} holds count.", "First go. Read the route, then climb."],
+      "impressed": ["First go. Show me what you've got.", "New route. Go on, impress me.", "Starting. Let's see you climb."],
+      "exasperated": ["Starting. Climb properly this time.", "Here we go. Think before you pull.", "First go. Try thinking this time."]
     },
     "1": {
-      "neutral": ["Feet on before you pull.", "Eyes up. Plan each move.", "Stay on the {colour} holds."],
-      "impressed": ["Last one was decent. Again.", "Now build on that one.", "Good. Keep that rhythm going."],
-      "exasperated": ["Again. Feet on the wall.", "Slower this time. Think.", "Same route. Different result, please."]
+      "neutral": ["Second go. Feet on before you pull.", "Second attempt. Plan every move.", "Going again. Stay on the {colour} holds."],
+      "impressed": ["Last go was decent. Build on it.", "Second attempt. Keep that rhythm going.", "Good first go. Now do better."],
+      "exasperated": ["Second go. Feet on the wall first.", "Again. Slow down and think.", "Same route again. Different result, please."]
     },
     "2": {
-      "neutral": ["Another go. Remember where it went wrong.", "Plan the hard move before you start.", "Stay on the {colour} holds. Climb clean."],
-      "impressed": ["You're getting closer. Do it again.", "That's improving. Keep it coming.", "Good work so far. Now finish it."],
-      "exasperated": ["Again. And this time, listen to me.", "Same mistakes, same result. Change something.", "One more. Climb it like you mean it."]
+      "neutral": ["Another go. Remember where it went wrong.", "Several goes now. Plan the hard move first.", "Going again. Stay on the {colour} holds."],
+      "impressed": ["Getting closer each time. Go again.", "You're improving. Keep it coming.", "Good work so far. Now finish it."],
+      "exasperated": ["Again. This time, actually follow my advice.", "Same mistakes, same result. Change something.", "Another go. Climb it like you mean it."]
     }
   },
   "top": {
     "0": {
-      "neutral": ["Now that's climbing.", "Sent. Well done.", "Clean. Topped it."],
-      "impressed": ["Now that's climbing.", "Beautiful. Properly done.", "Yes. That's it."],
-      "exasperated": ["Finally. Well done.", "There it is.", "About time. Lovely."]
+      "neutral": ["Topped it first try. Well done.", "Route finished first go. Clean climb.", "Top hold reached. Nicely done."],
+      "impressed": ["Topped it first try. Properly done.", "Top reached first go. Beautiful.", "Yes. Top on the first try."],
+      "exasperated": ["Topped it, finally. Do that every time.", "There, top reached. Always that easy?", "Finally topped it. About time. Lovely."]
     },
     "1": {
-      "neutral": ["Topped it. What's next?", "Sent. Pick a harder one.", "Well climbed. Get down safely."],
-      "impressed": ["Now that's climbing. What's next?", "Lovely. You earned that one.", "Brilliant. That was proper climbing."],
-      "exasperated": ["Finally. See? Not so hard.", "There. That's what I meant.", "About time. Well done, though."]
+      "neutral": ["Topped it on the second go. What's next?", "Top reached. Pick a harder route.", "Well climbed. Get down safely."],
+      "impressed": ["Topped it second go. Now that's climbing.", "Top reached. You earned that one.", "Brilliant. That was proper climbing."],
+      "exasperated": ["Topped it at last. Not so hard, was it?", "There. That's what I meant.", "Top reached. About time, but well done."]
     },
     "2": {
-      "neutral": ["Sent after all those goes. Well done.", "That's the one. Now climb down carefully.", "Topped it. Pick something harder next."],
-      "impressed": ["Now that's climbing. Every attempt led here.", "Brilliant. You worked that out properly.", "Lovely send. I'm impressed. Mildly."],
-      "exasperated": ["Finally. All it took was listening.", "There it is. Took long enough.", "At last. Remember exactly what you did."]
+      "neutral": ["Topped it after all those goes. Well done.", "Top reached. Climb down carefully.", "Topped it. Try a harder route next."],
+      "impressed": ["Topped it. Every attempt led to this.", "Top reached. You worked that out properly.", "Lovely top. I'm impressed. Mildly."],
+      "exasperated": ["Finally topped it. All it took was listening.", "Top reached. Took long enough.", "At last. Remember exactly what you did."]
     }
   },
   "fall": {
     "0": {
-      "neutral": ["Off. Shake out.", "Rest. Then again.", "Off the {hold}."],
-      "impressed": ["Close. Rest up.", "Good effort. Rest.", "Decent go. Shake out."],
-      "exasperated": ["Off again.", "And down.", "Again? Rest."]
+      "neutral": ["You fell. Shake out your arms.", "Down. Rest, then go again.", "Fell off the {hold}. Rest first."],
+      "impressed": ["Close. Rest up, then go again.", "Good effort. Rest your arms.", "Decent go. Shake out, then again."],
+      "exasperated": ["Off again. Rest, then think.", "Down already. Rest your arms.", "Fell again? Rest, then rethink."]
     },
     "1": {
-      "neutral": ["Off the {hold}. Shake out.", "Rest. Then rethink that move.", "Off at the {hold}. Rest."],
-      "impressed": ["Good fight on the {hold}.", "Close. Rest, then go again.", "Decent go. Shake out now."],
-      "exasperated": ["Off the {hold} again.", "Same fall. Different plan, please.", "Down again. Rest. Then think."]
+      "neutral": ["Fell off the {hold}. Shake out your arms.", "You fell. Rest, then rethink that move.", "Off at the {hold}. Rest first."],
+      "impressed": ["Good fight at the {hold}, but you fell. Rest.", "Close. Rest, then go again.", "Decent go. Shake out now."],
+      "exasperated": ["Fell off the {hold} again.", "Same fall. Try a different plan.", "Down again. Rest, then think."]
     },
     "2": {
-      "neutral": ["Off the {hold} again. Rest, then rethink.", "That move keeps beating you. Plan it.", "Rest properly. Then try a new sequence."],
-      "impressed": ["Good fight on the {hold}. Rest.", "You're closer. Rest, then go again.", "Nearly. Rest up and try again."],
-      "exasperated": ["The {hold} again. Change the plan.", "Same fall, same place. Listen next time.", "Off again. You're not listening."]
+      "neutral": ["Fell off the {hold} again. Rest, then rethink.", "That move keeps beating you. Plan it properly.", "Rest fully. Then try a new sequence."],
+      "impressed": ["Good fight at the {hold}. Rest up.", "You're getting closer. Rest, then go again.", "Nearly there. Rest and try again."],
+      "exasperated": ["The {hold} again. Change your plan.", "Same fall, same place. Listen this time.", "Off again. You're not listening."]
     }
   },
   "hand_searching": {
     "0": {
-      "neutral": ["Reach {dir}.", "It's {dir}.", "Go {dir}."],
-      "impressed": ["{dir}. Commit.", "Fine. {dir}.", "Look {dir}."],
-      "exasperated": ["{dir}. Commit.", "No. {dir}.", "Look. {dir}."]
+      "neutral": ["Hand searching. Reach {dir}.", "The next hold is {dir}.", "Look {dir}. The hold's there."],
+      "impressed": ["Nearly. The hold is {dir}.", "Fine, searching is allowed. Look {dir}.", "Look {dir}. You'll find it."],
+      "exasperated": ["Hand searching again. {dir}. Commit.", "No, not there. It's {dir}.", "Look first. The hold is {dir}."]
     },
     "1": {
-      "neutral": ["{limb}, {dir}.", "{limb}. Reach {dir}.", "Stop patting. Reach {dir}."],
-      "impressed": ["{limb}, {dir}. Nearly.", "Close. {limb}, {dir}.", "Good reach. Go {dir}."],
-      "exasperated": ["{limb}. {dir}. Commit.", "Stop patting. Go {dir}.", "It's {dir}. Look first."]
+      "neutral": ["Your {limb} is searching. Reach {dir}.", "{limb}: the hold is {dir}.", "Stop patting the wall. Reach {dir}."],
+      "impressed": ["Close. {limb}, reach {dir}.", "Good reach. The next one is {dir}.", "Nearly. {limb} goes {dir}."],
+      "exasperated": ["{limb} searching again. Reach {dir}. Commit.", "Stop patting. The hold is {dir}.", "Look first. It's {dir}."]
     },
     "2": {
-      "neutral": ["{limb}, {dir}. Grab it.", "Look before reaching. It's {dir}.", "Stop patting. {limb} goes {dir}."],
-      "impressed": ["Nearly. {limb}, {dir}. Commit.", "Better. Now {limb}, {dir}.", "Good. It's {dir}. Take it."],
-      "exasperated": ["Again. {limb}, {dir}. Commit.", "Stop patting the wall. It's {dir}.", "Same habit. Look first. It's {dir}."]
+      "neutral": ["Your {limb} is searching. Reach {dir} and grab it.", "Look before reaching. The hold is {dir}.", "Stop patting the wall. {limb} goes {dir}."],
+      "impressed": ["Nearly. {limb} goes {dir}. Commit.", "Better. Now {limb} goes {dir}.", "Good. The hold is {dir}. Take it."],
+      "exasperated": ["Again. {limb} goes {dir}. Commit.", "Stop patting the wall. It's {dir}.", "Same habit. Look first. It's {dir}."]
     }
   },
   "feet_low": {
     "0": {
-      "neutral": ["Feet up.", "{limb} up.", "Hips in, feet up."],
-      "impressed": ["Feet up. Good.", "Now {limb} up.", "Higher feet."],
-      "exasperated": ["Feet. Up.", "{limb}. Up.", "Feet, again."]
+      "neutral": ["Feet too low. Bring them up.", "Bring your {limb} up.", "Hips in, feet up."],
+      "impressed": ["Good. Now bring your feet higher.", "Now lift the {limb}.", "Feet slightly low. Higher."],
+      "exasperated": ["Feet too low. Up.", "{limb} is low. Up.", "Feet low again."]
     },
     "1": {
-      "neutral": ["{limb} up. Hips in.", "Bring the {limb} higher.", "Feet up. Push with legs."],
-      "impressed": ["Good. Now the {limb} up.", "Better. Lift the {limb}.", "Fine. Feet up, then reach."],
-      "exasperated": ["{limb}. Up. Same again.", "Feet dangling again. Lift them.", "Again. Bring the {limb} up."]
+      "neutral": ["Your {limb} is low. Bring it up, hips in.", "Bring the {limb} higher.", "Feet too low. Push up with your legs."],
+      "impressed": ["Good. Now bring the {limb} up.", "Better. Lift the {limb}.", "Fine. Raise your feet, then reach."],
+      "exasperated": ["{limb} low again. Bring it up.", "Feet dangling again. Lift them.", "Again. Bring the {limb} up."]
     },
     "2": {
-      "neutral": ["{limb} up. Push through the legs.", "Bring the {limb} up before reaching.", "Feet up, hips in, then move."],
+      "neutral": ["Your {limb} is low. Push through the legs.", "Bring the {limb} up before reaching.", "Feet low. Feet up, hips in, then move."],
       "impressed": ["Better. Now bring the {limb} up.", "Good. {limb} higher, then reach.", "Nearly. Feet a touch higher."],
-      "exasperated": ["{limb} low again. Same as before.", "Feet up. How many times now?", "Same habit. {limb} up, now."]
+      "exasperated": ["{limb} low again. Same as before.", "Feet low. How many times now?", "Same habit. {limb} up, now."]
     }
   },
   "arms_bent": {
     "0": {
-      "neutral": ["Straight arms.", "Hang straight.", "Arms long."],
-      "impressed": ["Straighter arms.", "Relax the arms.", "Arms long. Breathe."],
-      "exasperated": ["Arms. Straight.", "Bent again.", "Straighten. Now."]
+      "neutral": ["Arms bent. Straighten them.", "Hang with straight arms.", "Keep your arms long. Save energy."],
+      "impressed": ["Straighter arms, please. Save strength.", "Relax your arms. Let them hang.", "Arms long. Breathe."],
+      "exasperated": ["Arms bent. Straighten them.", "Bent arms again.", "Straighten your arms. Now."]
     },
     "1": {
-      "neutral": ["Straighten both arms. Hang.", "Hang off the bones, not muscles.", "Let the arms go long."],
+      "neutral": ["Arms bent. Straighten both and hang.", "Hang off your bones, not your muscles.", "Let your arms go long between moves."],
       "impressed": ["Better. Now straighten the arms.", "Good. Hang on straight arms.", "Nearly. Let the elbows open."],
-      "exasperated": ["Bent arms again. Lock them.", "Same thing. Straighten the arms.", "Arms bent again. Hang properly."]
+      "exasperated": ["Bent arms again. Lock them straight.", "Same thing. Straighten your arms.", "Arms bent again. Hang properly."]
     },
     "2": {
-      "neutral": ["Hang off the bones, not the muscles.", "Straighten both arms and let the hips drop.", "Arms long between moves. Save the strength."],
-      "impressed": ["Better. Now hang on straight arms.", "Good. Straight arms, then the next move.", "Nearly. Let the elbows open fully."],
-      "exasperated": ["Bent arms again. Same as before.", "Again. Hang off the bones, please.", "Still pulling with your biceps. Stop."]
+      "neutral": ["Arms bent. Hang off the bones, not the muscles.", "Straighten both arms and let your hips drop.", "Arms long between moves. Save your strength."],
+      "impressed": ["Better. Now hang on straight arms.", "Good. Straight arms, then the next move.", "Nearly. Let your elbows open fully."],
+      "exasperated": ["Bent arms again. Same as before.", "Again. Hang off your bones, please.", "Still pulling with your biceps. Stop."]
     }
   },
   "stalling": {
     "0": {
-      "neutral": ["Keep moving.", "Move. Now.", "Decide. Go."],
-      "impressed": ["Fine. Now move.", "Rested? Go.", "Good. Next move."],
-      "exasperated": ["Move.", "Still waiting.", "Climb or drop."]
+      "neutral": ["You've paused too long. Keep moving.", "Stopped too long. Move now.", "Decide, then go."],
+      "impressed": ["Fine, you've rested. Now move.", "Rested? Then go.", "Good rest. Next move."],
+      "exasperated": ["Stalling. Move.", "Still waiting. Move.", "Climb or come down."]
     },
     "1": {
-      "neutral": ["Leave the {hold}. Move.", "Pick a move and commit.", "Hanging here costs strength. Move."],
-      "impressed": ["Rested enough. Now move.", "Good rest. Leave the {hold}.", "Fine. Plan made? Go."],
+      "neutral": ["You've stalled on the {hold}. Move.", "Pick a move and commit.", "Hanging here costs strength. Move."],
+      "impressed": ["Rested enough on the {hold}. Now move.", "Good rest. Leave the {hold}.", "Fine. Plan made? Go."],
       "exasperated": ["Still on the {hold}. Move.", "Climb or come down.", "Waiting won't make it easier."]
     },
     "2": {
-      "neutral": ["Leave the {hold}. Commit to the move.", "Hanging still is costing you. Move now.", "Stuck on the {hold} again. Move."],
-      "impressed": ["Good rest on the {hold}. Now go.", "Rested properly. Now commit to it.", "Fine. You've planned it. Climb."],
+      "neutral": ["Stalled on the {hold}. Commit to the move.", "Hanging still is costing you. Move now.", "Stuck on the {hold} again. Move."],
+      "impressed": ["Good rest on the {hold}. Now go.", "Rested properly. Now commit.", "Fine. You've planned it. Climb."],
       "exasperated": ["The {hold} again. Stop living there.", "Same stall as before. Move.", "You're hanging around again. Decide."]
     }
   },
   "high_point": {
     "0": {
-      "neutral": ["New high. Continue.", "Higher than before.", "New ground. Go."],
-      "impressed": ["New high. Good.", "Further than ever.", "That's progress."],
-      "exasperated": ["Finally, progress.", "About time. Higher.", "New high. Finally."]
+      "neutral": ["New high point. Keep going.", "Higher than any attempt so far.", "New ground. Keep climbing."],
+      "impressed": ["New high point. Good.", "Further than you've ever got.", "That's progress."],
+      "exasperated": ["Finally, some progress.", "About time. Keep going higher.", "New high point. Finally."]
     },
     "1": {
-      "neutral": ["New high: the {hold}.", "Past your best. Keep going.", "The {hold}. That's new."],
-      "impressed": ["The {hold}. Now that's progress.", "New high. Good, keep climbing.", "Further than ever. Well done."],
-      "exasperated": ["The {hold}. About time.", "Finally past your old best.", "New high. Don't waste it."]
+      "neutral": ["New high point: the {hold}.", "Past your previous best. Keep going.", "The {hold} is further than before."],
+      "impressed": ["New high at the {hold}. Now that's progress.", "New high point. Good, keep climbing.", "Further than ever. Well done."],
+      "exasperated": ["The {hold}. About time.", "Finally past your old best.", "New high point. Don't waste it."]
     },
     "2": {
-      "neutral": ["New high point: the {hold}. Keep going.", "Past every earlier attempt. Stay calm.", "The {hold} is new. Keep moving."],
+      "neutral": ["New high point: the {hold}. Keep going.", "Past every earlier attempt. Stay calm.", "The {hold} is new ground. Keep moving."],
       "impressed": ["The {hold}. That's real progress. Well done.", "Further than ever. Now that's climbing.", "New high point. You earned that."],
       "exasperated": ["The {hold}. Finally. Keep going.", "At last, new ground. Don't stop.", "Finally past your best. Keep climbing."]
     }
   },
   "quiet_feet": {
     "0": {
-      "neutral": ["Quiet feet.", "Place it once.", "Place the {limb}."],
-      "impressed": ["Quiet feet, please.", "Once is enough.", "Steady the {limb}."],
-      "exasperated": ["Stop fidgeting.", "Quiet feet.", "Once only."]
+      "neutral": ["Quiet feet. Place each foot once.", "Don't shuffle. Place it once.", "Place the {limb} once, then leave it."],
+      "impressed": ["Feet are a bit noisy. Quieter.", "Once is enough. No re-placing.", "Steady your {limb}."],
+      "exasperated": ["Stop fidgeting your feet.", "Quiet feet.", "Place once only."]
     },
     "1": {
-      "neutral": ["{limb}: place it once.", "Place the {limb}. Trust it.", "Quiet feet. Place it once."],
+      "neutral": ["Your {limb} is fidgeting. Place it once.", "Place the {limb} and trust it.", "Quiet feet. Place once, don't adjust."],
       "impressed": ["Nearly. Place the {limb} once.", "Good. Now trust the {limb}.", "Better. Place it, then leave it."],
-      "exasperated": ["{limb} again. Place once.", "Stop fidgeting with the {limb}.", "Quiet feet. I keep saying."]
+      "exasperated": ["{limb} again. Place once.", "Stop fidgeting with the {limb}.", "Quiet feet. I keep saying it."]
     },
     "2": {
-      "neutral": ["Look first, then place the {limb} once.", "{limb} on the {hold}. Trust it.", "Quiet feet. Place once, then commit."],
+      "neutral": ["Look first, then place the {limb} once.", "Put the {limb} on the {hold} and trust it.", "Quiet feet. Place once, then commit."],
       "impressed": ["Better. Now leave the {limb} there.", "Good placement. Trust it, don't adjust.", "Nearly. Place the {limb} once, cleanly."],
-      "exasperated": ["{limb} again. Place it once, please.", "Same shuffling as before. Trust the foot.", "Once on the {hold}. Not again."]
+      "exasperated": ["{limb} again. Place it once, please.", "Same shuffling as before. Trust the foot.", "Place it on the {hold} once. Not again."]
     }
   },
   "feet_cut": {
     "0": {
-      "neutral": ["Feet back on.", "Feet on. Now.", "Core tight."],
-      "impressed": ["Good catch. Feet.", "Control it. Feet.", "Fine. Feet on."],
-      "exasperated": ["Feet. Back. On.", "Cut again.", "Feet on. Now."]
+      "neutral": ["Feet have come off. Put them back.", "Feet off the wall. Get them on.", "Core tight. Feet back on."],
+      "impressed": ["Good catch. Now feet back on.", "Controlled. Get your feet back.", "Fine. Feet back on the wall."],
+      "exasperated": ["Feet off. Put them back.", "Feet cut loose again.", "Feet back on. Now."]
     },
     "1": {
-      "neutral": ["Feet back on the wall.", "Tense the core. Feet on.", "Stop the swing. Feet back."],
-      "impressed": ["Good catch. Now feet back.", "Fine. Tension, then feet on.", "Controlled. Get the feet back."],
-      "exasperated": ["Feet off again. Get them back.", "Feet cut again. Tension.", "Stop swinging. Feet on now."]
+      "neutral": ["Feet swung off. Put them back on the wall.", "Tense your core. Feet on.", "Stop the swing. Feet back."],
+      "impressed": ["Good catch. Now feet back on.", "Fine. Tension, then feet on.", "Controlled. Get the feet back."],
+      "exasperated": ["Feet off again. Get them back.", "Feet cut loose again. Tense your core.", "Stop swinging. Feet on now."]
     },
     "2": {
-      "neutral": ["Keep tension so the feet stay on.", "Feet back on, then make the move.", "Core tight, toes pulling into the wall."],
+      "neutral": ["Keep tension so the feet stay on.", "Feet swung off. Put them back, then move.", "Core tight, toes pulling into the wall."],
       "impressed": ["Good catch. Now get the feet back.", "Controlled swing. Feet on, then move.", "Fine. Tension through the core, feet on."],
-      "exasperated": ["Feet cut again. Keep the tension.", "Same as before. Feet stay on.", "Stop cutting loose. Core tight, feet on."]
+      "exasperated": ["Feet cut loose again. Keep the tension.", "Same as before. Feet stay on.", "Stop cutting loose. Core tight, feet on."]
     }
   },
   "weight_shift": {
     "0": {
-      "neutral": ["Hips over feet.", "Hips over {limb}.", "Weight on {limb}."],
-      "impressed": ["Hips across. Good.", "Nearly. Hips over.", "Shift, then reach."],
-      "exasperated": ["Hips. Over.", "Shift. Now.", "Hips, again."]
+      "neutral": ["Move your hips over your feet.", "Hips over your {limb}.", "Put your weight on the {limb}."],
+      "impressed": ["Hips moving across. Good.", "Nearly. Hips a bit further over.", "Shift weight, then reach."],
+      "exasperated": ["Hips over your feet. Now.", "Shift your weight. Now.", "Hips over your feet again."]
     },
     "1": {
-      "neutral": ["Hips over the {limb}.", "Weight onto the {limb}.", "Shift the hips, then reach."],
+      "neutral": ["Get your hips over the {limb}.", "Put your weight on the {limb}.", "Shift your hips first, then reach."],
       "impressed": ["Better. Hips over the {limb}.", "Nearly. Weight on the {limb}.", "Good. Shift, then reach."],
-      "exasperated": ["Hips over the {limb}. Again.", "Same thing. Shift the hips.", "Weight on the {limb}, please."]
+      "exasperated": ["Hips over the {limb}. Again.", "Same thing. Shift your hips.", "Weight on the {limb}, please."]
     },
     "2": {
-      "neutral": ["Hips over the {limb}, then reach.", "Move your weight onto the {limb} first.", "Shift the hips across before you reach."],
+      "neutral": ["Hips over the {limb}, then reach.", "Move your weight onto the {limb} first.", "Shift your hips across before you reach."],
       "impressed": ["Better. Now hips over the {limb}.", "Good. Weight on the {limb}, then reach.", "Nearly balanced. Hips a touch further."],
-      "exasperated": ["Hips over the {limb}. Same as before.", "Again. Shift the weight before reaching.", "Weight on the {limb}. How often now?"]
+      "exasperated": ["Hips over the {limb}. Same as before.", "Again. Shift your weight before reaching.", "Weight on the {limb}. How many times now?"]
     }
   },
   "crux_warning": {
     "0": {
-      "neutral": ["Crux next.", "Hard move coming.", "Careful here."],
-      "impressed": ["Crux coming. Ready.", "Here it is.", "Your move. Calm."],
-      "exasperated": ["Crux. Think.", "Here again.", "This move. Focus."]
+      "neutral": ["Hard move coming up. Careful.", "The hardest part is next.", "Tricky bit ahead. Take care."],
+      "impressed": ["Hardest move next. You're ready.", "Here comes the hard part.", "Hard part next. Stay calm."],
+      "exasperated": ["Hard move next. Think first.", "The hard part again. Focus.", "Tricky move ahead. Concentrate."]
     },
     "1": {
-      "neutral": ["{hold} next. Set up.", "Crux coming. Feet set first.", "This beat you before. Breathe."],
-      "impressed": ["Crux next. You're ready for it.", "Here's the {hold}. Stay calm.", "Good position. Now the crux."],
-      "exasperated": ["The {hold} again. Feet set.", "Same crux. Different approach, please.", "This again. Think first."]
+      "neutral": ["The {hold} is next. Set up for it.", "Hard move coming. Feet set first.", "This move beat you before. Breathe."],
+      "impressed": ["Hard move next. You're ready for it.", "The {hold} is next. Stay calm.", "Good position. Now the hard move."],
+      "exasperated": ["The {hold} again. Set your feet.", "Same hard move. Different approach, please.", "The hard move again. Think first."]
     },
     "2": {
-      "neutral": ["The {hold} is next. Set your feet.", "This move beat you before. Plan it.", "Crux coming. Breathe, set up, then commit."],
-      "impressed": ["Crux next. You've climbed well to here.", "The {hold} is next. You're ready.", "Good position for the crux. Commit."],
-      "exasperated": ["The {hold} again. Do it differently.", "Here's where you keep falling. Focus.", "Same crux. Set your feet this time."]
+      "neutral": ["The {hold} is next. Set your feet.", "This move beat you before. Plan it.", "Hard move coming. Breathe, set up, then commit."],
+      "impressed": ["Hard move next. You've climbed well to here.", "The {hold} is next. You're ready.", "Good position for the hard move. Commit."],
+      "exasperated": ["The {hold} again. Do it differently.", "Here's where you keep falling. Focus.", "Same hard move. Set your feet this time."]
     }
   },
   "route_preview": {
     "0": {
-      "neutral": ["Big reach up there.", "One long move.", "Watch the span."],
-      "impressed": ["Long reach. Fine.", "Big span. Ready?", "You'll reach it."],
-      "exasperated": ["Long reach. Plan.", "Big span. Think.", "Mind the stretch."]
+      "neutral": ["Big reach coming up above.", "One long move ahead. Plan it.", "Long stretch ahead. Watch your span."],
+      "impressed": ["Long reach ahead. You can do it.", "Big stretch ahead. Ready?", "You'll make that reach."],
+      "exasperated": ["Long reach ahead. Plan it.", "Big stretch ahead. Think first.", "Long reach coming. Don't rush it."]
     },
     "1": {
-      "neutral": ["Big reach to the {hold}.", "Long move up high. Plan.", "The {hold} is a stretch."],
-      "impressed": ["The {hold}: far, but fine.", "Big reach. You've the span.", "Long move. Trust your legs."],
-      "exasperated": ["Plan the {hold} reach.", "Long move. Don't wing it.", "Big span. Use your feet."]
+      "neutral": ["Big reach ahead, to the {hold}.", "Long move up high. Plan it.", "The {hold} is a long stretch."],
+      "impressed": ["The {hold} is far, but fine.", "Big reach ahead. You've the span.", "Long move. Trust your legs."],
+      "exasperated": ["Plan the reach to the {hold}.", "Long move ahead. Don't wing it.", "Big stretch. Use your feet."]
     },
     "2": {
-      "neutral": ["The big reach is the {hold}.", "Long move to the {hold}. Feet high.", "Plan your feet for the long reach."],
+      "neutral": ["The big reach is to the {hold}.", "Long move to the {hold}. Feet high.", "Plan your feet for the long reach."],
       "impressed": ["The {hold} is far. You'll make it.", "Big reach ahead. Your span's enough.", "Long move up there. You're ready."],
-      "exasperated": ["That long reach again. Plan it this time.", "The {hold} is far. Use your legs.", "Big span. Don't just throw for it."]
+      "exasperated": ["That long reach again. Plan it this time.", "The {hold} is far. Use your legs.", "Big stretch. Don't just throw for it."]
     }
   },
   "told_you_so": {
     "0": {
-      "neutral": ["Told you.", "See? Works.", "That's why."],
-      "impressed": ["Told you. Good.", "See? Better.", "That's listening."],
-      "exasperated": ["Finally listened.", "See? Told you.", "About time."]
+      "neutral": ["Told you. Fixing that worked.", "See? Following my advice works.", "That's why I said it."],
+      "impressed": ["Told you. Good that you listened.", "See? Better already.", "That's listening. Well done."],
+      "exasperated": ["Finally listened. See?", "Told you so. It works.", "About time you listened."]
     },
     "1": {
-      "neutral": ["See? That's why I said.", "Listened, and you're higher.", "Told you it works. Keep going."],
-      "impressed": ["Told you. Look: the {hold}.", "Good. That's what listening does.", "See? Higher already. Well done."],
-      "exasperated": ["Finally listened. And look, higher.", "See? Told you. Keep going.", "About time. That's the {hold}."]
+      "neutral": ["See? That's why I said it.", "You listened and you're higher.", "Told you it works. Keep going."],
+      "impressed": ["Told you. Look, you're on the {hold}.", "Good. That's what listening does.", "See? Higher already. Well done."],
+      "exasperated": ["Finally listened. And look, you're higher.", "Told you so. Keep going.", "About time. That got you to the {hold}."]
     },
     "2": {
-      "neutral": ["Told you. That got you the {hold}.", "See? That's why I keep saying it.", "Listened, and now you're on the {hold}."],
-      "impressed": ["Told you. The {hold}, and climbing well.", "Now that's climbing. Advice works, see?", "Well done. The {hold}, as promised."],
+      "neutral": ["Told you. That got you to the {hold}.", "See? That's why I keep saying it.", "You listened and now you're on the {hold}."],
+      "impressed": ["Told you. The {hold}, and climbing well.", "Now that's climbing. My advice works, see?", "Well done. You're on the {hold}, as promised."],
       "exasperated": ["Finally listened. And look, the {hold}.", "See? Told you. Every single time.", "About time. That's why I said it."]
     }
   }
